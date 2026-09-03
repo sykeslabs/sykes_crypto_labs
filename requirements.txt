@@ -1,0 +1,10 @@
+httpx>=0.27
+pydantic>=2.6
+pydantic-settings>=2.2
+python-dotenv>=1.0
+supabase>=2.4
+pytest>=8.0
+pytest-mock>=3.12
+
+# Optional: only needed for scripts/apply_migration.py (direct Postgres DDL application)
+psycopg2-binary>=2.9
