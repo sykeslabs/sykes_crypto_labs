@@ -1,7 +1,6 @@
 import logging
 import time
 from datetime import UTC, datetime
-from itertools import count
 import sys
 
 
@@ -18,12 +17,16 @@ class RunIdFilter(logging.Filter):
 
 
 def new_run_id() -> str:
-    date_part = datetime.now(UTC).strftime("%Y-%m-%d")
-    seq = next(_run_id_seq)
-    return f"RUN-{date_part}-{seq:03d}"
+    """Generates a run_id unique per invocation.
 
-
-_run_id_seq = count(1)
+    Time-based (to the second) rather than an in-process sequence counter:
+    each `python -m app.main` run is a separate process, so a counter that
+    lives only in memory (e.g. itertools.count starting at 1) resets every
+    time and always produces the same id — which is exactly the bug this
+    replaced. Seconds-resolution avoids needing a persisted/DB-backed
+    counter just to stay unique.
+    """
+    return f"RUN-{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
 
 
 def setup_logging(run_id: str, level: str = "INFO") -> logging.Logger:

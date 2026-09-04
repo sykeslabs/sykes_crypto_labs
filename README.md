@@ -8,7 +8,10 @@ no exchange credentials or live orders exist yet.
 - ✅ **Phase 1 — Foundation**: project structure, configuration, Supabase schema
   (`assets`, `market_snapshots`), CoinGecko market-data collector. Complete and
   verified against a live Supabase project.
-- ⬜ Phase 2 — Multi-model AI (OpenRouter: Claude, OpenAI, Gemini)
+- ✅ **Phase 2 — Multi-model AI**: RSS news collection + relevance matching,
+  OpenRouter integration (Claude, OpenAI, Gemini), structured/validated LLM
+  output, cost tracking with daily/monthly caps. Complete and verified with
+  live LLM calls against a real Supabase project.
 - ⬜ Phase 3 — Judge, Portfolio Manager, Risk Engine
 - ⬜ Phase 4 — Paper trading execution, benchmarks
 - ⬜ Phase 5 — Dashboard, scheduling
@@ -31,13 +34,20 @@ no exchange credentials or live orders exist yet.
      (rate-limited) endpoint.
    - `DATABASE_URL` — optional, only needed if you want to apply migrations via
      `scripts/apply_migration.py` instead of the Supabase SQL Editor.
+   - `OPENROUTER_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `GEMINI_MODEL` — only
+     required if you want to run `--with-llm` (see Phase 2 below). Not needed
+     for plain market-data collection.
 
-3. Apply the database schema. Either:
+3. Apply the database schema — both migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
-     `migrations/0001_init.sql`, then run it. This creates the `assets` and
-     `market_snapshots` tables, indexes, and seeds the asset universe (see below).
-     The migration is idempotent — safe to re-run any time it changes.
-   - Or, with `DATABASE_URL` set: `python scripts/apply_migration.py migrations/0001_init.sql`
+     `migrations/0001_init.sql`, run it, then do the same for
+     `migrations/0002_llm_and_news.sql`. Both are idempotent — safe to re-run
+     any time they change.
+   - Or, with `DATABASE_URL` set:
+     ```
+     python scripts/apply_migration.py migrations/0001_init.sql
+     python scripts/apply_migration.py migrations/0002_llm_and_news.sql
+     ```
 
 4. Run the collector:
 
@@ -50,9 +60,18 @@ no exchange credentials or live orders exist yet.
    most recent snapshot is younger than `MIN_SNAPSHOT_INTERVAL_MINUTES` (default 5)
    to avoid redundant writes.
 
+5. Optionally, also run news collection + multi-model LLM research:
+
+   ```
+   python -m app.main --with-llm
+   ```
+
+   **This makes real, billed calls to Claude/OpenAI/Gemini via OpenRouter** — see
+   the Phase 2 section below before running it.
+
 ## Verifying it worked
 
-- Console output logs a `run_id` (e.g. `RUN-2026-09-03-001`) and a per-run summary:
+- Console output logs a `run_id` (e.g. `RUN-20260903-141623`, unique to the second) and a per-run summary:
   `inserted=N skipped_duplicate=N failed=N`, plus which symbols were stored.
 - In the Supabase Table Editor, check `market_snapshots` — you should see one row
   per active asset with a recent `timestamp`, `price`, `market_cap`, etc.
@@ -60,6 +79,12 @@ no exchange credentials or live orders exist yet.
   `skipped_duplicate` rather than being re-inserted (dedup working).
 - Run `pytest` — all tests should pass without needing any credentials (they use
   fakes/mocks, no live network or database calls).
+
+For `--with-llm`: check `news` and `llm_analyses` in the Supabase Table Editor.
+`llm_analyses` should have up to one row per (provider, asset) — 3 providers ×
+however many `active` assets. Console output logs `stored_by_provider`,
+`failed`, and `skipped_cost_cap` per provider so failures are visible without
+digging through the database.
 
 ## Asset universe
 
@@ -98,21 +123,61 @@ Seeded assets:
 All 16 are `active`, so the collector currently tracks all of them regardless of
 `in_asset`.
 
+## Phase 2 — Multi-model AI research (`--with-llm`)
+
+Running `python -m app.main --with-llm` adds two steps after market data
+collection:
+
+1. **News collection** (`app/news/`): pulls RSS from CoinDesk, CoinTelegraph,
+   and Decrypt (free, no API key), matches each article against the asset
+   universe by name/ticker (word-bounded; ticker matching is case-sensitive
+   to avoid e.g. "LINK" matching the ordinary word "link"), dedupes on
+   `content_hash`, and stores only articles relevant to at least one asset.
+2. **LLM research** (`app/llm/`): builds one shared market-data-plus-news
+   context, sends it to Claude, OpenAI, and Gemini via OpenRouter (one
+   batched call per provider covering every asset, not one call per asset,
+   to keep cost down), validates each response against a strict Pydantic
+   schema (retrying once in-conversation if the model returns invalid JSON),
+   and persists one row per (provider, asset) to `llm_analyses`. One provider
+   failing never blocks the other two.
+
+**Cost control**: `CostGuard` checks cumulative spend (summed from
+`llm_analyses.estimated_cost`) against `MAX_DAILY_LLM_COST` /
+`MAX_MONTHLY_LLM_COST` before every provider call, skipping (not crashing)
+once a cap is hit. The pricing table in `app/llm/cost.py` is a point-in-time
+snapshot of OpenRouter pricing — re-check https://openrouter.ai/models
+periodically, especially after changing `CLAUDE_MODEL`/`OPENAI_MODEL`/`GEMINI_MODEL`.
+
+**Known limitations** (accepted tradeoffs, not bugs):
+- `sentiment` on `news` rows is always `NULL` — computing it reliably needs
+  either an extra LLM call (cost) or a real sentiment model; deferred.
+- News relevance matching is a keyword heuristic, not NLP — it will
+  occasionally miss context or produce a coincidental match. It's a cheap
+  pre-filter feeding models that can apply their own judgment, not a source
+  of ground truth.
+- Coverage is uneven across the asset universe: general crypto news outlets
+  cover BTC/ETH/SOL/XRP/BNB/HYPE far more than smaller caps like STORJ or
+  JTO. When no news is found, the LLMs correctly fall back to price-momentum
+  reasoning rather than inventing a catalyst.
+
+`run_id` is time-based to the second (`RUN-YYYYMMDD-HHMMSS`), generated fresh
+per process — each `python -m app.main` invocation gets its own unique id.
+
 ## Project layout
 
 ```
 app/
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots)
+  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses)
   market_data/   CoinGecko client, normalization, collection service
-  news/          Phase 2
-  llm/           Phase 2
+  news/          RSS collection, relevance matching, dedup (Phase 2)
+  llm/           OpenRouter integration, structured output, cost guard (Phase 2)
   judge/         Phase 3
   portfolio/     Phase 3
   risk/          Phase 3
   trading/       Phase 4
   benchmarks/    Phase 4
-  main.py        Entrypoint (python -m app.main)
+  main.py        Entrypoint (python -m app.main [--with-llm])
 tests/
 migrations/      SQL schema, applied manually or via scripts/apply_migration.py
 scripts/

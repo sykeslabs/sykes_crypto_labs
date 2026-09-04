@@ -1,3 +1,4 @@
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import SecretStr
@@ -7,8 +8,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Central application configuration, loaded from environment / .env.
 
-    Only Supabase credentials are required for Phase 1. Everything else has a
-    safe default so the app can run with a minimal .env.
+    Only Supabase credentials are required for Phase 1. OpenRouter credentials
+    are required only when running with --with-llm (Phase 2). Everything else
+    has a safe default so the app can run with a minimal .env.
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -28,6 +30,21 @@ class Settings(BaseSettings):
     min_snapshot_interval_minutes: int = 5
     vs_currency: str = "usd"
 
+    # OpenRouter / LLM research (required only for --with-llm)
+    openrouter_api_key: SecretStr | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    claude_model: str | None = None
+    openai_model: str | None = None
+    gemini_model: str | None = None
+    llm_request_timeout_seconds: int = 60
+    prompt_version: str = "v1"
+    max_daily_llm_cost: Decimal = Decimal("5.00")
+    max_monthly_llm_cost: Decimal = Decimal("50.00")
+
+    # News collection (used only alongside --with-llm)
+    news_lookback_hours: int = 24
+    max_news_articles_per_asset: int = 5
+
     # Logging
     log_level: str = "INFO"
 
@@ -39,6 +56,29 @@ class Settings(BaseSettings):
                 "Copy .env.example to .env and fill them in from your Supabase project settings."
             )
         return self.supabase_url, self.supabase_service_role_key.get_secret_value()
+
+    def require_openrouter(self) -> str:
+        """Return the OpenRouter API key, or raise a clear error if missing.
+
+        Also requires CLAUDE_MODEL / OPENAI_MODEL / GEMINI_MODEL to be set
+        explicitly — the app never silently falls back to a free model.
+        """
+        missing = [
+            name
+            for name, value in (
+                ("OPENROUTER_API_KEY", self.openrouter_api_key),
+                ("CLAUDE_MODEL", self.claude_model),
+                ("OPENAI_MODEL", self.openai_model),
+                ("GEMINI_MODEL", self.gemini_model),
+            )
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Missing required settings for LLM research: {', '.join(missing)}. "
+                "Set them in your .env file."
+            )
+        return self.openrouter_api_key.get_secret_value()
 
 
 @lru_cache
