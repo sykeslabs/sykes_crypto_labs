@@ -82,13 +82,14 @@ class FakeCoinGeckoClient:
         return self._markets
 
 
-def _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1"):
+def _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1", in_asset=True):
     return Asset(
         id=asset_id,
         symbol=symbol,
         name=symbol,
         coingecko_id=coingecko_id,
         active=True,
+        in_asset=in_asset,
         created_at=datetime.now(UTC),
     )
 

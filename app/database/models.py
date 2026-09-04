@@ -9,4 +9,5 @@ class Asset(BaseModel):
     name: str
     coingecko_id: str
     active: bool
+    in_asset: bool
     created_at: datetime

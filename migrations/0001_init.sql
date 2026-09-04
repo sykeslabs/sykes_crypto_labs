@@ -1,5 +1,6 @@
 -- Phase 1: asset universe + market data snapshots.
 -- Apply via the Supabase SQL Editor, or scripts/apply_migration.py (see README).
+-- Idempotent — safe to re-run against a database that already has this applied.
 
 create extension if not exists "pgcrypto";
 
@@ -9,8 +10,14 @@ create table if not exists assets (
     name            text not null,
     coingecko_id    text not null unique,
     active          boolean not null default true,
+    -- Whether this asset is currently held in the live portfolio (vs. tracked
+    -- for research/watchlist purposes only).
+    in_asset        boolean not null default false,
     created_at      timestamptz not null default now()
 );
+
+alter table assets
+    add column if not exists in_asset boolean not null default false;
 
 create table if not exists market_snapshots (
     id                  uuid primary key default gen_random_uuid(),
@@ -35,12 +42,24 @@ create index if not exists idx_market_snapshots_asset_timestamp
 create index if not exists idx_assets_active
     on assets (active);
 
--- Seed the initial configurable asset universe (idempotent).
-insert into assets (symbol, name, coingecko_id, active) values
-    ('BTC',  'Bitcoin',     'bitcoin',      true),
-    ('ETH',  'Ethereum',    'ethereum',     true),
-    ('SOL',  'Solana',      'solana',       true),
-    ('XRP',  'XRP',         'ripple',       true),
-    ('BNB',  'BNB',         'binancecoin',  true),
-    ('HYPE', 'Hyperliquid', 'hyperliquid',  true)
-on conflict (symbol) do nothing;
+-- Seed the configurable asset universe (idempotent). CoinGecko ids for the
+-- non-obvious tokens were verified against CoinGecko's /search endpoint to
+-- avoid pointing at a wrong/similarly-named token.
+insert into assets (symbol, name, coingecko_id, active, in_asset) values
+    ('BTC',   'Bitcoin',     'bitcoin',                true, true),
+    ('ETH',   'Ethereum',    'ethereum',               true, true),
+    ('SOL',   'Solana',      'solana',                 true, false),
+    ('XRP',   'XRP',         'ripple',                 true, false),
+    ('BNB',   'BNB',         'binancecoin',            true, false),
+    ('HYPE',  'Hyperliquid', 'hyperliquid',            true, false),
+    ('LINK',  'Chainlink',   'chainlink',              true, true),
+    ('ONDO',  'Ondo',        'ondo-finance',           true, true),
+    ('JASMY', 'JasmyCoin',   'jasmycoin',              true, true),
+    ('ENA',   'Ethena',      'ethena',                 true, true),
+    ('S',     'Sonic',       'sonic-3',                true, true),
+    ('STORJ', 'Storj',       'storj',                  true, true),
+    ('ZRX',   '0x Protocol', '0x',                     true, true),
+    ('XTZ',   'Tezos',       'tezos',                  true, true),
+    ('BONK',  'Bonk',        'bonk',                   true, true),
+    ('JTO',   'Jito',        'jito-governance-token',  true, true)
+on conflict (symbol) do update set in_asset = excluded.in_asset;

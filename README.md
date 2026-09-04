@@ -1,10 +1,18 @@
-# Crypto AI Portfolio (Phase 1)
+# Crypto AI Portfolio
 
 Modular, auditable AI-driven crypto portfolio management system. **Paper trading only** —
 no exchange credentials or live orders exist yet.
 
-Phase 1 implements the foundation only: project structure, configuration, the Supabase
-schema for `assets` and `market_snapshots`, and a CoinGecko market-data collector.
+## Status
+
+- ✅ **Phase 1 — Foundation**: project structure, configuration, Supabase schema
+  (`assets`, `market_snapshots`), CoinGecko market-data collector. Complete and
+  verified against a live Supabase project.
+- ⬜ Phase 2 — Multi-model AI (OpenRouter: Claude, OpenAI, Gemini)
+- ⬜ Phase 3 — Judge, Portfolio Manager, Risk Engine
+- ⬜ Phase 4 — Paper trading execution, benchmarks
+- ⬜ Phase 5 — Dashboard, scheduling
+- ⬜ Phase 6 — Exchange integration (testnet only)
 
 ## Setup
 
@@ -27,8 +35,8 @@ schema for `assets` and `market_snapshots`, and a CoinGecko market-data collecto
 3. Apply the database schema. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
      `migrations/0001_init.sql`, then run it. This creates the `assets` and
-     `market_snapshots` tables, indexes, and seeds the initial 6-asset universe
-     (BTC, ETH, SOL, XRP, BNB, HYPE).
+     `market_snapshots` tables, indexes, and seeds the asset universe (see below).
+     The migration is idempotent — safe to re-run any time it changes.
    - Or, with `DATABASE_URL` set: `python scripts/apply_migration.py migrations/0001_init.sql`
 
 4. Run the collector:
@@ -60,6 +68,36 @@ table (seeded by the migration) and is read fresh on every run. To add or disabl
 asset, edit the `assets` table directly (e.g. set `active = false`, or insert a new
 row with its CoinGecko id) — no code changes required.
 
+Two independent flags per asset:
+- `active` — whether the market-data collector tracks this asset at all.
+- `in_asset` — whether it's currently held in the live portfolio, vs. tracked for
+  research/watchlist purposes only. Purely informational in Phase 1; later phases
+  (Portfolio Manager, Risk Engine) will read it.
+
+Seeded assets:
+
+| symbol | name | coingecko_id | in_asset |
+|---|---|---|---|
+| BTC | Bitcoin | `bitcoin` | true |
+| ETH | Ethereum | `ethereum` | true |
+| SOL | Solana | `solana` | false |
+| XRP | XRP | `ripple` | false |
+| BNB | BNB | `binancecoin` | false |
+| HYPE | Hyperliquid | `hyperliquid` | false |
+| LINK | Chainlink | `chainlink` | true |
+| ONDO | Ondo | `ondo-finance` | true |
+| JASMY | JasmyCoin | `jasmycoin` | true |
+| ENA | Ethena | `ethena` | true |
+| S | Sonic | `sonic-3` | true |
+| STORJ | Storj | `storj` | true |
+| ZRX | 0x Protocol | `0x` | true |
+| XTZ | Tezos | `tezos` | true |
+| BONK | Bonk | `bonk` | true |
+| JTO | Jito | `jito-governance-token` | true |
+
+All 16 are `active`, so the collector currently tracks all of them regardless of
+`in_asset`.
+
 ## Project layout
 
 ```
@@ -80,10 +118,9 @@ migrations/      SQL schema, applied manually or via scripts/apply_migration.py
 scripts/
 ```
 
-## Development phases
+## Development methodology
 
-This project is built incrementally. Phase 1 (this state) covers market data
-collection only. Later phases (see the original spec) add multi-model LLM research,
-a Judge, a deterministic Risk Engine, paper trading execution, benchmarking, a
-dashboard, and — only after extensive paper-trading validation — sandboxed exchange
-integration. Each phase is implemented and reviewed before the next begins.
+This project is built and verified one phase at a time (see Status above) — each
+phase is implemented, tested against a live Supabase project, and reviewed before
+the next begins. Live trading is only ever activated after a separate, explicit
+safety review; the default and current mode is PAPER.
