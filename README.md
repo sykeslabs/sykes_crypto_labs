@@ -3,6 +3,31 @@
 Modular, auditable AI-driven crypto portfolio management system. **Paper trading only** —
 no exchange credentials or live orders exist yet.
 
+## Vision
+
+The long-term goal is a full-fledged AI crypto research and advisory system: broad
+market screening across an open universe (not a fixed coin list), multi-source
+evidence collection (exchange-native market data, derivatives positioning,
+options skew, on-chain/DeFi flows, liquidations, news, macro, independent
+analysts), a deterministic market-regime classification, multi-model
+independent assessment, adversarial (bull/bear) research, and a deterministic
+Judge + Risk Engine that turns all of this into paper-only recommendations —
+sized with volatility/correlation awareness, tracked against realized outcomes
+over time, and including the ability to say "no trade" when evidence is weak
+or contradictory.
+
+This is a deliberate, large expansion beyond the original Phase 1/2 scope. It
+is being built **in verified sub-phases**, not as one monolithic phase,
+because:
+- several data sources have unknown/unofficial API availability and must be
+  validated for real before any code assumes they exist — **official,
+  documented sources are prioritized ahead of fragile/unofficial ones**,
+- every new signal source is also a new API/LLM cost center, and costs must
+  stay bounded by `CostGuard` at every step, not just at the end,
+- a system that gives financial-style recommendations needs its accuracy to
+  be *measurable and continuously tracked* (calibration against realized
+  outcomes) from the start, not bolted on at the very end.
+
 ## Status
 
 - ✅ **Phase 1 — Foundation**: project structure, configuration, Supabase schema
@@ -12,10 +37,42 @@ no exchange credentials or live orders exist yet.
   OpenRouter integration (Claude, OpenAI, Gemini), structured/validated LLM
   output, cost tracking with daily/monthly caps. Complete and verified with
   live LLM calls against a real Supabase project.
-- ⬜ Phase 3 — Judge, Portfolio Manager, Risk Engine
-- ⬜ Phase 4 — Paper trading execution, benchmarks
+- ⬜ **Phase 3 — Broad intelligence, discovery & judgment** (see
+  `PHASE3A_PROMPT.md` through `PHASE3F_PROMPT.md`, one per sub-phase),
+  split into verified sub-phases:
+  - **3a** — Candidate/universe status schema, evidence provenance + numeric
+    freshness-decay convention, `signal_sources` registry, and schema
+    groundwork for market-regime snapshots, a decision-outcome ledger, and
+    prompt/template versioning (all populated in later sub-phases)
+  - **3b** — CoinMarketCap + **Coinbase** + **Binance** exchange-native data,
+    deterministic market screening, candidate discovery, and a **deterministic
+    market-regime classifier** computed once per run
+  - **3c** — Official derivatives & on-chain sources: **Binance funding
+    rates**, **Deribit options** (implied volatility, put/call skew),
+    **Etherscan/DefiLlama** on-chain & DeFi TVL flows — all documented APIs,
+    zero LLM cost
+  - **3d** — Multi-model current market assessment (separate from
+    `llm_analyses`), now with consistent regime/derivatives/on-chain context
+    and prompt-template versioning
+  - **3e** — Deterministic Judge, Risk Engine (volatility/correlation-aware
+    sizing), Portfolio Construction, and a **continuous decision-outcome
+    ledger** for ongoing calibration (plus a baseline backtest against
+    existing Phase 1/2 data)
+  - **3f** — Adversarial bull/bear research, scenario modeling, macro matrix,
+    and the remaining exploratory/fragile sources (CoinAnk, CoinGlass
+    liquidation heatmap, CryptoBubbles, PlanB/X) — each gated on a real
+    access-feasibility check; re-run calibration afterward to check whether
+    they actually improved accuracy
+- ⬜ Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
 - ⬜ Phase 5 — Dashboard, scheduling
 - ⬜ Phase 6 — Exchange integration (testnet only)
+
+Each sub-phase is implemented, verified against the live Supabase project, and
+reviewed before the next begins — same methodology as Phase 1 and 2 (see
+"Development methodology" below). `pytest` must keep passing without live
+credentials at every step; any source that turns out to have no reliable
+programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
+`signal_sources` rather than silently skipped or faked.
 
 ## Setup
 
@@ -189,3 +246,28 @@ This project is built and verified one phase at a time (see Status above) — ea
 phase is implemented, tested against a live Supabase project, and reviewed before
 the next begins. Live trading is only ever activated after a separate, explicit
 safety review; the default and current mode is PAPER.
+
+Starting with Phase 3, this also applies *within* a phase: Phase 3 is large
+enough that it is split into sub-phases (3a–3f), each with its own live
+verification and cost check, rather than implemented as one block. Rules that
+carry across every sub-phase:
+
+- **Official, documented sources come before fragile/unofficial ones.**
+  Coinbase, Binance, Deribit, Etherscan, and DefiLlama all have real,
+  documented, free-or-cheap APIs and are built in 3b/3c. CryptoBubbles,
+  CoinAnk, and PlanB/X have unclear or unofficial access and are deliberately
+  built last (3f), gated on a real feasibility check each time.
+- **No new external source is assumed reliable until checked.** Programmatic
+  access is verified for real before code is written against it; sources that
+  turn out to be unavailable are recorded as such (`signal_sources` table),
+  not faked or silently dropped.
+- **No new evidence source ships without a cost estimate** against
+  `MAX_DAILY_LLM_COST` / `MAX_MONTHLY_LLM_COST`. Any sub-phase that adds LLM
+  calls (3d, 3f) estimates calls/day and cost/day before merging. Market-data
+  sources (3b, 3c) have no LLM cost but should still be checked against
+  provider rate limits.
+- **Predictions are tracked against reality, continuously.** Starting in 3e,
+  every Judge decision is recorded in a decision-outcome ledger and later
+  backfilled with realized returns, so the system's own accuracy — not just
+  its internal model agreement — is measurable and improves the design over
+  time rather than being assessed once at the end.
