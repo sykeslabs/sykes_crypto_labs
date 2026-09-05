@@ -45,6 +45,13 @@ fragile/unofficial ones:
 - 3d — Multi-model current market assessment, distinct from `llm_analyses`.
 - 3e — Deterministic Judge, Risk Engine (vol/correlation-aware sizing),
   Portfolio Construction, and a continuous decision-outcome ledger.
+- 3e.1 — Retroactive historical replay: backfills ~4 weeks of decisions by
+  re-running the 3e pipeline against the past, but only for evidence
+  genuinely reconstructable point-in-time (price/volume, some funding-rate
+  history); everything else is marked `UNAVAILABLE` for the replay window
+  rather than faked from current values. Every row tagged `is_backfilled`
+  and reported separately from the live forward-tracked baseline — a
+  diagnostic accelerant, not a substitute for 3e's real accuracy tracking.
 - 3f — Adversarial bull/bear research, scenario modeling, a macro matrix
   extended with global-liquidity/cross-asset-correlation tracking, and the
   remaining fragile/unofficial-or-hard-to-extract sources (CoinAnk,
@@ -98,6 +105,18 @@ even scaffolding.
 - Every LLM call, from any future stage, goes through the existing
   `CostGuard`, without exception — not relevant to 3a since 3a adds no LLM
   calls, but do not add any as part of this task.
+- **CostGuard-extension convention (locked now, applies from 3d onward).**
+  Every table that persists the result of an LLM call must have a column
+  named exactly `estimated_cost` (numeric), and its name must be added to a
+  single documented registry (e.g. `COST_TRACKED_TABLES` in
+  `app/llm/cost.py`) that CostGuard sums across when checking
+  `MAX_DAILY_LLM_COST`/`MAX_MONTHLY_LLM_COST`. Any sub-phase that adds a new
+  LLM-call-persisting table (3d's `model_market_assessments`, 3e's
+  `judge_decisions`, 3f's bull/bear/scenario tables, 3g's reasoning-audit
+  calls) must register it and add a test proving CostGuard's cumulative sum
+  reflects a row inserted into that table — not just that the table exists.
+  This exists so the daily/monthly cap is never silently under-enforced by a
+  later sub-phase forgetting to wire its cost column into the check.
 - Every observation and prediction carries provenance timestamps — needed for
   later backtesting. No look-ahead bias, ever.
 - **Point-in-time integrity is a correctness requirement, not an optimization.**
@@ -255,8 +274,22 @@ yet):**
 - `market_regime_snapshots` — for 3b's deterministic regime classifier.
   Suggested columns: `id, run_id, computed_at, regime (RISK_ON/RISK_OFF/
   NEUTRAL or similar), inputs (JSONB), notes`.
+- `judge_decisions` — the full Judge decision record (3e populates it),
+  reserved now so `decision_outcomes.decision_id` below has a real FK
+  target instead of a placeholder. Suggested columns: `id, run_id,
+  asset_id, created_at, decision (DecisionValue), confidence,
+  target_allocation, expected_return, expected_alpha, risk_score,
+  uncertainty, model_agreement, source_agreement,
+  investment_horizon_days, key_evidence (JSONB), contradictory_evidence
+  (JSONB), key_risks (JSONB), invalidation_conditions (JSONB),
+  requires_review (bool), thesis (text), regime_id (FK to
+  market_regime_snapshots), prompt_template_id (FK to prompt_templates),
+  estimated_cost (numeric)` — the last column per the CostGuard-extension
+  convention above, since every Judge call is a real LLM cost. Schema
+  only here; first populated in 3e, at which point it's also added to
+  `COST_TRACKED_TABLES`.
 - `decision_outcomes` — for 3e's continuous calibration ledger. Suggested
-  columns: `id, decision_id (FK to wherever Judge decisions will live),
+  columns: `id, decision_id (FK to judge_decisions.id),
   asset_id, decision_timestamp, horizon_days, target_return, stop_return,
   realized_return, outcome_label (HIT_TARGET/HIT_STOP/TIMED_OUT/UNRESOLVED),
   evaluated_at, regime_at_decision (FK to `market_regime_snapshots`,
@@ -308,7 +341,10 @@ network or database calls), matching how Phase 1/2 tests work today.
 Update `README.md`: mark 3a complete in the Status section, and add a short
 "Known limitations / decisions" note (matching the style of the existing
 Phase 2 section) covering anything decided ambiguously — e.g. status column
-vs. history table, and the initial decay half-life values chosen.
+vs. history table, and the initial decay half-life values chosen. Also
+confirm the `judge_decisions` table name and `COST_TRACKED_TABLES`
+convention (both locked pre-3a — see `PHASE3_LOCKED_DECISIONS.md`) are
+reflected in the migration and noted as already-decided, not open.
 
 ## Exit criteria for 3a
 
@@ -320,8 +356,12 @@ vs. history table, and the initial decay half-life values chosen.
   "value as known at time T" query convention, so 3b/3c/3f collectors and
   3e/3g backtests share one point-in-time-correct pattern instead of each
   risking their own look-ahead bug.
-- `market_regime_snapshots`, `decision_outcomes`, `prompt_templates`,
-  `calibration_runs` tables exist (empty), ready for later sub-phases.
+- `market_regime_snapshots`, `judge_decisions`, `decision_outcomes`,
+  `prompt_templates`, `calibration_runs` tables exist (empty), ready for
+  later sub-phases. `decision_outcomes.decision_id` has a real FK target
+  (`judge_decisions.id`), not a placeholder comment.
+- `COST_TRACKED_TABLES` convention documented (even though 3a itself
+  registers nothing, since it adds no LLM-call tables).
 - No behavior change to any existing Phase 1/2 code path.
 - `pytest` passes without credentials.
 - Zero new external API calls, zero new LLM calls, zero new cost.

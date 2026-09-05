@@ -88,9 +88,22 @@ agrees or disagrees with it, same as any other source.
 prompt_template_id (FK to 3a's prompt_templates), assessment_timestamp,
 data_cutoff_timestamp, short/medium/long_term direction + confidence,
 expected_return_7d/30d/90d, risk_score, market_regime (copied from the shared
-snapshot for convenience/auditability), thesis, key_drivers (JSONB),
-key_risks (JSONB), source_assessment (JSONB), invalidation_conditions
-(JSONB), raw_response, estimated_cost, created_at`.
+snapshot for convenience/auditability), model_agreement (numeric, computed
+once per asset per run across all configured models — e.g. a simple
+directional-agreement or confidence-dispersion measure — then denormalized
+onto every model's row for that asset/run, same copy-for-auditability
+pattern already used for `market_regime`; per the Non-negotiables above this
+is a distinct value, never an average of the individual `confidence` column
+on the same row), thesis, key_drivers (JSONB), key_risks (JSONB),
+source_assessment (JSONB), invalidation_conditions (JSONB), raw_response,
+estimated_cost, created_at`.
+
+**3a. CostGuard registration.** Per the `COST_TRACKED_TABLES` convention
+locked in 3a (see `PHASE3_LOCKED_DECISIONS.md`): add `model_market_assessments`
+to `COST_TRACKED_TABLES` in `app/llm/cost.py` (it already has the required
+`estimated_cost` column per task 3 above), and add a test proving
+`CostGuard`'s cumulative-spend check reflects a row inserted into this
+table — not just that the table exists.
 
 **4. Prompt/template versioning.**
 Populate the `prompt_templates` table from 3a: whenever you change the
@@ -153,6 +166,8 @@ cost/day estimate at your chosen candidate count and model set.
 - Sanity check demonstrably excludes/flags at least the synthetic bad-tick
   test case.
 - Cost report shows this stage's spend broken out from Phase 2's.
+- `model_market_assessments` is registered in `COST_TRACKED_TABLES`, and a
+  test confirms `CostGuard`'s cumulative-spend check includes it.
 - `pytest` green without credentials.
 - README updated with real cost/day figures.
 

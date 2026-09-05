@@ -1010,12 +1010,15 @@ app/
   market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with ETF-flow/prediction-market/stablecoin-velocity/CME-COT/miner-metrics providers and the derived volatility-risk-premium/annualized-carry-yield fields; extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
   news/          RSS collection, relevance matching, dedup (Phase 2)
   llm/           OpenRouter integration, structured output, cost guard (Phase 2); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
-  judge/         Phase 3e — deterministic decision synthesis; input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
+  judge/         Phase 3e — deterministic decision synthesis, persisted to `judge_decisions` (schema reserved in 3a); input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
   portfolio/     Phase 3e — portfolio construction
   risk/          Phase 3e — deterministic risk engine, incl. uncertainty-aware position scaling; extended in 3h with a
                  deterministic portfolio tail-risk stress test
   trading/       Phase 4 — order-book-depth-aware, fee-aware paper-fill simulation (see PHASE4_PROMPT.md); Phase 6 — testnet execution agent (LangChain/LangGraph)
   benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f);
+                 retroactive historical replay, backfilled decisions tagged
+                 `is_backfilled` and reported separately from the live
+                 baseline (3e.1, optional);
                  statistical validation — Deflated Sharpe/PBO, Brier/reliability,
                  held-out-window reporting, point-in-time and purged/embargoed
                  walk-forward audits, Judge reasoning audit (3g); adaptive
@@ -1060,6 +1063,23 @@ carry across every sub-phase:
   paid data-API subscription — a dollar cost against project budget, tracked
   and documented separately from `CostGuard`, which exists specifically to
   cap LLM spend, not general data-vendor spend.
+- **Two schema/convention decisions were locked before 3a started**, since
+  schema is cheap to decide up front and expensive to retrofit once 3b–3g
+  are writing against it (see `PHASE3_LOCKED_DECISIONS.md` for the full
+  writeup):
+  - The full Judge decision record (thesis, key/contradictory evidence,
+    invalidation conditions) lives in a dedicated `judge_decisions` table,
+    reserved empty in 3a and populated in 3e — not folded into the slimmer
+    `decision_outcomes` ledger, which only tracks resolution against
+    realized returns. `decision_outcomes.decision_id` FKs to it.
+  - Every table that persists an LLM call's result must have an
+    `estimated_cost` column and be registered in a documented
+    `COST_TRACKED_TABLES` list in `app/llm/cost.py` that CostGuard sums
+    across — so a later sub-phase adding a new LLM-call table
+    (`model_market_assessments` in 3d, `judge_decisions` in 3e, bull/bear/
+    scenario tables in 3f, reasoning-audit calls in 3g) can't silently
+    under-report real spend against `MAX_DAILY_LLM_COST`/
+    `MAX_MONTHLY_LLM_COST` by forgetting to wire it in.
 - **Predictions are tracked against reality, continuously.** Starting in 3e,
   every Judge decision is recorded in a decision-outcome ledger and later
   backfilled with realized returns, so the system's own accuracy — not just

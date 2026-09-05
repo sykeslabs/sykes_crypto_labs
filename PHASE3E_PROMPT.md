@@ -118,6 +118,16 @@ coverage of every source that will eventually exist. Output strict JSON:
 sizing is finalized by the Risk Engine/Portfolio Construction below, not
 taken verbatim.
 
+**Persist every Judge output as a row in 3a's `judge_decisions` table**
+(reserved empty in 3a specifically for this) — this is the full narrative
+record (thesis, key/contradictory evidence, invalidation conditions) that
+`decision_outcomes` was never meant to hold on its own.
+`decision_outcomes.decision_id` FKs to this row. Include `estimated_cost`
+for the Judge LLM call on the row, and add `judge_decisions` to
+`COST_TRACKED_TABLES` per 3a's CostGuard-extension convention, with a test
+proving CostGuard's cumulative sum reflects a row inserted here — not just
+that the table exists.
+
 Add `requires_review` (bool): true whenever confidence is low, model/source
 agreement is weak, or the recommended change is unusually large relative to
 current exposure. This is a lightweight human-in-the-loop gate — standard
@@ -231,6 +241,12 @@ chosen.
   scenario.
 - `decision_outcomes` rows are created for real decisions and the evaluation
   step correctly backfills at least a synthetic past-horizon test case.
+- Every Judge decision persists a full row in `judge_decisions`, with
+  `decision_outcomes.decision_id` correctly pointing to it, and
+  `estimated_cost` populated.
+- `judge_decisions` is registered in `COST_TRACKED_TABLES`, and a test
+  confirms CostGuard's cumulative-spend check includes it (e.g. inserting a
+  fixture row changes the reported daily total).
 - Calibration script runs against real historical data and produces a
   documented baseline number for both hit-rate and Brier score, persisted to
   `calibration_runs`.
@@ -241,4 +257,5 @@ chosen.
 - README updated.
 
 Stop here, report the Judge/Risk/Portfolio behavior observed and the baseline
-calibration result, and wait for confirmation before starting 3f.
+calibration result, and wait for confirmation before starting 3e.1 (optional
+retroactive replay) or 3f.

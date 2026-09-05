@@ -42,7 +42,11 @@ not the only source of any given signal type.
   itself. Interpretation belongs to the Judge.
 - Every new LLM call (bull research, bear research, scenario modeling) goes
   through `CostGuard`, tracked as its own stage in the cost report, and uses
-  the `prompt_templates` versioning convention from 3d.
+  the `prompt_templates` versioning convention from 3d. Per the
+  `COST_TRACKED_TABLES` convention locked in 3a (see
+  `PHASE3_LOCKED_DECISIONS.md`), all three calls persist to `adversarial_research`
+  (task 4a below), which must carry an `estimated_cost` column and be
+  registered in `COST_TRACKED_TABLES`.
 - No hard-coded macro-sensitivity assumptions without the system showing its
   per-asset reasoning.
 - The held-out decision window established in 3e (`in_holdout_window = true`
@@ -177,6 +181,22 @@ expected return, price target (if appropriate), timeframe, assumptions,
 catalysts, failure conditions. Use 7d/30d/90d/180d/365d horizons where
 meaningful.
 
+**4a. Persistence table & CostGuard registration.**
+Persist bull research, bear research, and scenario modeling to a new table,
+e.g. `adversarial_research` — one row per candidate per run, since all three
+calls feed the same Judge input and share a research cycle. Suggested
+columns: `id, run_id, asset_id, prompt_template_id (FK to 3a's
+prompt_templates), bull_case (JSONB: thesis, catalysts, evidence), bear_case
+(JSONB: attack points vs. the specific bull thesis, evidence),
+bull_rebuttal (JSONB, nullable — populated only if the second bull-rebuts-
+bear pass from task 3 is done), scenarios (JSONB: bull/base/bear, each with
+probability, expected_return, price_target, timeframe, assumptions,
+catalysts, failure_conditions), estimated_cost (numeric — the summed cost of
+all LLM calls in this row, per the `COST_TRACKED_TABLES` convention),
+created_at`. Add `adversarial_research` to `COST_TRACKED_TABLES` in
+`app/llm/cost.py`, and add a test proving `CostGuard`'s cumulative-spend
+check reflects a row inserted here — not just that the table exists.
+
 **5. Macro evidence matrix.**
 Track macro observations (ADP, initial claims, payrolls, CPI, PCE, Fed
 expectations, Treasury yields, DXY, etc.) with source, publication timestamp,
@@ -294,6 +314,8 @@ exploratory source, and record the calibration before/after comparison.
 - Scenario modeling and macro matrix are populated for real candidates and
   visible as distinct Judge inputs.
 - Cost report includes bull/bear/scenario as their own line items.
+- `adversarial_research` is registered in `COST_TRACKED_TABLES`, and a test
+  confirms `CostGuard`'s cumulative-spend check includes it.
 - Calibration before/after comparison recorded (hit-rate and Brier score,
   broken down by regime), persisted to `calibration_runs`, explicitly framed
   as provisional pending 3g's statistical correction — whatever the result.

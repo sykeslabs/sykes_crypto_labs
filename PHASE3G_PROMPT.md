@@ -151,6 +151,14 @@ Gate this call through `CostGuard` like any other. Aggregate results (e.g.
 "N of M sampled decisions show at least one unsupported claim in the
 thesis") rather than treating any single flagged case as damning on its own.
 
+Persist each audited call to a new table, `judge_reasoning_audits` —
+suggested columns: `id, run_at, decision_id (FK to judge_decisions.id),
+audit_model, supported (bool), unsupported_claims (JSONB), notes,
+estimated_cost, created_at`. Per the `COST_TRACKED_TABLES` convention
+locked in 3a, add `judge_reasoning_audits` to `COST_TRACKED_TABLES` in
+`app/llm/cost.py`, and add a test proving `CostGuard`'s cumulative-spend
+check reflects a row inserted here.
+
 **6. Source-disabling recommendations, statistically grounded.**
 For each source still `enabled` in `signal_sources` — this now includes 3c's
 `SPOT_ETF_FLOWS`, `STABLECOIN_SUPPLY_VELOCITY_AND_EXCHANGE_RESERVES`,
@@ -206,7 +214,10 @@ reasoning-audit summary, and the go/no-go statement.
   point-in-time audit.
 - Held-out-window results reported separately from full-sample results, with
   an explicit statement on whether the sample is large enough yet.
-- Judge reasoning audit completed with an aggregate finding.
+- Judge reasoning audit completed with an aggregate finding, persisted to
+  `judge_reasoning_audits`.
+- `judge_reasoning_audits` is registered in `COST_TRACKED_TABLES`, and a
+  test confirms `CostGuard`'s cumulative-spend check includes it.
 - Source-disabling recommendations delivered with numbers attached, no
   `signal_sources` rows changed without confirmation.
 - Go/no-go statement for Phase 4 delivered, grounded in the above.
