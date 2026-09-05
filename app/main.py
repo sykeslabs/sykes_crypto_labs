@@ -10,10 +10,14 @@ from app.database.repository import (
     LLMAnalysisRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
+    ModelMarketAssessmentRepository,
     NewsRepository,
+    PromptTemplateRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
 )
+from app.llm.assessment_provider import OpenRouterAssessmentProvider
+from app.llm.assessment_service import AssessmentService
 from app.llm.cost import CostGuard, CostLedgerRepository
 from app.llm.openrouter_client import OpenRouterProvider
 from app.llm.service import LLMResearchService
@@ -57,6 +61,15 @@ def parse_args(argv=None) -> argparse.Namespace:
             "CME COT, and on-chain/DeFi collection (zero LLM cost)."
         ),
     )
+    parser.add_argument(
+        "--with-assessment",
+        action="store_true",
+        help=(
+            "Also run 3d's multi-model current market assessment over 3b's "
+            "latest TOP_CANDIDATES (requires OPENROUTER_API_KEY; a new, "
+            "parallel evidence type distinct from --with-llm's llm_analyses)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -67,8 +80,8 @@ def main() -> int:
     logger = setup_logging(run_id, settings.log_level)
 
     logger.info(
-        "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s)",
-        args.with_llm, args.with_screening, args.with_derivatives,
+        "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s, with_assessment=%s)",
+        args.with_llm, args.with_screening, args.with_derivatives, args.with_assessment,
     )
 
     try:
@@ -80,6 +93,13 @@ def main() -> int:
     if args.with_llm:
         try:
             settings.require_openrouter()
+        except RuntimeError as exc:
+            logger.error(str(exc))
+            return 1
+
+    if args.with_assessment:
+        try:
+            settings.require_assessment()
         except RuntimeError as exc:
             logger.error(str(exc))
             return 1
@@ -135,7 +155,37 @@ def main() -> int:
         derivatives_result = derivatives_service.run(run_id)
         logger.info("Derivatives/on-chain collection finished: %s", derivatives_result.summary)
 
-    exit_code = 1 if (market_result.failed or screening_failed) else 0
+    assessment_failed = False
+    if args.with_assessment:
+        api_key, assessment_models = settings.require_assessment()
+        assessment_service = AssessmentService(
+            settings=settings,
+            asset_repo=asset_repo,
+            screened_universe_repo=ScreenedUniverseRepository(client),
+            regime_repo=MarketRegimeRepository(client),
+            evidence_repo=EvidenceObservationRepository(client),
+            news_repo=NewsRepository(client),
+            asset_status_repo=AssetStatusRepository(client),
+            snapshot_repo=snapshot_repo,
+            prompt_template_repo=PromptTemplateRepository(client),
+            assessment_repo=ModelMarketAssessmentRepository(client),
+            cost_guard=CostGuard(settings, CostLedgerRepository(client)),
+            providers=[
+                OpenRouterAssessmentProvider(
+                    name=name,
+                    model=model,
+                    api_key=api_key,
+                    base_url=settings.openrouter_base_url,
+                    timeout_seconds=settings.llm_request_timeout_seconds,
+                )
+                for name, model in assessment_models.items()
+            ],
+        )
+        assessment_result = assessment_service.run(run_id)
+        logger.info("Assessment finished: %s", assessment_result.summary)
+        assessment_failed = bool(assessment_result.failed) and not assessment_result.stored_by_provider
+
+    exit_code = 1 if (market_result.failed or screening_failed or assessment_failed) else 0
 
     if not args.with_llm:
         if market_result.failed:
@@ -188,10 +238,10 @@ def main() -> int:
     llm_result = llm_service.run(run_id)
     logger.info("LLM research finished: %s", llm_result.summary)
 
-    if market_result.failed or llm_result.failed or screening_failed:
+    if market_result.failed or llm_result.failed or screening_failed or assessment_failed:
         logger.warning(
-            "Market failures: %s | LLM failures: %s | Screening failed: %s",
-            market_result.failed, llm_result.failed, screening_failed,
+            "Market failures: %s | LLM failures: %s | Screening failed: %s | Assessment failed: %s",
+            market_result.failed, llm_result.failed, screening_failed, assessment_failed,
         )
         return 1
 

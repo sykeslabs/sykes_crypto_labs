@@ -123,7 +123,10 @@ class FakeSupabaseClient:
 
 
 def test_cost_tracked_tables_registers_llm_analyses():
-    assert COST_TRACKED_TABLES == {"llm_analyses": "timestamp"}
+    # Membership, not exact-equality: later sub-phases (3d's
+    # model_market_assessments, 3e's judge_decisions, ...) legitimately add
+    # more entries to this registry over time.
+    assert COST_TRACKED_TABLES["llm_analyses"] == "timestamp"
 
 
 def test_cost_ledger_sums_current_real_config():

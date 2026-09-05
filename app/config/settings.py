@@ -78,8 +78,35 @@ class Settings(BaseSettings):
     glassnode_api_key: SecretStr | None = None
     glassnode_base_url: str = "https://api.glassnode.com"
 
+    # Multi-model current market assessment (Phase 3d, used only with
+    # --with-assessment). Optional "name:slug,name:slug,..." override; if
+    # unset, defaults to reusing Phase 2's CLAUDE_MODEL/OPENAI_MODEL/
+    # GEMINI_MODEL (get_assessment_models() below) so this stage needs zero
+    # new required config while staying independently overridable.
+    openrouter_assessment_models: str | None = None
+    assessment_prompt_version: str = "v1"
+
     # Logging
     log_level: str = "INFO"
+
+    def get_assessment_models(self) -> dict[str, str]:
+        """Returns {provider_name: model_slug} for 3d's assessment stage."""
+        if self.openrouter_assessment_models:
+            result = {}
+            for pair in self.openrouter_assessment_models.split(","):
+                name, _, slug = pair.partition(":")
+                if name.strip() and slug.strip():
+                    result[name.strip()] = slug.strip()
+            return result
+        return {
+            name: slug
+            for name, slug in (
+                ("claude", self.claude_model),
+                ("openai", self.openai_model),
+                ("gemini", self.gemini_model),
+            )
+            if slug
+        }
 
     def require_supabase(self) -> tuple[str, str]:
         """Return (url, service_role_key) or raise a clear error if missing."""
@@ -112,6 +139,21 @@ class Settings(BaseSettings):
                 "Set them in your .env file."
             )
         return self.openrouter_api_key.get_secret_value()
+
+    def require_assessment(self) -> tuple[str, dict[str, str]]:
+        """Returns (api_key, {provider_name: model_slug}) for 3d, or raises
+        if the key is missing or no assessment models are configured."""
+        if not self.openrouter_api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY must be set in your .env file to run --with-assessment."
+            )
+        models = self.get_assessment_models()
+        if not models:
+            raise RuntimeError(
+                "No assessment models configured. Set CLAUDE_MODEL/OPENAI_MODEL/GEMINI_MODEL "
+                "(reused by default) or OPENROUTER_ASSESSMENT_MODELS explicitly."
+            )
+        return self.openrouter_api_key.get_secret_value(), models
 
 
 @lru_cache

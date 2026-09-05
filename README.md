@@ -107,10 +107,20 @@ because:
     event distinct from every other inferred-from-current-data source here
     — all documented APIs (a couple may require a paid tier — a dollar
     cost, not an LLM cost), zero LLM cost
-  - **3d** — Multi-model current market assessment (separate from
-    `llm_analyses`), now with consistent regime/derivatives/on-chain context,
-    prompt-template versioning, an optional **Grok (xAI)** model in the
-    OpenRouter model set, and optional **Langfuse** call tracing
+  - ✅ **3d** (complete) — Multi-model current market assessment (separate
+    from `llm_analyses`), sharing one **market-regime snapshot** and one
+    rendered evidence context (3b screening/regime, 3c derivatives/on-chain,
+    Phase 2 news, 3a portfolio status) across every configured model per run,
+    with **prompt-template versioning**, a **model-agreement** measure
+    computed independently of any single model's confidence, and a data
+    **sanity/bad-tick check** reusing 3b's anomaly detector. Kept to
+    **Claude/OpenAI/Gemini** (Phase 2's existing three) rather than also
+    adding a fourth model this round, to isolate this stage's cost/behavior
+    change to the richer context alone — **Grok (xAI)** deferred to a later
+    phase, addable via `OPENROUTER_ASSESSMENT_MODELS` once there's a 3-model
+    baseline to compare it against. **Langfuse tracing skipped** for now
+    (optional per `PHASE3D_PROMPT.md`; most useful once there's real call
+    volume and multiple prompt versions to compare, from 3e onward)
   - **3e** — Deterministic Judge (now also weighing 3b's non-LLM
     `composite_factor_score` as a distinct input alongside model/adversarial
     evidence), Risk Engine (volatility/correlation-aware sizing, now also
@@ -1276,6 +1286,101 @@ leaving it unexamined.
   reserve-tracking product needs a curated, maintained set of known
   exchange wallet addresses per asset, which is its own research effort
   beyond what a free/cheap tier reasonably supports right now.
+
+## Phase 3d — Multi-model current market assessment (`--with-assessment`)
+
+`python -m app.main --with-assessment` runs, on top of the latest
+`--with-screening` run's `TOP_CANDIDATES` (requires at least one prior
+screening run; warns and does nothing if none exists — no silent fallback to
+a stale or arbitrary universe):
+
+1. **One shared context per run** (`app/llm/assessment_context.py`) — every
+   candidate's prompt carries the **same** `market_regime_snapshots` row (3b),
+   so models reason from one consistent regime label rather than each
+   inferring their own. Per-asset context adds: current price/volume/change
+   (Phase 1), the deterministic `composite_factor_score` and any screening
+   anomaly flag (3b), every derivatives/on-chain observation on record for
+   that asset (3c), recent relevant news (Phase 2), and current portfolio
+   status (3a).
+2. **Sanity/bad-tick check** (task 6) — before context is built, each asset's
+   recent stored snapshots are run through 3b's existing `detect_anomaly()`
+   (reused, not reimplemented); a flagged asset gets an explicit "possible bad
+   tick, treat with caution" warning injected into its prompt rather than
+   being silently excluded or handed to the model uncaveated. Covered by
+   dedicated unit tests (a synthetic price-spike case, an ordinary-data case,
+   and an insufficient-history case) since real live data is not guaranteed
+   to contain a bad tick on any given run.
+3. **Three independent models via OpenRouter** (`app/llm/assessment_provider.py`)
+   — Claude, OpenAI, and Gemini (Phase 2's existing three; see decisions
+   below), one batched call per provider covering every candidate in the run,
+   validated against a strict Pydantic schema
+   (`app/llm/assessment_schemas.py`) with the same retry-once-on-invalid-JSON
+   pattern as Phase 2. One provider failing never blocks the others.
+4. **Model agreement** (`app/llm/assessment_agreement.py`) — the fraction of
+   models agreeing with the majority `overall_assessment` direction, computed
+   once per asset per run across all configured models, then denormalized
+   onto every model's row for that asset/run. Verified live to be genuinely
+   distinct from — and not derived from — any individual model's confidence:
+   in the run below, BTC/BNB/SOL/HYPE/LINK/NEAR/XRP show `model_agreement=1.0`
+   (unanimous), while ZEC/XMR/UNI show `model_agreement=0.667` (2-of-3 split),
+   with each model's own confidence values still varying independently
+   underneath (e.g. BTC's three models returned short-term confidence 0.5,
+   0.6, and 0.62 despite unanimous agreement).
+5. **Prompt-template versioning** (`app/database/repository.py`'s
+   `PromptTemplateRepository`, `prompt_templates` table from 3a) — the
+   rendered system prompt's hash and version are inserted (or reused, keyed
+   on name+stage+version+hash) once per run, and every
+   `model_market_assessments` row stores that row's id, not a copy of the
+   prompt text.
+6. **New table** `model_market_assessments` (migration `0006`) — one row per
+   (run, asset, provider): short/medium/long-term direction + confidence,
+   expected return at 7d/30d/90d, risk score/level, the shared market regime,
+   model agreement, thesis, key drivers/risks, per-source assessment,
+   invalidation conditions, and the raw response — **this asset's own slice**
+   of the batch response, not the full multi-asset payload (same
+   cost-hygiene fix applied to Phase 2's `LLMResearchService`).
+
+**Live-verified** (queried Supabase directly, not just a passing test —
+per the standing lesson from 3c that a clean-looking report can still hide a
+real gap): a combined `--with-screening --with-derivatives --with-assessment`
+run against the 10 real `TOP_CANDIDATES` of that run produced exactly 30
+`model_market_assessments` rows (10 assets × 3 models), one shared
+`prompt_templates` row referenced by every one of them, one shared
+`market_regime` (`RISK_ON`) and `data_cutoff_timestamp` across all three
+providers per asset, and the model-agreement split described above. Total
+cost for that run: **$0.4115** (claude $0.1313, openai $0.1292, gemini
+$0.1510) — confirmed via `CostGuard`'s cumulative-spend sum, which correctly
+included both `llm_analyses` and `model_market_assessments` in the same 24h
+window ($0.7207 combined that day). At 10 `TOP_CANDIDATES` and 3 models, this
+stage costs ~$0.41/run regardless of candidate count changes within reason
+(one batched call per provider, not per asset) — comfortably inside
+`MAX_DAILY_LLM_COST=5.00` even at several runs/day; no schedule/cadence is
+built yet (each `python -m app.main` invocation is a manual/on-demand run).
+
+**Known limitations / decisions:**
+- **Grok (xAI) deferred, not built.** `PHASE3D_PROMPT.md` offered it as an
+  optional fourth model; the explicit choice here was to keep this
+  sub-phase's change isolated to the richer context (regime + 3c evidence +
+  sanity check) rather than also changing the model set, so any behavior
+  shift this round has one cause, not two confounded ones. Addable later via
+  `OPENROUTER_ASSESSMENT_MODELS=claude:...,openai:...,gemini:...,grok:...`
+  with zero code changes, once Claude/OpenAI/Gemini have a baseline to
+  compare a fourth model against.
+- **Langfuse tracing skipped.** Optional per the prompt; most valuable once
+  there's real call volume and multiple prompt versions to A/B, which starts
+  mattering from 3e's decision-outcome ledger onward, not now.
+- **A parallel `OpenRouterAssessmentProvider`/`AssessmentProviderResult`
+  class, not a generalized Phase 2 `OpenRouterProvider`.** Phase 2's provider
+  is hardcoded to validate `AnalysisBatch`; generalizing it to also handle
+  `AssessmentBatch` would mean changing an already-shipped, live-verified
+  class's signature across every existing call site and test. Duplicating
+  the retry/content-extraction/token-summing logic costs some repetition but
+  carries zero regression risk to Phase 2 — a deliberate trade-off, not an
+  oversight.
+- **Assessment target is exactly 3b's latest `TOP_CANDIDATES`, nothing wider
+  or narrower.** No silent fallback: if `--with-screening` has never been
+  run, `--with-assessment` logs a warning and does nothing, rather than
+  guessing a universe.
 
 ## Project layout
 

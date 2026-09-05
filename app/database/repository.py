@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from supabase import Client
 
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
+from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.schemas import MarketSnapshot
@@ -96,6 +97,21 @@ class MarketSnapshotRepository:
         if not response.data:
             return None
         return MarketSnapshot.model_validate(response.data[0])
+
+    def get_recent_snapshots(self, asset_id: str, limit: int = 10) -> list[MarketSnapshot]:
+        """Most recent snapshots for an asset, newest first — used by 3d's
+        pre-context sanity check (a bad-tick outlier check against the
+        asset's own recent readings, same z-score/pct-jump idea as 3b's
+        anomaly flag, applied here to Phase 1's own stored history)."""
+        response = (
+            self._client.table("market_snapshots")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [MarketSnapshot.model_validate(row) for row in response.data]
 
     def insert_snapshot(self, snapshot: MarketSnapshot) -> None:
         self._client.table("market_snapshots").insert(snapshot.to_row()).execute()
@@ -245,6 +261,44 @@ class ScreenedUniverseRepository:
             return None
         return float(response.data[0]["volatility_30d"])
 
+    def get_latest_for_symbol(self, symbol: str) -> ScreenedAsset | None:
+        response = (
+            self._client.table("screened_universe")
+            .select("*")
+            .eq("symbol", symbol)
+            .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return ScreenedAsset.model_validate(response.data[0])
+
+    def get_latest_top_candidates(self) -> list[ScreenedAsset]:
+        """All TOP_CANDIDATE rows from the most recent screening run that
+        had any — used by 3d as the assessment target list. Empty if
+        `--with-screening` has never been run."""
+        latest = (
+            self._client.table("screened_universe")
+            .select("run_id, computed_at")
+            .eq("is_top_candidate", True)
+            .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not latest.data:
+            return []
+
+        run_id = latest.data[0]["run_id"]
+        response = (
+            self._client.table("screened_universe")
+            .select("*")
+            .eq("run_id", run_id)
+            .eq("is_top_candidate", True)
+            .execute()
+        )
+        return [ScreenedAsset.model_validate(row) for row in response.data]
+
 
 class MarketRegimeRepository:
     """Persists/reads `market_regime_snapshots` — the one regime label per
@@ -304,3 +358,71 @@ class EvidenceObservationRepository:
         if not response.data:
             return None
         return EvidenceObservation.model_validate(response.data[0])
+
+    def get_latest_by_asset(self, asset_id: str, limit: int = 50) -> list[EvidenceObservation]:
+        """Recent observations for one asset across every 3c/3f source —
+        callers dedupe by `source` (first/latest occurrence wins) when
+        building a per-asset context."""
+        response = (
+            self._client.table("evidence_observations")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("retrieval_timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [EvidenceObservation.model_validate(row) for row in response.data]
+
+    def get_latest_global(self, source: str, limit: int = 10) -> list[EvidenceObservation]:
+        """Recent GLOBAL_CRYPTO/MACRO-scope observations (asset_id is null)
+        for one source, e.g. `defillama_stablecoin_supply`."""
+        response = (
+            self._client.table("evidence_observations")
+            .select("*")
+            .is_("asset_id", "null")
+            .eq("source", source)
+            .order("retrieval_timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [EvidenceObservation.model_validate(row) for row in response.data]
+
+
+class PromptTemplateRepository:
+    """Reads/writes `prompt_templates` (3a schema, populated starting 3d)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def get_or_create(self, name: str, stage: str, version: str, template_hash: str) -> str:
+        """Returns the id of the (name, stage, version) template, inserting
+        it if this exact version hasn't been recorded yet."""
+        existing = (
+            self._client.table("prompt_templates")
+            .select("id")
+            .eq("name", name)
+            .eq("stage", stage)
+            .eq("version", version)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            return existing.data[0]["id"]
+
+        inserted = (
+            self._client.table("prompt_templates")
+            .insert({"name": name, "stage": stage, "version": version, "template_hash": template_hash})
+            .execute()
+        )
+        return inserted.data[0]["id"]
+
+
+class ModelMarketAssessmentRepository:
+    """Persists `model_market_assessments` (3d) — a new, parallel evidence
+    type, distinct from Phase 2's `llm_analyses`."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: ModelMarketAssessmentRecord) -> None:
+        self._client.table("model_market_assessments").insert(record.to_row()).execute()
