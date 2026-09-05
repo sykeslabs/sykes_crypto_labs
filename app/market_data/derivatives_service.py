@@ -170,9 +170,36 @@ class DerivativesService:
             "Etherscan": etherscan_status,
             "ON_CHAIN_VALUATION_METRICS": glassnode_status,
             "ON_CHAIN_MINER_METRICS": glassnode_status,
+            # Investigated this sub-phase and confirmed genuinely inaccessible
+            # (see README "Phase 3c" section) — reaffirmed here, not just left
+            # as whatever 3a originally seeded, so `last_checked_at`/`notes`
+            # actually reflect this sub-phase's real findings.
+            "SPOT_ETF_FLOWS": "NOT_IMPLEMENTED",
+            "TOKEN_UNLOCK_SCHEDULE": "NOT_IMPLEMENTED",
+            "PREDICTION_MARKETS": "NOT_IMPLEMENTED",
+        }
+        source_notes = {
+            "SPOT_ETF_FLOWS": (
+                "Investigated in 3c: Farside has no real API (Cloudflare-"
+                "protected webpage only); SoSoValue's API requires an "
+                "authenticated login not available here. Revisit if SoSoValue "
+                "API access is obtained."
+            ),
+            "TOKEN_UNLOCK_SCHEDULE": (
+                "Investigated in 3c: Messari requires an API key not available "
+                "here (and its tier's unlock-data coverage is unconfirmed); "
+                "TokenUnlocks.app has no discoverable public API. Revisit if a "
+                "Messari key is obtained."
+            ),
+            "PREDICTION_MARKETS": (
+                "Investigated in 3c: both Polymarket and Kalshi failed DNS "
+                "resolution from this development sandbox specifically "
+                "(confirmed general connectivity was fine). Revisit from an "
+                "environment that can reach them."
+            ),
         }
         for name, status in result.source_status.items():
-            self._signal_source_repo.update_status(name, status)
+            self._signal_source_repo.update_status(name, status, notes=source_notes.get(name))
 
         logger.info("Derivatives/on-chain collection complete: %s", result.summary)
         return result

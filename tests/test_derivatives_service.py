@@ -40,9 +40,12 @@ class FakeScreenedUniverseRepo:
 class FakeSignalSourceRepo:
     def __init__(self):
         self.statuses = {}
+        self.notes = {}
 
     def update_status(self, name, status, notes=None):
         self.statuses[name] = status
+        if notes is not None:
+            self.notes[name] = notes
 
 
 class FakeBinanceClient:
@@ -359,3 +362,25 @@ def test_empty_asset_list_does_not_crash():
     result = service.run("RUN-1")
     assert result.funding_rate_assets == []
     assert result.deep_derivatives_assets == []
+
+
+def test_all_five_dead_end_sources_reaffirmed_not_just_glassnode_gated_ones():
+    # ON_CHAIN_VALUATION_METRICS/ON_CHAIN_MINER_METRICS come from the
+    # Glassnode gate; SPOT_ETF_FLOWS/TOKEN_UNLOCK_SCHEDULE/PREDICTION_MARKETS
+    # were investigated in 3c with no code path at all (no client to gate on)
+    # — this proves they're still actively reaffirmed every run, with an
+    # explanatory note, not just silently left at whatever 3a originally
+    # seeded.
+    assets = [_asset("BTC")]
+    signal_repo = FakeSignalSourceRepo()
+    service = _make_service(assets, signal_repo=signal_repo)
+
+    service.run("RUN-1")
+
+    for name in ("ON_CHAIN_VALUATION_METRICS", "ON_CHAIN_MINER_METRICS",
+                 "SPOT_ETF_FLOWS", "TOKEN_UNLOCK_SCHEDULE", "PREDICTION_MARKETS"):
+        assert signal_repo.statuses[name] == "NOT_IMPLEMENTED", name
+
+    for name in ("SPOT_ETF_FLOWS", "TOKEN_UNLOCK_SCHEDULE", "PREDICTION_MARKETS"):
+        assert name in signal_repo.notes, name
+        assert len(signal_repo.notes[name]) > 20
