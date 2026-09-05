@@ -1,9 +1,8 @@
-from datetime import datetime
-from decimal import Decimal
+from datetime import UTC, datetime
 
 from supabase import Client
 
-from app.database.models import Asset
+from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.schemas import MarketSnapshot
 from app.news.schemas import NewsArticle
@@ -120,11 +119,52 @@ class LLMAnalysisRepository:
     def insert_analysis(self, record: LLMAnalysisRecord) -> None:
         self._client.table("llm_analyses").insert(record.to_row()).execute()
 
-    def get_cost_sum_since(self, since: datetime) -> Decimal:
+
+class AssetStatusRepository:
+    """Reads/writes `asset_status_history` — an append-only record of
+    HELD/WATCHLIST/CANDIDATE/REJECTED transitions. `assets.active`/
+    `assets.in_asset` are separate and untouched by this."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def get_latest_status(self, asset_id: str) -> AssetStatusHistory | None:
         response = (
-            self._client.table("llm_analyses")
-            .select("estimated_cost")
-            .gte("timestamp", since.isoformat())
+            self._client.table("asset_status_history")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("changed_at", desc=True)
+            .limit(1)
             .execute()
         )
-        return sum((Decimal(str(row["estimated_cost"])) for row in response.data), Decimal("0"))
+        if not response.data:
+            return None
+        return AssetStatusHistory.model_validate(response.data[0])
+
+    def record_status_change(
+        self, asset_id: str, status: AssetStatusValue, reason: str | None = None
+    ) -> None:
+        entry = AssetStatusHistory(
+            asset_id=asset_id, status=status, reason=reason, changed_at=datetime.now(UTC)
+        )
+        self._client.table("asset_status_history").insert(entry.to_row()).execute()
+
+
+class SignalSourceRepository:
+    """Reads the `signal_sources` registry — which evidence sources exist,
+    whether they're enabled, and their current status."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def get_all(self) -> list[SignalSource]:
+        response = self._client.table("signal_sources").select("*").execute()
+        return [SignalSource.model_validate(row) for row in response.data]
+
+    def get(self, name: str) -> SignalSource | None:
+        response = (
+            self._client.table("signal_sources").select("*").eq("name", name).limit(1).execute()
+        )
+        if not response.data:
+            return None
+        return SignalSource.model_validate(response.data[0])

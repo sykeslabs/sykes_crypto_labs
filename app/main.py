@@ -9,7 +9,7 @@ from app.database.repository import (
     MarketSnapshotRepository,
     NewsRepository,
 )
-from app.llm.cost import CostGuard
+from app.llm.cost import CostGuard, CostLedgerRepository
 from app.llm.openrouter_client import OpenRouterProvider
 from app.llm.service import LLMResearchService
 from app.logging_config import new_run_id, setup_logging
@@ -112,7 +112,7 @@ def main() -> int:
         snapshot_repo=snapshot_repo,
         news_repo=news_repo,
         llm_repo=llm_repo,
-        cost_guard=CostGuard(settings, llm_repo),
+        cost_guard=CostGuard(settings, CostLedgerRepository(client)),
         providers=providers,
     )
     llm_result = llm_service.run(run_id)

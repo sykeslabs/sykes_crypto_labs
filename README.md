@@ -64,7 +64,7 @@ because:
   `PHASE3A_PROMPT.md` through `PHASE3I_PROMPT.md`, one per sub-phase, plus
   the optional, gated `PHASE3J_PROMPT.md` and `PHASE3K_PROMPT.md` addenda),
   split into verified sub-phases:
-  - **3a** — Candidate/universe status schema, evidence provenance + numeric
+  - ✅ **3a** (complete) — Candidate/universe status schema, evidence provenance + numeric
     freshness-decay convention (now with an explicit **point-in-time
     integrity** rule — revisable evidence fields are append-only, with an
     `is_revision_of` chain and a documented "value as known at time T"
@@ -876,15 +876,17 @@ deliberately *not* adopted — doesn't get lost as the project grows.
      the existing on-chain explorer. Leave unset to have `CUSTODY_OTC_FLOW`
      recorded as `NOT_IMPLEMENTED`.
 
-3. Apply the database schema — both migrations, in order. Either:
+3. Apply the database schema — all three migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
      `migrations/0001_init.sql`, run it, then do the same for
-     `migrations/0002_llm_and_news.sql`. Both are idempotent — safe to re-run
-     any time they change.
+     `migrations/0002_llm_and_news.sql`, then
+     `migrations/0003_phase3a_universe_provenance.sql`. All are idempotent —
+     safe to re-run any time they change.
    - Or, with `DATABASE_URL` set:
      ```
      python scripts/apply_migration.py migrations/0001_init.sql
      python scripts/apply_migration.py migrations/0002_llm_and_news.sql
+     python scripts/apply_migration.py migrations/0003_phase3a_universe_provenance.sql
      ```
 
 4. Run the collector:
@@ -979,12 +981,16 @@ collection:
    and persists one row per (provider, asset) to `llm_analyses`. One provider
    failing never blocks the other two.
 
-**Cost control**: `CostGuard` checks cumulative spend (summed from
-`llm_analyses.estimated_cost`) against `MAX_DAILY_LLM_COST` /
-`MAX_MONTHLY_LLM_COST` before every provider call, skipping (not crashing)
-once a cap is hit. The pricing table in `app/llm/cost.py` is a point-in-time
-snapshot of OpenRouter pricing — re-check https://openrouter.ai/models
-periodically, especially after changing `CLAUDE_MODEL`/`OPENAI_MODEL`/`GEMINI_MODEL`.
+**Cost control**: `CostGuard` checks cumulative spend against
+`MAX_DAILY_LLM_COST`/`MAX_MONTHLY_LLM_COST` before every provider call,
+skipping (not crashing) once a cap is hit. As of Phase 3a, the sum is computed
+by `CostLedgerRepository` across every table registered in
+`COST_TRACKED_TABLES` (`app/llm/cost.py`) — today just `llm_analyses`, but any
+future sub-phase adding a new LLM-call-persisting table (3d, 3e, 3f, 3g)
+registers it there rather than CostGuard silently missing that spend. The
+pricing table in `app/llm/cost.py` is a point-in-time snapshot of OpenRouter
+pricing — re-check https://openrouter.ai/models periodically, especially
+after changing `CLAUDE_MODEL`/`OPENAI_MODEL`/`GEMINI_MODEL`.
 
 **Known limitations** (accepted tradeoffs, not bugs):
 - `sentiment` on `news` rows is always `NULL` — computing it reliably needs
@@ -1001,16 +1007,82 @@ periodically, especially after changing `CLAUDE_MODEL`/`OPENAI_MODEL`/`GEMINI_MO
 `run_id` is time-based to the second (`RUN-YYYYMMDD-HHMMSS`), generated fresh
 per process — each `python -m app.main` invocation gets its own unique id.
 
+## Phase 3a — Universe/candidate schema, evidence provenance, registries
+
+`migrations/0003_phase3a_universe_provenance.sql` adds, empty and ready for
+later sub-phases (no new external API calls, no new LLM calls, no behavior
+change to any Phase 1/2 code path):
+
+- **`asset_status_history`** — an append-only record of `HELD`/`WATCHLIST`/
+  `CANDIDATE`/`REJECTED` transitions per asset, independent of
+  `assets.active`/`assets.in_asset`. Seeded from the current `in_asset` flag
+  (`true` → `HELD`, `false` → `WATCHLIST`) so it isn't empty for existing
+  assets. Read/write via `AssetStatusRepository`
+  (`app/database/repository.py`).
+- **`signal_sources`** — a registry of every evidence source in the Phase 3
+  vision (`app/database/models.py`'s `SignalSource`, read via
+  `SignalSourceRepository`). CoinGecko and News are seeded `OK` (already
+  implemented); everything else — CoinMarketCap, Coinbase, Binance, Deribit,
+  Etherscan, DefiLlama, CoinAnk, CoinGlass, CryptoBubbles, PlanB, Macro, and
+  the longer list of 3c/3f/3i-specific sources — is seeded `NOT_IMPLEMENTED`.
+- **`market_regime_snapshots`**, **`judge_decisions`**, **`decision_outcomes`**,
+  **`prompt_templates`**, **`calibration_runs`** — schema only, populated
+  starting in 3b (regime snapshots), 3d (prompt templates), and 3e (Judge
+  decisions, decision outcomes, calibration runs).
+- **Evidence provenance convention** (`app/database/evidence_provenance.py`):
+  the shared column shape (`source`, `scope`, three timestamps, `timeframe`,
+  `freshness` + numeric `decay_half_life_hours`, `status`, `payload`) every
+  future evidence-source table composes, plus `is_revision_of` for
+  point-in-time integrity — a correction is a new linked row, never an
+  `UPDATE` overwriting what was originally retrieved — and a
+  `latest_value_as_of()` helper implementing the "value as known at time T"
+  query convention so 3b/3c/3f don't each invent their own.
+- **`DecisionValue`** (`app/judge/decisions.py`): `BUY`/`HOLD`/`SELL`/`WATCH`/
+  `NO_TRADE` as a forward-looking placeholder for 3e's Judge — no
+  decision-making logic yet. Deliberately separate from Phase 2's live
+  `Action` type (`app/llm/schemas.py`, `BUY`/`HOLD`/`SELL` only), which stays
+  untouched. `judge_decisions.decision` enforces this same vocabulary at the
+  database level via a `CHECK` constraint.
+- **`COST_TRACKED_TABLES`** (`app/llm/cost.py`): the CostGuard-extension
+  registry — every LLM-call-persisting table gets an `estimated_cost` column
+  and an entry here (table name → its timestamp column, since they aren't
+  all named the same — `llm_analyses.timestamp` vs. `judge_decisions.created_at`).
+  `CostLedgerRepository` sums across every registered table; `CostGuard`
+  itself is unchanged (still just calls `.get_cost_sum_since(...)` on
+  whatever it's given), so this was a zero-behavior-change refactor verified
+  by the full pre-existing Phase 2 test suite passing unmodified.
+
+**Known limitations / decisions** (locked before implementation — see
+`PHASE3_LOCKED_DECISIONS.md` for the full reasoning):
+- **History table over a status column** — chosen so status transitions
+  stay auditable once 3b's candidate discovery starts moving assets between
+  states; cheap to add now, expensive to retrofit once 3b–3g are writing
+  against a fixed schema.
+- **`judge_decisions` named now, in 3a** — `decision_outcomes.decision_id`
+  needed a real FK target; without this, 3e would have had to invent (and
+  migrate for) the table mid-implementation.
+- **Initial `decay_half_life_hours` values** are starting estimates, not
+  measured: `coingecko_price` ≈ 2h, `news` ≈ 18h, `macro` ≈ 720h (~30 days,
+  "until superseded"). Refine per-source as 3b/3c/3f actually build against
+  real data behavior.
+- **`market_regime_snapshots.regime` and `calibration_runs.method`** are left
+  as free text, not `CHECK`-constrained enums — 3b/3g define the actual
+  label/method sets and may need to refine them without another migration.
+- **Smart-contract/scam-safety screening** (honeypot/rug-pull checks on
+  newly-discovered 3b candidates) was identified as a real gap against
+  professional screening practice but deliberately deferred to an explicit
+  in-scope/deferred decision when 3b starts — it doesn't touch 3a's schema.
+
 ## Project layout
 
 ```
 app/
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, and Phase 3 tables)
+  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
   market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with ETF-flow/prediction-market/stablecoin-velocity/CME-COT/miner-metrics providers and the derived volatility-risk-premium/annualized-carry-yield fields; extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
   news/          RSS collection, relevance matching, dedup (Phase 2)
-  llm/           OpenRouter integration, structured output, cost guard (Phase 2); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
-  judge/         Phase 3e — deterministic decision synthesis, persisted to `judge_decisions` (schema reserved in 3a); input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
+  llm/           OpenRouter integration, structured output, cost guard (Phase 2); cost.py extended in 3a with COST_TRACKED_TABLES/CostLedgerRepository (multi-table cost summing, zero behavior change); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
+  judge/         decisions.py — DecisionValue placeholder (BUY/HOLD/SELL/WATCH/NO_TRADE), 3a; Phase 3e — deterministic decision synthesis, persisted to `judge_decisions` (schema reserved in 3a); input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
   portfolio/     Phase 3e — portfolio construction
   risk/          Phase 3e — deterministic risk engine, incl. uncertainty-aware position scaling; extended in 3h with a
                  deterministic portfolio tail-risk stress test
