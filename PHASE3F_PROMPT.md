@@ -51,7 +51,13 @@ PlanB/X — before writing provider code:**
   available.
 - PlanB / X (@100trillionUSD): determine what's actually extractable
   programmatically from X; treat as an external analyst opinion, never
-  objective market data.
+  objective market data. **Use xAI's API (Grok has native access to X/Twitter
+  search) as the primary access mechanism** rather than unofficial scraping
+  of X directly — verify what it actually returns for a specific account's
+  recent post history, real rate limits, and real pricing before committing
+  to it, the same as any other source in this feasibility check. If xAI's
+  API doesn't reliably return what's needed for this specific account, fall
+  back to `status = UNAVAILABLE` rather than approximating.
 
 For each: if reliable access exists, build a provider following the 3a
 evidence-provenance shape. If not, implement the provider abstraction

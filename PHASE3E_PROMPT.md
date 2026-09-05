@@ -22,6 +22,17 @@ before starting 3f.
 
 - PAPER ONLY. No leverage, no shorts, no live orders — Risk Engine enforces
   this regardless of what the Judge outputs.
+- Judge, Risk Engine, and Portfolio Construction remain a deterministic
+  pipeline of structured LLM/rule-based steps — not an agent framework.
+  Agentic tooling (planned for Phase 6's exchange execution layer, where
+  bounded interaction with a live/testnet exchange API genuinely benefits
+  from an agent loop) is out of scope here; keep this stage's LLM calls to
+  single structured request/response, same pattern as Phase 2/3d.
+- Keep Judge/Risk/Portfolio output as plain, serializable structures (the
+  JSON shapes below, and whatever Portfolio Construction emits) — no design
+  requirement to build an API now, but Phase 5's FastAPI dashboard will read
+  directly from these tables/shapes later, so avoid anything that would need
+  reshaping just to be queryable.
 - Judge confidence must be explicitly decoupled from model consensus. A model
   disagreement of 0.58 and a Judge confidence of 0.52 existing simultaneously
   is a valid, unremarkable output — never derive Judge confidence as an

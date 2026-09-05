@@ -10,11 +10,16 @@ market screening across an open universe (not a fixed coin list), multi-source
 evidence collection (exchange-native market data, derivatives positioning,
 options skew, on-chain/DeFi flows, liquidations, news, macro, independent
 analysts), a deterministic market-regime classification, multi-model
-independent assessment, adversarial (bull/bear) research, and a deterministic
-Judge + Risk Engine that turns all of this into paper-only recommendations —
-sized with volatility/correlation awareness, tracked against realized outcomes
-over time, and including the ability to say "no trade" when evidence is weak
-or contradictory.
+independent assessment (including, optionally, xAI's Grok alongside Claude/
+GPT/Gemini), adversarial (bull/bear) research, and a deterministic Judge +
+Risk Engine that turns all of this into paper-only recommendations — sized
+with volatility/correlation awareness, traced and versioned via optional
+Langfuse instrumentation, tracked against realized outcomes over time, and
+including the ability to say "no trade" when evidence is weak or
+contradictory. Further out, a read/query API (FastAPI) exposes this to a
+dashboard, and — only once the recommendation pipeline is proven out — a
+bounded, tool-restricted execution agent handles actual order placement on a
+testnet exchange.
 
 This is a deliberate, large expansion beyond the original Phase 1/2 scope. It
 is being built **in verified sub-phases**, not as one monolithic phase,
@@ -26,9 +31,11 @@ because:
   stay bounded by `CostGuard` at every step, not just at the end,
 - a system that gives financial-style recommendations needs its accuracy to
   be *measurable and continuously tracked* (calibration against realized
-  outcomes) from the start, not bolted on at the very end.
-
-## Status
+  outcomes) from the start, not bolted on at the very end,
+- the recommendation pipeline (Judge/Risk/Portfolio) is deliberately kept
+  deterministic and non-agentic; agentic behavior is reserved for a later,
+  clearly scoped execution layer where it's actually needed, not introduced
+  wherever a task involves an LLM.
 
 - ✅ **Phase 1 — Foundation**: project structure, configuration, Supabase schema
   (`assets`, `market_snapshots`), CoinGecko market-data collector. Complete and
@@ -52,20 +59,28 @@ because:
     **Etherscan/DefiLlama** on-chain & DeFi TVL flows — all documented APIs,
     zero LLM cost
   - **3d** — Multi-model current market assessment (separate from
-    `llm_analyses`), now with consistent regime/derivatives/on-chain context
-    and prompt-template versioning
+    `llm_analyses`), now with consistent regime/derivatives/on-chain context,
+    prompt-template versioning, an optional **Grok (xAI)** model in the
+    OpenRouter model set, and optional **Langfuse** call tracing
   - **3e** — Deterministic Judge, Risk Engine (volatility/correlation-aware
     sizing), Portfolio Construction, and a **continuous decision-outcome
     ledger** for ongoing calibration (plus a baseline backtest against
     existing Phase 1/2 data)
   - **3f** — Adversarial bull/bear research, scenario modeling, macro matrix,
     and the remaining exploratory/fragile sources (CoinAnk, CoinGlass
-    liquidation heatmap, CryptoBubbles, PlanB/X) — each gated on a real
+    liquidation heatmap, CryptoBubbles, PlanB/X — the latter accessed via
+    **xAI's API**, which has native X/Twitter search) — each gated on a real
     access-feasibility check; re-run calibration afterward to check whether
     they actually improved accuracy
 - ⬜ Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
-- ⬜ Phase 5 — Dashboard, scheduling
-- ⬜ Phase 6 — Exchange integration (testnet only)
+- ⬜ Phase 5 — Dashboard, scheduling, and a **FastAPI** read/query layer over
+  the Evidence Store (candidates, assessments, Judge decisions, portfolio
+  state, cost reports)
+- ⬜ Phase 6 — Exchange integration (testnet only): a bounded **execution
+  agent** (LangChain/LangGraph) that turns Portfolio Construction's approved
+  target changes into actual (testnet) orders — the only agentic component
+  in the system, scoped to an explicit, allow-listed toolset, with Risk
+  Engine constraints re-checked at execution time
 
 Each sub-phase is implemented, verified against the live Supabase project, and
 reviewed before the next begins — same methodology as Phase 1 and 2 (see
@@ -73,6 +88,157 @@ reviewed before the next begins — same methodology as Phase 1 and 2 (see
 credentials at every step; any source that turns out to have no reliable
 programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
 `signal_sources` rather than silently skipped or faked.
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          EXTERNAL DATA SOURCES                            │
+│  CoinGecko · CoinMarketCap · Coinbase · Binance · Deribit · Etherscan ·    │
+│  DefiLlama · RSS News · Macro data · CoinAnk* · CoinGlass* ·               │
+│  CryptoBubbles* · X/PlanB via xAI*        (* fragile/unofficial, built 3f) │
+└───────────────────────────────────┬───────────────────────────────────────┘
+                                     ▼
+                     ┌───────────────────────────────────┐
+                     │     PROVIDER / INGESTION LAYER      │
+                     │  app/market_data, app/news, and      │
+                     │  future per-source provider modules  │
+                     │  - normalizes each source             │
+                     │  - tags provenance + freshness decay  │
+                     │  - never fabricates missing data       │
+                     └───────────────────┬───────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │        EVIDENCE STORE (Supabase/Postgres)│
+                     │ assets · market_snapshots · news ·         │
+                     │ signal_sources · model_market_assessments ·│
+                     │ market_regime_snapshots · decision_outcomes·│
+                     │ prompt_templates · llm_analyses             │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │  SCREENING & REGIME CLASSIFICATION (3b)  │
+                     │  deterministic factors, zero LLM cost      │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   MULTI-MODEL ASSESSMENT (3d)              │
+                     │   Claude / GPT / Gemini / Grok (optional)  │
+                     │   via OpenRouter, gated by CostGuard         │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   ADVERSARIAL RESEARCH (3f)                 │
+                     │   Bull · Bear · Scenario · Macro matrix     │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   JUDGE (3e) — synthesizes all evidence     │
+                     │   into one decision, deterministic logic    │
+                     │   wrapping a single structured LLM call     │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   RISK ENGINE (3e)                          │
+                     │   deterministic, hard-coded constraints,    │
+                     │   no AI can override                        │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   PORTFOLIO CONSTRUCTION (3e)                │
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                     ┌───────────────────────────────────────┐
+                     │   DECISION-OUTCOME LEDGER (3e / 3f)          │
+                     │   backfills realized returns; results feed   │
+                     │   back into evaluating sources/prompts/models│
+                     └───────────────────┬───────────────────────┘
+                                          ▼
+                  ┌──────────────────────────────────────────────┐
+                  │   PAPER TRADING EXECUTION (Phase 4)              │
+                  └───────────────────┬──────────────────────────┘
+                                       ▼
+                  ┌──────────────────────────────────────────────┐
+                  │   EXCHANGE EXECUTION AGENT (Phase 6, testnet)    │
+                  │   LangChain/LangGraph agent, bounded tool-use    │
+                  └──────────────────────────────────────────────┘
+
+  Cross-cutting, applied to every LLM call from "Multi-Model Assessment"
+  downward through "Adversarial Research" and the Judge:
+    - CostGuard          — enforces MAX_DAILY_LLM_COST / MAX_MONTHLY_LLM_COST
+    - Langfuse (optional)— traces prompt/response/cost/latency per call,
+                            versioned against prompt_templates
+
+  Cross-cutting, reads from the Evidence Store (does not write decisions):
+    - FastAPI + Dashboard (Phase 5) — read/query API and UI over everything
+      the pipeline has produced
+```
+
+### Component purposes
+
+| Component | Introduced | Purpose |
+|---|---|---|
+| **Provider/ingestion layer** (`app/market_data`, `app/news`, future per-source modules) | Phase 1–3c | Talks to each external API/feed, normalizes its response into the shared evidence-provenance shape, and tags freshness/status — the only layer allowed to touch a raw external API. |
+| **Evidence Store** (Supabase/Postgres) | Phase 1 | Single source of truth for every observation, model output, and decision. Relational, so backtesting and the decision-outcome ledger can join across tables by asset/time; JSONB columns give document-like flexibility for nested, source-specific fields without needing a second database. |
+| **Screening & regime classification** (3b) | 3b | Deterministic, no-LLM factor computation that ranks/filters the open asset universe into candidates, and classifies one shared market regime per run so every downstream stage sees the same label instead of inferring its own. |
+| **Multi-model assessment** (`app/llm`, 3d) | Phase 2 / 3d | Sends each candidate's evidence to multiple independent LLMs (Claude, GPT, Gemini, optionally Grok) via OpenRouter, validates strict JSON output, and persists each model's standalone view plus a computed `model_agreement` — evidence, not a decision. |
+| **Adversarial research** (3f) | 3f | Generates an explicitly opposing bull case and bear case per serious candidate, plus scenario modeling and a macro evidence matrix — additional evidence layers for the Judge, not decisions themselves. |
+| **Judge** (`app/judge`, 3e) | 3e | Synthesizes every evidence layer above into one structured recommendation per asset, with confidence explicitly decoupled from model/source agreement, and a `NO_TRADE` outcome always available. |
+| **Risk Engine** (`app/risk`, 3e) | 3e | Deterministic, non-negotiable position-sizing and exposure limits (volatility-adjusted sizing, correlation-concentration checks, hard caps) that the Judge's output cannot override. |
+| **Portfolio Construction** (`app/portfolio`, 3e) | 3e | Turns Risk-Engine-adjusted Judge output plus current holdings/watchlist into concrete increase/hold/reduce/remove/initiate decisions, never forcing full capital deployment. |
+| **Decision-outcome ledger** (3e/3f) | 3e | Records every decision with a resolution horizon and backfills realized returns, giving the system a continuously-updated, ground-truth accuracy measure instead of a one-off backtest. |
+| **CostGuard** (`app/llm/cost.py`) | Phase 2 | Cross-cutting spend cap checked before every LLM call from any stage; skips (not crashes) once a cap is hit. |
+| **Langfuse (optional)** | 3d onward | Cross-cutting, additive tracing of LLM calls (prompt, response, cost, latency) for debugging and comparing prompt versions from `prompt_templates` against real outcomes. Never a dependency of the decision pipeline — Supabase remains authoritative. |
+| **Paper Trading Execution** (`app/trading`) | Phase 4 | Simulates fills for Portfolio Construction's target changes without touching any real exchange. |
+| **FastAPI + Dashboard** | Phase 5 | Read/query API over the Evidence Store (candidates, assessments, decisions, portfolio state, cost reports) for a UI; Pydantic-native, so it reuses the same schemas already defined for Phase 2/3 rather than duplicating them. |
+| **Exchange Execution Agent** (LangChain/LangGraph) | Phase 6 | The only agentic component in the system. Given Portfolio Construction's already-approved target changes (not open-ended instructions) and a small, explicit, allow-listed toolset (place order, cancel order, check balance) against a **testnet** exchange API. Risk Engine constraints are re-checked at execution time; live trading remains gated behind a separate, explicit safety review per the project's development methodology. |
+
+## Technology stack decisions
+
+Recorded here so the reasoning behind each choice — including the ones
+deliberately *not* adopted — doesn't get lost as the project grows.
+
+- **FastAPI — adopted, Phase 5 only.** Pydantic-native, which matches this
+  project's validation-heavy style throughout Phase 2/3 (strict schemas for
+  LLM output, Judge output, etc.), so a future API layer can reuse those
+  models almost directly. Not introduced earlier because nothing outside the
+  CLI run needs to call this system until there's a dashboard to serve.
+- **xAI (Grok) — adopted, in two places.** (1) As an optional fourth model in
+  `OPENROUTER_ASSESSMENT_MODELS` for 3d, routed through OpenRouter like the
+  other three, under the same `CostGuard`/schema rules — no special-cased
+  integration. (2) As the access mechanism for the PlanB/X source in 3f,
+  since Grok has native X/Twitter search and that's a more realistic path
+  than unofficial scraping. Both uses still require the same real
+  feasibility/cost verification as any other source before being relied on.
+- **MongoDB — not adopted.** The evidence-provenance design already gets
+  document-like flexibility from Postgres/Supabase's JSONB columns
+  (`payload`, `key_drivers`, `source_assessment`, etc.) without giving up
+  relational integrity — and that relational integrity is exactly what the
+  decision-outcome ledger and calibration backtests depend on (joining
+  `market_snapshots` ⋈ `model_market_assessments` ⋈ `decision_outcomes` ⋈
+  `assets` by timestamp and asset). A second database would mean a second
+  source of truth and duplicated infra/auth for no corresponding benefit
+  here.
+- **LangChain/LangGraph — adopted, Phase 6 only.** Every stage through
+  Phase 3/4/5 is a fixed, deterministic pipeline with structured JSON in and
+  out — there's no agent decision-making involved, so an agent framework
+  would mean rewriting working code to fit someone else's abstraction for no
+  benefit. Phase 6 is different: interacting with a live/testnet exchange API
+  to place, monitor, and potentially adjust orders is exactly the bounded,
+  tool-using loop an agent framework is built for. When that phase starts,
+  the agent's toolset is explicitly allow-listed (place order, cancel order,
+  check balance — not arbitrary API access), its task input is Portfolio
+  Construction's already-approved target change (not an open-ended
+  instruction), and Risk Engine constraints are re-checked at execution
+  time, not just at recommendation time.
+- **Langfuse — adopted, optional starting 3d.** Complements, not replaces,
+  the manual prompt-versioning (`prompt_templates`) and cost tracking
+  (`CostGuard`, `estimated_cost` columns) already designed into Phase 3 —
+  it adds a UI for tracing individual calls and comparing prompt versions
+  once there's enough call volume and outcome data (from 3e's
+  decision-outcome ledger) to make that comparison meaningful. Strictly
+  additive instrumentation: the decision pipeline must run identically
+  whether or not Langfuse is configured.
 
 ## Setup
 
@@ -94,6 +260,12 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
    - `OPENROUTER_API_KEY`, `CLAUDE_MODEL`, `OPENAI_MODEL`, `GEMINI_MODEL` — only
      required if you want to run `--with-llm` (see Phase 2 below). Not needed
      for plain market-data collection.
+   - (From Phase 3d onward, optional) `OPENROUTER_ASSESSMENT_MODELS` — the
+     model set for the current-market-assessment stage; may include Grok if
+     you choose to enable it.
+   - (Optional, Phase 3d onward) `LANGFUSE_*` credentials — only needed if you
+     choose to enable call tracing; the pipeline runs identically without
+     them.
 
 3. Apply the database schema — both migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
@@ -225,15 +397,16 @@ per process — each `python -m app.main` invocation gets its own unique id.
 ```
 app/
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses)
-  market_data/   CoinGecko client, normalization, collection service
+  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, and Phase 3 tables)
+  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance and screening/regime classification
   news/          RSS collection, relevance matching, dedup (Phase 2)
-  llm/           OpenRouter integration, structured output, cost guard (Phase 2)
-  judge/         Phase 3
-  portfolio/     Phase 3
-  risk/          Phase 3
-  trading/       Phase 4
-  benchmarks/    Phase 4
+  llm/           OpenRouter integration, structured output, cost guard (Phase 2); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
+  judge/         Phase 3e — deterministic decision synthesis
+  portfolio/     Phase 3e — portfolio construction
+  risk/          Phase 3e — deterministic risk engine
+  trading/       Phase 4 — paper trading execution; Phase 6 — testnet execution agent (LangChain/LangGraph)
+  benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f)
+  api/           Phase 5 — FastAPI read/query layer (not yet created)
   main.py        Entrypoint (python -m app.main [--with-llm])
 tests/
 migrations/      SQL schema, applied manually or via scripts/apply_migration.py
@@ -271,3 +444,9 @@ carry across every sub-phase:
   backfilled with realized returns, so the system's own accuracy — not just
   its internal model agreement — is measurable and improves the design over
   time rather than being assessed once at the end.
+- **New tooling earns its place by matching a real need, not by being
+  available.** FastAPI, xAI, LangChain/LangGraph, and Langfuse are each
+  adopted for a specific, scoped reason (see "Technology stack decisions"
+  above) and introduced only in the phase where that reason applies —
+  MongoDB was considered and deliberately not adopted, for the same kind of
+  reasoning.

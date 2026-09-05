@@ -42,6 +42,29 @@ Add `OPENROUTER_ASSESSMENT_MODELS` (or similar) so this stage's model list is
 configurable independently of Phase 2's `CLAUDE_MODEL`/`OPENAI_MODEL`/
 `GEMINI_MODEL`.
 
+Optionally include **xAI's Grok** as a fourth independent model, routed
+through OpenRouter like the other three (same config pattern, same
+`CostGuard` gating, same strict-JSON/retry handling — no separate
+integration path). This fits the existing "models are independent evidence,
+no hard-coded weights" design without any architectural change; it's simply
+another entry in `OPENROUTER_ASSESSMENT_MODELS`. Before enabling it by
+default, verify current OpenRouter availability/pricing for the Grok model
+you intend to use, the same way you'd check any other model.
+
+**1a. Optional: Langfuse tracing.**
+If you want visibility into prompt/response/cost/latency per call beyond
+what's in Supabase, you may add Langfuse as an *additional*, non-blocking
+trace sink for every LLM call in this stage (and, if convenient, Phase 2's
+existing calls too) — send the same call data to Langfuse that you already
+persist to `model_market_assessments`/`llm_analyses`. This is instrumentation
+only: Supabase remains the source of truth that the Judge, Risk Engine, and
+calibration ledger actually read from; nothing in the decision pipeline may
+depend on Langfuse being reachable. If Langfuse is unavailable or unconfigured,
+the pipeline must run exactly as if it were never mentioned. Skip this
+entirely if it adds friction right now — it's most useful once there's real
+call volume and multiple prompt versions to compare (from 3e onward), not
+a blocker for 3d's exit criteria.
+
 **2. Shared, consistent context per run.**
 Every asset's prompt must include the **same** `market_regime_snapshots` row
 for this run (from 3b) — don't let each model or each asset infer its own
