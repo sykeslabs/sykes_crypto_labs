@@ -9,6 +9,7 @@ class Asset(BaseModel):
     symbol: str
     name: str
     coingecko_id: str
+    coinmarketcap_id: str | None = None
     active: bool
     in_asset: bool
     created_at: datetime

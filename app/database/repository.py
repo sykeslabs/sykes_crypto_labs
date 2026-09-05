@@ -5,11 +5,12 @@ from supabase import Client
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.schemas import MarketSnapshot
+from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
 
 
 class AssetRepository:
-    """Reads the configurable asset universe from the `assets` table."""
+    """Reads/writes the configurable asset universe in the `assets` table."""
 
     def __init__(self, client: Client) -> None:
         self._client = client
@@ -22,6 +23,45 @@ class AssetRepository:
             .execute()
         )
         return [Asset.model_validate(row) for row in response.data]
+
+    def get_by_coingecko_id(self, coingecko_id: str) -> Asset | None:
+        response = (
+            self._client.table("assets")
+            .select("*")
+            .eq("coingecko_id", coingecko_id)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return Asset.model_validate(response.data[0])
+
+    def create_asset(
+        self,
+        symbol: str,
+        name: str,
+        coingecko_id: str,
+        coinmarketcap_id: str | None = None,
+        active: bool = True,
+        in_asset: bool = False,
+    ) -> Asset:
+        """Inserts a new asset — used when 3b's screening surfaces a
+        genuinely new candidate not already in the universe."""
+        response = (
+            self._client.table("assets")
+            .insert(
+                {
+                    "symbol": symbol,
+                    "name": name,
+                    "coingecko_id": coingecko_id,
+                    "coinmarketcap_id": coinmarketcap_id,
+                    "active": active,
+                    "in_asset": in_asset,
+                }
+            )
+            .execute()
+        )
+        return Asset.model_validate(response.data[0])
 
 
 class MarketSnapshotRepository:
@@ -168,3 +208,46 @@ class SignalSourceRepository:
         if not response.data:
             return None
         return SignalSource.model_validate(response.data[0])
+
+    def update_status(self, name: str, status: str, notes: str | None = None) -> None:
+        payload = {"status": status, "last_checked_at": datetime.now(UTC).isoformat()}
+        if notes is not None:
+            payload["notes"] = notes
+        self._client.table("signal_sources").update(payload).eq("name", name).execute()
+
+
+class ScreenedUniverseRepository:
+    """Persists the full screened universe for a run (task 9) — one row per
+    screened asset, not just TOP_CANDIDATES, so later validation work can
+    check for survivorship bias in discovery."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert_many(self, rows: list[ScreenedAsset]) -> None:
+        if not rows:
+            return
+        self._client.table("screened_universe").insert([r.to_row() for r in rows]).execute()
+
+
+class MarketRegimeRepository:
+    """Persists/reads `market_regime_snapshots` — the one regime label per
+    run every downstream stage (3d, 3e) reads instead of inferring its own."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, snapshot: MarketRegimeSnapshot) -> None:
+        self._client.table("market_regime_snapshots").insert(snapshot.to_row()).execute()
+
+    def get_latest(self) -> MarketRegimeSnapshot | None:
+        response = (
+            self._client.table("market_regime_snapshots")
+            .select("*")
+            .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return MarketRegimeSnapshot.model_validate(response.data[0])

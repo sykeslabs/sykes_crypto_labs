@@ -45,6 +45,22 @@ class Settings(BaseSettings):
     news_lookback_hours: int = 24
     max_news_articles_per_asset: int = 5
 
+    # Screening / regime classification (Phase 3b, used only with --with-screening)
+    # CoinMarketCap: optional. Without a key, it's reported NOT_IMPLEMENTED in
+    # signal_sources rather than approximated — never silently skipped without
+    # a trace.
+    coinmarketcap_api_key: SecretStr | None = None
+    coinmarketcap_base_url: str = "https://pro-api.coinmarketcap.com"
+    coinbase_base_url: str = "https://api.exchange.coinbase.com"
+    binance_base_url: str = "https://api.binance.com"
+    # 30, not the suggested range's upper end of 50 — CoinGecko's free-tier
+    # per-asset historical endpoint rate-limits after ~5 rapid calls, and
+    # every other per-asset call (Coinbase/Binance klines, CMC quotes) adds
+    # runtime; keeping the universe modest keeps a screening run fast and
+    # reliable rather than racing free-tier limits every run.
+    screening_universe_size: int = 30
+    top_candidates_size: int = 10
+
     # Logging
     log_level: str = "INFO"
 

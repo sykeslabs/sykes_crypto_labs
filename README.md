@@ -73,7 +73,7 @@ because:
     schema groundwork for market-regime snapshots, a decision-outcome
     ledger, and prompt/template versioning (all populated in later
     sub-phases)
-  - **3b** — CoinMarketCap + **Coinbase** + **Binance** exchange-native data,
+  - ✅ **3b** (complete) — CoinMarketCap + **Coinbase** + **Binance** exchange-native data,
     deterministic market screening, candidate discovery, a **deterministic
     market-regime classifier** computed once per run (now also tracking
     **BTC dominance and an altcoin-season/breadth index** as an orthogonal
@@ -876,17 +876,19 @@ deliberately *not* adopted — doesn't get lost as the project grows.
      the existing on-chain explorer. Leave unset to have `CUSTODY_OTC_FLOW`
      recorded as `NOT_IMPLEMENTED`.
 
-3. Apply the database schema — all three migrations, in order. Either:
+3. Apply the database schema — all four migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
      `migrations/0001_init.sql`, run it, then do the same for
-     `migrations/0002_llm_and_news.sql`, then
-     `migrations/0003_phase3a_universe_provenance.sql`. All are idempotent —
+     `migrations/0002_llm_and_news.sql`,
+     `migrations/0003_phase3a_universe_provenance.sql`, and
+     `migrations/0004_phase3b_screening_regime.sql`. All are idempotent —
      safe to re-run any time they change.
    - Or, with `DATABASE_URL` set:
      ```
      python scripts/apply_migration.py migrations/0001_init.sql
      python scripts/apply_migration.py migrations/0002_llm_and_news.sql
      python scripts/apply_migration.py migrations/0003_phase3a_universe_provenance.sql
+     python scripts/apply_migration.py migrations/0004_phase3b_screening_regime.sql
      ```
 
 4. Run the collector:
@@ -908,6 +910,16 @@ deliberately *not* adopted — doesn't get lost as the project grows.
 
    **This makes real, billed calls to Claude/OpenAI/Gemini via OpenRouter** — see
    the Phase 2 section below before running it.
+
+6. Optionally, also run 3b's screening + market-regime classification (zero
+   LLM cost — CoinGecko/CoinMarketCap/Coinbase/Binance market data only):
+
+   ```
+   python -m app.main --with-screening
+   ```
+
+   Combine with `--with-llm` if you want both in one run. See the Phase 3b
+   section below for what this does.
 
 ## Verifying it worked
 
@@ -1070,15 +1082,94 @@ change to any Phase 1/2 code path):
   label/method sets and may need to refine them without another migration.
 - **Smart-contract/scam-safety screening** (honeypot/rug-pull checks on
   newly-discovered 3b candidates) was identified as a real gap against
-  professional screening practice but deliberately deferred to an explicit
-  in-scope/deferred decision when 3b starts — it doesn't touch 3a's schema.
+  professional screening practice, flagged for an explicit decision once 3b
+  started. Resolved: **out of scope for 3b** — `PHASE3B_PROMPT.md`'s actual
+  task list doesn't call for it, and it wasn't invented back in as scope
+  creep. Still a real gap; a natural fit for 3c (already adding new
+  providers) or a dedicated future check, not built here.
+
+## Phase 3b — CoinMarketCap, Coinbase, Binance, screening, regime classification
+
+`python -m app.main --with-screening` adds, after market data collection:
+
+1. **CoinMarketCap** (optional, gated behind `COINMARKETCAP_API_KEY`) —
+   aggregated market data, kept fully independent from CoinGecko (never
+   merged), used both as a cross-check and as the source for 90d
+   percent-change (needed for the altcoin-season index below — CoinGecko
+   doesn't offer a 90d window). Endpoint/auth shape verified live (a 401
+   with CMC's documented error code); the response shape itself has **not**
+   been end-to-end verified against a real key as of this writing — verify
+   once you add one.
+2. **Coinbase** (`app/market_data/coinbase.py`) — public Exchange API, no key
+   needed. Verified live: covers all 16 assets in the current universe
+   (837 total USD products) with 200+ days of daily history.
+3. **Binance** (`app/market_data/binance.py`) — public REST API, no key
+   needed. Verified live: 14 sequential historical-data calls completed in
+   3.7s with zero rate-limiting — this is why it's the **primary** source
+   for volatility/drawdown (which need a real return series, not just a
+   point-in-time percent change), not CoinGecko. Two of the current 16
+   assets (HYPE, STORJ) have no Binance USDT pair — Coinbase is the
+   **fallback** for those; `UNAVAILABLE` only if neither venue lists the
+   asset.
+4. **Screening universe** (`SCREENING_UNIVERSE_SIZE`, default 30) — the top
+   N assets by CoinGecko market cap (stablecoins excluded via a documented
+   symbol denylist, `app/market_data/stablecoins.py`), not just the 16
+   currently tracked — this is where genuinely new candidates get
+   discovered.
+5. **Deterministic factors** (`app/market_data/factors.py`, pure functions,
+   fully unit-tested without live APIs): momentum (7d/30d, direct from
+   CoinGecko/CMC point returns), volatility (stdev of daily returns) and max
+   drawdown (both from Binance/Coinbase daily closes), relative strength
+   (vs. BTC's own 30d momentum), and liquidity (24h volume).
+6. **Composite factor score** — a documented, rank-based (not raw-value)
+   combination, so factors with very different natural scales (% vs.
+   dollars) combine safely: `momentum_30d` 30%, `momentum_7d` 15%,
+   `relative_strength_30d` 20%, `volatility_30d` 15% (inverted — lower
+   ranks higher), `drawdown_30d` 10% (inverted — shallower ranks higher),
+   `volume_24h` 10%. A missing factor for one asset has its weight
+   redistributed across that asset's other factors rather than being
+   treated as zero/neutral. Purely quantitative — stays visible alongside,
+   never blended into, LLM/Judge evidence later.
+7. **Anomaly/wash-trading flag** (`app/market_data/anomaly.py`) — flags (never
+   excludes) an asset whose latest-day price move exceeds 50% or whose
+   latest-day volume is a >3σ outlier vs. its own trailing history.
+8. **Market-regime classification** (`app/market_data/regime.py`) — one
+   `market_regime_snapshots` row per run: `RISK_ON`/`RISK_OFF`/`NEUTRAL` from
+   BTC's price vs. its own 7d/30d moving averages plus universe breadth (%
+   with positive 30d momentum); **BTC dominance** (BTC's share of screened
+   market cap); an **altcoin-season index** (% of non-stablecoin assets
+   outperforming BTC over 90d — `UNAVAILABLE` without a CoinMarketCap key);
+   and **halving-cycle day-counts** (days since/until the nearest halving).
+
+**Known limitations / decisions:**
+- **Halving cycle is a calendar-based approximation, not live block
+  height.** None of CoinGecko/CoinMarketCap/Coinbase/Binance expose current
+  BTC block height (verified live — they're trading/aggregation APIs, not
+  block explorers). The past halving date (2024-04-20) is a public,
+  unchanging historical fact; the next is estimated as +1458 days (~210,000
+  blocks at Bitcoin's ~10-minute target). Raw day-counts only, no
+  cycle-phase interpretation — that's for the Judge (3e) or later scenario
+  research (3f).
+- **`signal_sources.enabled` is informational only for CoinMarketCap/
+  Coinbase/Binance** — the screening service doesn't yet gate on it before
+  attempting a source (only `status`/`last_checked_at` get updated per run).
+  An operator toggle here would need real gating logic added later.
+- **`SCREENING_UNIVERSE_SIZE` defaults to 30, not 50** — a directly verified
+  constraint (CoinGecko's per-asset historical endpoint rate-limits after
+  ~5 rapid calls on the free tier), not a guess. This only matters for
+  historical calls the service *doesn't* make from CoinGecko (it uses
+  Binance/Coinbase for those instead) — the constraint is about overall
+  per-run call volume and runtime across every source combined.
+- **CoinMarketCap's response shape is implemented per its documented API
+  but not live-verified end-to-end** — no key was available while building
+  this. Verify once `COINMARKETCAP_API_KEY` is set.
 
 ## Project layout
 
 ```
 app/
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
+  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources, screened_universe, market_regime_snapshots); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
   market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with ETF-flow/prediction-market/stablecoin-velocity/CME-COT/miner-metrics providers and the derived volatility-risk-premium/annualized-carry-yield fields; extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
   news/          RSS collection, relevance matching, dedup (Phase 2)
   llm/           OpenRouter integration, structured output, cost guard (Phase 2); cost.py extended in 3a with COST_TRACKED_TABLES/CostLedgerRepository (multi-table cost summing, zero behavior change); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)

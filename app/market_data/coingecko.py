@@ -40,3 +40,26 @@ class CoinGeckoClient:
             entries = response.json()
 
         return {entry["id"]: entry for entry in entries}
+
+    def fetch_top_markets(self, limit: int) -> list[dict]:
+        """Returns the top `limit` assets by market cap (no `ids` filter) —
+        used by 3b's screening universe to discover candidates beyond the
+        existing tracked assets. One batched call regardless of `limit`."""
+        headers = {}
+        if self._api_key:
+            headers["x-cg-demo-api-key"] = self._api_key
+
+        params = {
+            "vs_currency": self._vs_currency,
+            "order": "market_cap_desc",
+            "per_page": limit,
+            "page": 1,
+            "price_change_percentage": "24h,7d,30d",
+        }
+
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._base_url}/coins/markets", params=params, headers=headers
+            )
+            response.raise_for_status()
+            return response.json()
