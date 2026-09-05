@@ -25,6 +25,7 @@ logger = logging.getLogger("crypto_ai_portfolio.llm")
 COST_TRACKED_TABLES: dict[str, str] = {
     "llm_analyses": "timestamp",
     "model_market_assessments": "assessment_timestamp",
+    "judge_decisions": "created_at",
 }
 
 # $ per 1K tokens (input, output). Pulled from https://openrouter.ai/api/v1/models

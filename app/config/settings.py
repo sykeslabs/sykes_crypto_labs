@@ -86,6 +86,39 @@ class Settings(BaseSettings):
     openrouter_assessment_models: str | None = None
     assessment_prompt_version: str = "v1"
 
+    # Judge (Phase 3e, used only with --with-judge). A single synthesizing
+    # model — unlike 3d's independent ensemble, the Judge is one reasoning
+    # step over already-independent evidence (including 3d's ensemble
+    # itself). Defaults to reusing CLAUDE_MODEL unless overridden.
+    judge_model: str | None = None
+    judge_prompt_version: str = "v2"
+
+    # Risk Engine (Phase 3e, used only with --with-judge). Deterministic,
+    # configurable hard gates over the Judge's unconstrained output — see
+    # PHASE3E_PROMPT.md task 2. Defaults are conservative starting points for
+    # a paper system, not backtested-optimal values.
+    max_single_asset_allocation: float = 0.15
+    max_new_position_size: float = 0.05
+    max_weekly_turnover: float = 0.30
+    min_buy_confidence: float = 0.55
+    min_rebalance_confidence: float = 0.50
+    min_sell_confidence: float = 0.50
+    min_replacement_alpha_advantage: float = 0.03
+    # Portfolio Construction's replacement rule (task 3) only has teeth once
+    # there's a real capacity limit — otherwise every new candidate could
+    # just be added indefinitely. A conservative starting cap, not a
+    # backtested-optimal value.
+    max_concurrent_positions: int = 8
+    # Baseline daily-return stdev used as the reference point for the
+    # inverse-volatility position-sizing scalar (task 2) — an asset at
+    # exactly this volatility gets no scale-up/down; more volatile assets
+    # scale down, less volatile assets are capped at no scale-up (this is a
+    # risk-reduction mechanism, not a leverage mechanism).
+    risk_target_volatility: float = 0.03
+    # Two assets' 30d daily-return correlation at/above this is treated as
+    # "concentrated" by the correlation-awareness flag (task 2).
+    correlation_flag_threshold: float = 0.7
+
     # Logging
     log_level: str = "INFO"
 
@@ -154,6 +187,20 @@ class Settings(BaseSettings):
                 "(reused by default) or OPENROUTER_ASSESSMENT_MODELS explicitly."
             )
         return self.openrouter_api_key.get_secret_value(), models
+
+    def require_judge(self) -> tuple[str, str]:
+        """Returns (api_key, model) for 3e's Judge, or raises if missing."""
+        if not self.openrouter_api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY must be set in your .env file to run --with-judge."
+            )
+        model = self.judge_model or self.claude_model
+        if not model:
+            raise RuntimeError(
+                "No Judge model configured. Set JUDGE_MODEL (or CLAUDE_MODEL, reused by default) "
+                "in your .env file."
+            )
+        return self.openrouter_api_key.get_secret_value(), model
 
 
 @lru_cache

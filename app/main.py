@@ -1,21 +1,29 @@
 import argparse
 import sys
+from datetime import UTC, datetime, timedelta
 
+from app.benchmarks.evaluation_service import OutcomeEvaluationService
 from app.config import get_settings
 from app.database.client import get_supabase_client
 from app.database.repository import (
     AssetRepository,
     AssetStatusRepository,
+    DecisionOutcomeRepository,
     EvidenceObservationRepository,
+    JudgeDecisionRepository,
     LLMAnalysisRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
     ModelMarketAssessmentRepository,
     NewsRepository,
+    PortfolioAllocationChangeRepository,
+    PortfolioPositionRepository,
     PromptTemplateRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
 )
+from app.judge.provider import OpenRouterJudgeProvider
+from app.judge.service import JudgeService
 from app.llm.assessment_provider import OpenRouterAssessmentProvider
 from app.llm.assessment_service import AssessmentService
 from app.llm.cost import CostGuard, CostLedgerRepository
@@ -36,6 +44,9 @@ from app.market_data.screening_service import ScreeningService
 from app.market_data.service import MarketDataCollectionService
 from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
+from app.portfolio.construction import PortfolioConstructionService
+from app.risk.correlation import compute_daily_returns
+from app.risk.engine import RiskEngine
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -70,6 +81,26 @@ def parse_args(argv=None) -> argparse.Namespace:
             "parallel evidence type distinct from --with-llm's llm_analyses)."
         ),
     )
+    parser.add_argument(
+        "--with-judge",
+        action="store_true",
+        help=(
+            "Also run 3e's Judge (synthesizes 3b/3c/3d/Phase-2 evidence into "
+            "one decision per candidate), Risk Engine (deterministic sizing/"
+            "gating), and Portfolio Construction (requires OPENROUTER_API_KEY "
+            "and a prior --with-assessment run)."
+        ),
+    )
+    parser.add_argument(
+        "--evaluate-outcomes",
+        action="store_true",
+        help=(
+            "Also run 3e's outcome-evaluation step: backfill realized_return/"
+            "outcome_label on past-horizon decision_outcomes rows using "
+            "actual subsequent market_snapshots. Independent of every other "
+            "flag; zero LLM cost."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -80,8 +111,10 @@ def main() -> int:
     logger = setup_logging(run_id, settings.log_level)
 
     logger.info(
-        "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s, with_assessment=%s)",
-        args.with_llm, args.with_screening, args.with_derivatives, args.with_assessment,
+        "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s, "
+        "with_assessment=%s, with_judge=%s, evaluate_outcomes=%s)",
+        args.with_llm, args.with_screening, args.with_derivatives,
+        args.with_assessment, args.with_judge, args.evaluate_outcomes,
     )
 
     try:
@@ -100,6 +133,13 @@ def main() -> int:
     if args.with_assessment:
         try:
             settings.require_assessment()
+        except RuntimeError as exc:
+            logger.error(str(exc))
+            return 1
+
+    if args.with_judge:
+        try:
+            settings.require_judge()
         except RuntimeError as exc:
             logger.error(str(exc))
             return 1
@@ -185,7 +225,110 @@ def main() -> int:
         logger.info("Assessment finished: %s", assessment_result.summary)
         assessment_failed = bool(assessment_result.failed) and not assessment_result.stored_by_provider
 
-    exit_code = 1 if (market_result.failed or screening_failed or assessment_failed) else 0
+    judge_failed = False
+    if args.with_judge:
+        judge_api_key, judge_model = settings.require_judge()
+        screened_universe_repo = ScreenedUniverseRepository(client)
+        portfolio_position_repo = PortfolioPositionRepository(client)
+        allocation_change_repo = PortfolioAllocationChangeRepository(client)
+
+        judge_service = JudgeService(
+            settings=settings,
+            asset_repo=asset_repo,
+            screened_universe_repo=screened_universe_repo,
+            regime_repo=MarketRegimeRepository(client),
+            evidence_repo=EvidenceObservationRepository(client),
+            assessment_repo=ModelMarketAssessmentRepository(client),
+            llm_analysis_repo=LLMAnalysisRepository(client),
+            news_repo=NewsRepository(client),
+            asset_status_repo=AssetStatusRepository(client),
+            portfolio_position_repo=portfolio_position_repo,
+            signal_source_repo=SignalSourceRepository(client),
+            prompt_template_repo=PromptTemplateRepository(client),
+            judge_decision_repo=JudgeDecisionRepository(client),
+            decision_outcome_repo=DecisionOutcomeRepository(client),
+            cost_guard=CostGuard(settings, CostLedgerRepository(client)),
+            provider=OpenRouterJudgeProvider(
+                name="judge",
+                model=judge_model,
+                api_key=judge_api_key,
+                base_url=settings.openrouter_base_url,
+                timeout_seconds=settings.llm_request_timeout_seconds,
+            ),
+        )
+        judge_result = judge_service.run(run_id)
+        logger.info("Judge finished: %s", judge_result.summary)
+        judge_failed = bool(judge_result.failed) and judge_result.stored == 0
+
+        if judge_result.decisions:
+            risk_engine = RiskEngine(settings)
+            current_positions = portfolio_position_repo.get_all()
+            assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
+            sized_decisions = []
+            decisions_by_asset = {}
+            decision_ids_by_asset = {}
+            returns_by_symbol = {}
+            lookback_start = datetime.now(UTC) - timedelta(days=31)
+
+            for decision in judge_result.decisions:
+                asset = assets_by_id.get(decision.asset_id)
+                symbol = asset.symbol if asset else decision.asset_id
+                screened = screened_universe_repo.get_latest_for_symbol(symbol) if asset else None
+                current_allocation = (
+                    current_positions[decision.asset_id].current_allocation
+                    if decision.asset_id in current_positions else 0.0
+                )
+                sized = risk_engine.size_one(
+                    decision, symbol,
+                    screened.volatility_30d if screened else None,
+                    current_allocation,
+                )
+                sized_decisions.append(sized)
+                decisions_by_asset[decision.asset_id] = decision
+                decision_ids_by_asset[decision.asset_id] = decision.id
+
+                closes = [
+                    float(s.price)
+                    for s in snapshot_repo.get_snapshots_in_range(
+                        decision.asset_id, lookback_start, datetime.now(UTC)
+                    )
+                ]
+                if closes:
+                    returns_by_symbol[symbol] = compute_daily_returns(closes)
+
+            risk_engine.flag_correlations(sized_decisions, returns_by_symbol)
+            correlation_flags = [(d.symbol, d.correlation_reason) for d in sized_decisions if d.correlation_flagged]
+            if correlation_flags:
+                logger.warning("Correlation-concentration flags: %s", correlation_flags)
+
+            turnover_used = allocation_change_repo.get_turnover_since(
+                datetime.now(UTC) - timedelta(days=7)
+            )
+            risk_engine.apply_turnover_cap(sized_decisions, turnover_used)
+            turnover_capped = [d.symbol for d in sized_decisions if d.turnover_capped]
+            if turnover_capped:
+                logger.warning("Turnover-capped this run: %s", turnover_capped)
+
+            portfolio_service = PortfolioConstructionService(
+                settings=settings,
+                position_repo=portfolio_position_repo,
+                allocation_change_repo=allocation_change_repo,
+            )
+            actions = portfolio_service.apply(run_id, sized_decisions, decisions_by_asset, decision_ids_by_asset)
+            logger.info(
+                "Portfolio actions: %s",
+                [(a.symbol, a.action, round(a.new_allocation, 4)) for a in actions],
+            )
+
+    if args.evaluate_outcomes:
+        evaluation_service = OutcomeEvaluationService(
+            decision_outcome_repo=DecisionOutcomeRepository(client),
+            snapshot_repo=snapshot_repo,
+        )
+        evaluation_result = evaluation_service.run()
+        logger.info("Outcome evaluation finished: %s", evaluation_result.summary)
+
+    exit_code = 1 if (market_result.failed or screening_failed or assessment_failed or judge_failed) else 0
 
     if not args.with_llm:
         if market_result.failed:
@@ -238,10 +381,12 @@ def main() -> int:
     llm_result = llm_service.run(run_id)
     logger.info("LLM research finished: %s", llm_result.summary)
 
-    if market_result.failed or llm_result.failed or screening_failed or assessment_failed:
+    if market_result.failed or llm_result.failed or screening_failed or assessment_failed or judge_failed:
         logger.warning(
-            "Market failures: %s | LLM failures: %s | Screening failed: %s | Assessment failed: %s",
-            market_result.failed, llm_result.failed, screening_failed, assessment_failed,
+            "Market failures: %s | LLM failures: %s | Screening failed: %s | "
+            "Assessment failed: %s | Judge failed: %s",
+            market_result.failed, llm_result.failed, screening_failed,
+            assessment_failed, judge_failed,
         )
         return 1
 

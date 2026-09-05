@@ -121,17 +121,21 @@ because:
     baseline to compare it against. **Langfuse tracing skipped** for now
     (optional per `PHASE3D_PROMPT.md`; most useful once there's real call
     volume and multiple prompt versions to compare, from 3e onward)
-  - **3e** — Deterministic Judge (now also weighing 3b's non-LLM
-    `composite_factor_score` as a distinct input alongside model/adversarial
-    evidence), Risk Engine (volatility/correlation-aware sizing, now also
+  - ✅ **3e** (complete) — Deterministic Judge (weighing 3b's non-LLM
+    `composite_factor_score` as a distinct input alongside 3c's derivatives/
+    on-chain evidence, 3d's model assessments, and Phase 2's prior LLM
+    analyses), Risk Engine (volatility-adjusted position sizing, now also
     **uncertainty-aware**: position size scales down when model/source
-    agreement is weak, composed with the existing volatility adjustment
-    rather than replacing it), Portfolio Construction, and a **continuous
-    decision-outcome ledger** for ongoing calibration — each decision tagged
-    with its market regime and Judge confidence, a **held-out decision
-    window** reserved and respected from this point forward, and a baseline
-    backtest against existing Phase 1/2 data reporting **both hit-rate and
-    calibration (Brier score)**, not directional accuracy alone
+    agreement is weak, composed with the volatility adjustment rather than
+    replacing it, plus a **correlation-concentration flag** — live-verified
+    to genuinely trigger, e.g. BTC/SOL flagged at 0.93 correlation), Portfolio
+    Construction (increase/hold/reduce/remove/initiate/hold-cash, plus a
+    capacity-driven **replacement rule**), and a **continuous decision-outcome
+    ledger** for ongoing calibration — each decision tagged with its market
+    regime and Judge confidence, a **held-out decision window** reserved from
+    this sub-phase's first live run (2026-09-05T17:07:49Z) onward, and a
+    baseline calibration script against real Phase 1/2 data reporting **both
+    hit-rate and calibration (Brier score)**, not directional accuracy alone
   - **3f** — Adversarial bull/bear research, scenario modeling, a macro
     matrix extended with a **forward-looking scheduled macro-event
     calendar** (known-in-advance FOMC/CPI/PCE/NFP release dates, distinct
@@ -1381,6 +1385,180 @@ built yet (each `python -m app.main` invocation is a manual/on-demand run).
   or narrower.** No silent fallback: if `--with-screening` has never been
   run, `--with-assessment` logs a warning and does nothing, rather than
   guessing a universe.
+
+## Phase 3e — Judge, Risk Engine, Portfolio Construction, calibration (`--with-judge`, `--evaluate-outcomes`)
+
+`python -m app.main --with-judge` runs, over the same latest `TOP_CANDIDATES`
+3d assessed (requires a prior `--with-assessment` run; warns and does nothing
+otherwise):
+
+1. **Judge** (`app/judge/`) — one LLM call per run (single synthesizing
+   model, not an ensemble — the ensemble already happened in 3d) reasoning
+   over: 3b's screening factors + `composite_factor_score` + regime
+   (including BTC dominance/altseason/halving-cycle position), 3c's
+   derivatives/on-chain evidence (with `freshness`/`decay_half_life_hours`
+   shown explicitly per source), 3d's model assessments + its computed
+   `model_agreement`, Phase 2's prior `llm_analyses`, recent news, and
+   current portfolio status/allocation. Outputs one structured decision per
+   asset (`BUY`/`HOLD`/`SELL`/`WATCH`/`NO_TRADE`), persisted in full to
+   `judge_decisions` (thesis, key/contradictory evidence, key risks,
+   invalidation conditions, `estimated_cost`) — a new, parallel evidence
+   type again duplicating Phase 2/3d's provider-class pattern
+   (`OpenRouterJudgeProvider`) rather than generalizing either shipped class,
+   same deliberate zero-regression trade-off as 3d's.
+2. **Risk Engine** (`app/risk/`) — deterministic, AI-uninfluenced, over the
+   Judge's *unconstrained* `target_allocation`:
+   - A confidence gate (`MIN_BUY_CONFIDENCE`/`MIN_SELL_CONFIDENCE`/
+     `MIN_REBALANCE_CONFIDENCE`) that can downgrade a low-confidence BUY to
+     WATCH or a low-confidence SELL to HOLD before any sizing happens.
+   - **Volatility-adjusted sizing**: an inverse-volatility scalar
+     (`RISK_TARGET_VOLATILITY / asset_volatility`, capped at 1.0 — this only
+     ever de-risks, never levers up) composed with an **agreement-aware**
+     scalar (average of `model_agreement`/`source_agreement`, floored at
+     0.3) — the two compose multiplicatively, neither alone determines size.
+   - Hard caps: `MAX_SINGLE_ASSET_ALLOCATION`, `MAX_NEW_POSITION_SIZE` (new
+     positions only), and `MAX_WEEKLY_TURNOVER` (scales every proposed
+     change down proportionally, fairly, if the trailing 7-day budget would
+     be exceeded — never picks winners).
+   - A **correlation-concentration flag** (`app/risk/correlation.py`): a
+     pairwise Pearson correlation matrix over held/candidate assets' actual
+     stored `market_snapshots` returns, flagging (not blocking) pairs at/
+     above `CORRELATION_FLAG_THRESHOLD` that are both being increased.
+3. **Portfolio Construction** (`app/portfolio/`) — classifies each
+   Risk-Engine-adjusted decision into INITIATE/INCREASE/HOLD/REDUCE/REMOVE/
+   HOLD_CASH against the paper book's actual current state (new
+   `portfolio_positions`/`portfolio_allocation_changes` tables — see
+   decisions below), and applies a capacity-driven **replacement rule**:
+   above `MAX_CONCURRENT_POSITIONS`, a new candidate may only bump an
+   existing holding when its `risk_adjusted_alpha` (`expected_alpha /
+   max(risk_score, 0.05)`) clears the incumbent's by
+   `MIN_REPLACEMENT_ALPHA_ADVANTAGE`; otherwise the new candidate is simply
+   blocked (stays at 0 allocation) rather than exceeding capacity.
+4. **Continuous decision-outcome ledger** — every Judge decision opens one
+   `decision_outcomes` row (3a schema) with a lightweight triple-barrier
+   target/stop (`app/benchmarks/triple_barrier.py`: derived from the Judge's
+   own `expected_return`/`risk_score`, a floor of ±5% so a near-zero
+   `expected_return` still gets a workable barrier), `regime_at_decision`,
+   `judge_confidence`, and `in_holdout_window = true` — see the held-out
+   window note below. `python -m app.main --evaluate-outcomes` (independent
+   of every other flag, zero LLM cost) walks forward through real subsequent
+   `market_snapshots` and backfills `HIT_TARGET`/`HIT_STOP`/`TIMED_OUT`,
+   leaving genuinely-too-recent decisions `UNRESOLVED`.
+5. **Baseline calibration script** (`scripts/calibration_baseline.py`) —
+   checks Phase 1/2's existing `llm_analyses` directional calls against
+   actual subsequent `market_snapshots` price movement, reporting
+   directional hit-rate AND a Brier score + confidence-bucket reliability
+   breakdown (two different claims — see findings below). Persists every
+   invocation to `calibration_runs` as a countable attempt, per task 5.
+
+**Live-verified** (queried Supabase directly and cross-checked against the
+real deterministic formulas, not just passing tests or clean-looking logs —
+per the standing lesson from 3c):
+- A combined `--with-screening --with-derivatives --with-assessment
+  --with-judge` run persisted exactly 10 `judge_decisions` rows (one per
+  `TOP_CANDIDATE`) and 10 matching `decision_outcomes` rows, each correctly
+  referencing its `judge_decisions.id`, `regime_at_decision`, and
+  `judge_confidence`, all with `in_holdout_window = true`.
+- Reachable decisions confirmed live: `BUY`, `HOLD`, and `WATCH` all occurred
+  across three runs (e.g. ZEC/XMR got WATCH with a genuinely coherent "wait
+  for X to resolve" thesis, not a default), and `requires_review = true`
+  fired on 19 of 30 live decisions, correlated sensibly with lower
+  confidence. `NO_TRADE` did not occur within 3b's screening-filtered
+  `TOP_CANDIDATES` across those three runs — investigated directly rather
+  than assumed: a genuine adversarial test (a real tracked asset deliberately
+  outside `TOP_CANDIDATES`, given a maximally split 3-model ensemble,
+  0.08 composite score, a screening anomaly flag, and stale/thin derivatives
+  evidence) produced a real, live `NO_TRADE` from the actual model on the
+  first attempt (`confidence=0.15`, thesis: *"Evidence is too thin, stale,
+  and internally contradictory to support any actionable thesis... This is a
+  case for NO_TRADE rather than manufacturing a directional or watch thesis
+  from noise."*) — confirming `NO_TRADE` is genuinely reachable by the real
+  model when warranted, not just in a unit fixture, and supporting the
+  explanation below (TOP_CANDIDATES are pre-filtered for quality) over a
+  residual action-bias theory.
+- Recomputed the Risk Engine's exact sizing formula against the real stored
+  `volatility_30d`/`model_agreement`/`source_agreement` values and confirmed
+  it matches the persisted `portfolio_positions` allocations exactly — e.g.
+  HYPE (`volatility_30d=0.045`) got `vol_scalar=0.663` vs. BTC's
+  (`volatility_30d=0.024`) `vol_scalar=1.0` at the same target allocation
+  ask, and BTC's `agreement_scalar=0.775` (model_agreement=1.0 but
+  source_agreement=only 0.55) visibly shrank its position relative to a
+  unanimous-agreement asset — proving the mechanism runs for real in the
+  live path, not only in isolated unit tests.
+- The correlation flag fired live and unprompted: `Correlated with SOL at
+  0.93 (both being increased)` on BTC/SOL in a real run (only surfaced after
+  a fix — see decisions below).
+- `--evaluate-outcomes` ran against real data: correctly found entry prices
+  for all 30 open decisions and correctly left all 30 `UNRESOLVED` (every
+  decision's horizon — 21 to 90 days — is still far in the future relative
+  to this project's ~2-day-old history); the `HIT_TARGET`/`HIT_STOP`/
+  `TIMED_OUT` resolution paths themselves are covered by dedicated unit
+  tests with synthetic past-horizon data, since no real decision has aged
+  into resolution yet.
+- `scripts/calibration_baseline.py --horizon-days 1` (shortened from the
+  default 7 — see decisions below) against 144 real `llm_analyses` rows
+  produced a genuine baseline: **hit_rate = 0.706, brier_score = 0.229** over
+  51 scored BUY/SELL rows (45 HOLD rows excluded, no directional claim to
+  score), with a real reliability-by-bucket breakdown showing the
+  confidence~0.8 bucket hitting only 62.5% versus confidence~0.6 hitting
+  87% — a genuine, useful overconfidence-at-the-top finding, not a clean
+  number. Both this run and the null 7-day attempt are persisted to
+  `calibration_runs` as separate, countable attempts.
+- `judge_decisions` confirmed registered in `COST_TRACKED_TABLES`
+  (`app/llm/cost.py`), with a test proving `CostGuard`'s cumulative sum
+  reflects an inserted row, and live cost was $0.0155/asset ($0.155 for the
+  10-candidate run).
+- Full `pytest` suite green (226 tests) throughout.
+
+**Known limitations / decisions:**
+- **`NO_TRADE` did not occur within 3 organic live runs against real
+  `TOP_CANDIDATES` — confirmed genuinely reachable, not a latent bug, via a
+  targeted adversarial test.** Investigated in two stages, not left as an
+  assumption: (1) the first prompt draft used the same phrase ("genuinely
+  conflicting evidence") to describe both `WATCH` and `NO_TRADE`, which the
+  live model resolved by always picking `WATCH` — a real prompt-clarity bug,
+  fixed by sharpening `WATCH` ("a real thesis, waiting on a specific
+  condition") vs. `NO_TRADE` ("no actionable view at all") and bumping
+  `JUDGE_PROMPT_VERSION` to `v2`; (2) after the fix, still zero live
+  `NO_TRADE`s on organic `TOP_CANDIDATES`, so a real tracked asset deliberately
+  outside `TOP_CANDIDATES` was fed a maximally split 3-model ensemble, a weak
+  composite score, a screening anomaly flag, and stale/thin derivatives
+  evidence, through the real `OpenRouterJudgeProvider` — the live model
+  returned `NO_TRADE` on the first attempt. This confirms `TOP_CANDIDATES`
+  being pre-filtered for quality (not residual action bias) explains why it
+  hasn't surfaced organically yet — worth re-checking once the tracked
+  universe or a weaker market regime surfaces a genuinely marginal
+  `TOP_CANDIDATE`.
+- **New `portfolio_positions`/`portfolio_allocation_changes` tables
+  (migration `0007`), not anticipated by 3a.** 3a reserved `judge_decisions`/
+  `decision_outcomes`/`calibration_runs` empty for this sub-phase, but never
+  anticipated that Portfolio Construction would need a real *numeric*
+  current-allocation-per-asset state — `assets.in_asset` is a plain boolean
+  with no size. No seed data: every asset starts at allocation 0 until the
+  first live run assigns one, since Phase 1/2's `in_asset` flag was never a
+  sized position.
+- **Calibration baseline horizon shortened to 1 day (from a 7-day
+  default).** This project's actual historical data (both `llm_analyses` and
+  `market_snapshots`) only spans about 2 days so far — a 7-day horizon
+  genuinely resolves zero rows right now, which the script correctly
+  reported (persisted as its own null-valued countable attempt) rather than
+  silently falling back to a shorter window. Re-run at the default (or a
+  properly chosen) 7-day horizon once more calendar time has passed.
+- **Held-out window boundary: 2026-09-05T17:07:49Z** — the `decision_timestamp`
+  of this sub-phase's first live Judge decision. Every `decision_outcomes`
+  row is stamped `in_holdout_window = true` unconditionally from this
+  sub-phase onward (not a random subset) — the commitment is to never tune
+  Judge prompts/Risk Engine formulas/Portfolio Construction logic against
+  live decisions from this point forward, so 3f/3g's "did accuracy actually
+  improve" comparisons mean something.
+- **Replacement logic is scoped to assets judged in the SAME run only** — a
+  new candidate can only displace an existing holding that also has a fresh
+  `risk_adjusted_alpha` from this run's Judge output; an idle holding outside
+  today's `TOP_CANDIDATES` is never displaced without fresh evidence.
+- **A third parallel `OpenRouterJudgeProvider`** — same deliberate
+  duplicate-over-shared-abstraction-risk trade-off as 3d's, applied again
+  rather than generalizing either of the two already-shipped, live-verified
+  provider classes.
 
 ## Project layout
 

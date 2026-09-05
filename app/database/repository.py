@@ -2,13 +2,16 @@ from datetime import UTC, datetime
 
 from supabase import Client
 
+from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
+from app.judge.schemas import JudgeDecisionRecord
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.schemas import MarketSnapshot
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
+from app.portfolio.schemas import PortfolioAllocationChange, PortfolioPosition
 
 
 class AssetRepository:
@@ -116,6 +119,23 @@ class MarketSnapshotRepository:
     def insert_snapshot(self, snapshot: MarketSnapshot) -> None:
         self._client.table("market_snapshots").insert(snapshot.to_row()).execute()
 
+    def get_snapshots_in_range(
+        self, asset_id: str, start: datetime, end: datetime
+    ) -> list[MarketSnapshot]:
+        """Oldest-first snapshots in [start, end] — used by 3e's outcome
+        evaluation (triple-barrier walk-forward) and by the Risk Engine's
+        correlation check (return series from actual stored history)."""
+        response = (
+            self._client.table("market_snapshots")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .gte("timestamp", start.isoformat())
+            .lte("timestamp", end.isoformat())
+            .order("timestamp", desc=False)
+            .execute()
+        )
+        return [MarketSnapshot.model_validate(row) for row in response.data]
+
 
 class NewsRepository:
     """Persists news articles, deduplicating on `content_hash`."""
@@ -175,6 +195,20 @@ class LLMAnalysisRepository:
 
     def insert_analysis(self, record: LLMAnalysisRecord) -> None:
         self._client.table("llm_analyses").insert(record.to_row()).execute()
+
+    def get_latest_by_asset(self, asset_id: str, limit: int = 3) -> list[LLMAnalysisRecord]:
+        """Most recent Phase 2 analyses for one asset across providers — one
+        of the Judge's (3e) inputs, alongside 3d's richer multi-horizon
+        assessment."""
+        response = (
+            self._client.table("llm_analyses")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [LLMAnalysisRecord.model_validate(row) for row in response.data]
 
 
 class AssetStatusRepository:
@@ -426,3 +460,158 @@ class ModelMarketAssessmentRepository:
 
     def insert(self, record: ModelMarketAssessmentRecord) -> None:
         self._client.table("model_market_assessments").insert(record.to_row()).execute()
+
+    def get_latest_by_asset(self, asset_id: str, limit: int = 10) -> list[ModelMarketAssessmentRecord]:
+        """Recent assessments for one asset across every model — used by
+        3e's Judge context alongside `get_latest_run_assessments()` when the
+        caller already knows the asset it wants (kept separate rather than
+        always filtering the full-run fetch, mirroring the
+        EvidenceObservationRepository per-asset/global split)."""
+        response = (
+            self._client.table("model_market_assessments")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("assessment_timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [ModelMarketAssessmentRecord.model_validate(row) for row in response.data]
+
+    def get_latest_run_assessments(self) -> list[ModelMarketAssessmentRecord]:
+        """Every row from the most recent run that produced any assessments
+        — same two-step "latest run_id, then all its rows" pattern as
+        `ScreenedUniverseRepository.get_latest_top_candidates()`. Used by
+        3e's Judge so it can run decoupled from whether `--with-assessment`
+        happened earlier in the *same* process invocation."""
+        latest = (
+            self._client.table("model_market_assessments")
+            .select("run_id, assessment_timestamp")
+            .order("assessment_timestamp", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not latest.data:
+            return []
+
+        run_id = latest.data[0]["run_id"]
+        response = (
+            self._client.table("model_market_assessments")
+            .select("*")
+            .eq("run_id", run_id)
+            .execute()
+        )
+        return [ModelMarketAssessmentRecord.model_validate(row) for row in response.data]
+
+
+class JudgeDecisionRepository:
+    """Persists/reads `judge_decisions` (3a schema, populated starting 3e) —
+    the full narrative record of every Judge output."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: JudgeDecisionRecord) -> str:
+        response = self._client.table("judge_decisions").insert(record.to_row()).execute()
+        return response.data[0]["id"]
+
+    def get_latest_by_asset(self, asset_id: str) -> JudgeDecisionRecord | None:
+        response = (
+            self._client.table("judge_decisions")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return JudgeDecisionRecord.model_validate(response.data[0])
+
+
+class DecisionOutcomeRepository:
+    """Persists/reads `decision_outcomes` (3a schema) — the continuous
+    calibration ledger the evaluation step and calibration script both read
+    from."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, outcome: DecisionOutcome) -> None:
+        self._client.table("decision_outcomes").insert(outcome.to_row()).execute()
+
+    def get_unresolved(self, limit: int = 500) -> list[DecisionOutcome]:
+        response = (
+            self._client.table("decision_outcomes")
+            .select("*")
+            .eq("outcome_label", "UNRESOLVED")
+            .limit(limit)
+            .execute()
+        )
+        return [DecisionOutcome.model_validate(row) for row in response.data]
+
+    def update_outcome(
+        self, decision_id: str, realized_return: float, outcome_label: str, evaluated_at: datetime
+    ) -> None:
+        self._client.table("decision_outcomes").update(
+            {
+                "realized_return": realized_return,
+                "outcome_label": outcome_label,
+                "evaluated_at": evaluated_at.isoformat(),
+            }
+        ).eq("decision_id", decision_id).execute()
+
+
+class CalibrationRunRepository:
+    """Persists `calibration_runs` — every calibration/backtest attempt as a
+    first-class, countable event (3e's baseline script, extended by 3g)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: CalibrationRunRecord) -> None:
+        self._client.table("calibration_runs").insert(record.to_row()).execute()
+
+
+class PortfolioPositionRepository:
+    """Reads/writes `portfolio_positions` (migration 0007) — current state
+    of the paper book, one row per asset with a nonzero-ever allocation."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def get_all(self) -> dict[str, PortfolioPosition]:
+        response = self._client.table("portfolio_positions").select("*").execute()
+        return {row["asset_id"]: PortfolioPosition.model_validate(row) for row in response.data}
+
+    def upsert(self, position: PortfolioPosition) -> None:
+        self._client.table("portfolio_positions").upsert(
+            {
+                "asset_id": position.asset_id,
+                "current_allocation": position.current_allocation,
+                "last_decision_id": position.last_decision_id,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        ).execute()
+
+
+class PortfolioAllocationChangeRepository:
+    """Persists `portfolio_allocation_changes` — the append-only log
+    MAX_WEEKLY_TURNOVER sums over a trailing window."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, change: PortfolioAllocationChange) -> None:
+        self._client.table("portfolio_allocation_changes").insert(change.to_row()).execute()
+
+    def get_turnover_since(self, since: datetime) -> float:
+        response = (
+            self._client.table("portfolio_allocation_changes")
+            .select("previous_allocation, new_allocation")
+            .gte("changed_at", since.isoformat())
+            .execute()
+        )
+        return sum(
+            abs(float(row["new_allocation"]) - float(row["previous_allocation"]))
+            for row in response.data
+        )
