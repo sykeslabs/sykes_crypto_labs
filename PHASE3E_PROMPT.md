@@ -33,10 +33,13 @@ before starting 3f.
   requirement to build an API now, but Phase 5's FastAPI dashboard will read
   directly from these tables/shapes later, so avoid anything that would need
   reshaping just to be queryable.
-- Judge confidence must be explicitly decoupled from model consensus. A model
-  disagreement of 0.58 and a Judge confidence of 0.52 existing simultaneously
-  is a valid, unremarkable output — never derive Judge confidence as an
-  average of model confidences.
+- Judge confidence must be explicitly decoupled from model consensus and
+  from the `composite_factor_score`. A model disagreement of 0.58 and a
+  Judge confidence of 0.52 existing simultaneously is a valid, unremarkable
+  output — never derive Judge confidence as an average of model confidences,
+  and never derive it as a blend with the factor score either. A high
+  composite factor score and low Judge confidence (or vice versa) is a
+  legitimate, informative output, not a bug to reconcile.
 - `NO_TRADE` must be a real, reachable outcome. If in testing the Judge
   almost never outputs it, that's a sign of action bias in the prompt/logic —
   fix it before moving on.
@@ -59,9 +62,35 @@ before starting 3f.
 ## Task detail
 
 **1. Judge (`app/judge/`).**
-Input: market data + regime snapshot (3b), derivatives/on-chain evidence
-(3c), model assessments + `model_agreement` (3d), existing Phase 2
-`llm_analyses`/news, current portfolio status (3a). Output strict JSON:
+Input: market data + regime snapshot (including BTC dominance and the
+altcoin-season/breadth index) + `composite_factor_score` + anomaly flag
+(3b), derivatives (funding rate, futures term structure with its annualized
+carry yield, open interest, options IV/skew and the derived volatility risk
+premium), on-chain evidence (DeFi TVL flows, on-chain valuation-cycle
+metrics — MVRV/SOPR/NUPL/LTH-STH cohorts), stablecoin supply/velocity/
+exchange reserves, spot ETF flows, prediction-market implied probabilities,
+and token unlock/vesting schedule (3c), model assessments + `model_agreement`
+(3d), existing Phase 2 `llm_analyses`/news, current portfolio status (3a).
+The composite factor score is a distinct, non-LLM input — the Judge should
+be able to reason explicitly about cases where the quantitative factor
+score and the LLM/adversarial narrative disagree (e.g. surface that tension
+in `key_evidence`/`contradictory_evidence`, don't silently resolve it). A
+known future event like a scheduled token unlock should generally surface
+in `invalidation_conditions` rather than `key_risks` alone, since it's a
+dated fact the thesis can be explicitly conditioned on ("thesis holds
+unless a >X% supply unlock occurs before the horizon"), not a diffuse risk.
+The volatility risk premium and the dominance/altseason reading are
+positioning/regime-context inputs, same standing as the composite factor
+score — reason about them explicitly, never fold them silently into
+`confidence`.
+
+Build the Judge's input-handling so that 3f's adversarial/macro evidence and
+3i's entity-flow/custody-OTC-flow/network-fundamentals evidence (added
+after this sub-phase, following the same "extend the input set, don't
+redesign the Judge" pattern already used by 3f) can be added as further
+labeled `source_assessment`-style inputs without a rewrite — the point at
+this stage is a stable, generic evidence-input shape, not exhaustive
+coverage of every source that will eventually exist. Output strict JSON:
 
 ```
 {
@@ -115,6 +144,16 @@ capped, simplified Kelly-style or inverse-volatility adjustment, bounded by
 simple and inspectable (this is a paper system, not a production risk desk) —
 the goal is that two assets with equal Judge confidence but very different
 volatility don't get equal-sized positions by default.
+
+Add **uncertainty-aware scaling**: alongside the volatility adjustment above,
+scale the position down further when `model_agreement`/`source_agreement`
+(3d/3e) is low — i.e. `uncertainty` is high — using a simple, inspectable
+multiplier (not a second independent cap; compose it with the volatility
+adjustment, don't let either one alone determine sizing). Two assets with
+equal Judge confidence and equal volatility but very different model
+agreement should not get equal-sized positions by default; 3g will later
+check whether this actually improves calibration by agreement bucket, but
+the mechanism should exist now so that check has something to evaluate.
 
 Add a basic **correlation awareness** check: compute a simple correlation
 matrix across currently-held + candidate assets from historical
@@ -185,6 +224,9 @@ chosen.
   at least occasional `requires_review = true` — that respect Risk Engine
   constraints.
 - Position sizes visibly differ by volatility, not just by Judge confidence.
+- Position sizes are also visibly smaller for equal-confidence, equal-
+  volatility decisions with weak model/source agreement than for those with
+  strong agreement.
 - Correlation flag demonstrably triggers on a concentrated/correlated test
   scenario.
 - `decision_outcomes` rows are created for real decisions and the evaluation

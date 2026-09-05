@@ -75,7 +75,34 @@ volatility, drawdown, relative strength. Keep factor computation isolated and
 testable (pure functions over input data) — reused/extended later, and needs
 to be backtestable without hitting live APIs in tests.
 
-**6. Deterministic market-regime classifier.**
+**6. Deterministic composite factor score.**
+Combine the factors from task 5 (momentum, volatility, drawdown, relative
+strength, liquidity/volume) into a single, documented, deterministic
+composite score per asset — a simple weighted or rank-based combination is
+fine, but the weights/method must be logged, not tuned by feel. This is
+**not** a sentiment score and does not replace the individual factors, which
+stay independently visible per the "no blended sentiment" non-negotiable
+above — it exists specifically as a distinct, purely quantitative signal
+that 3e's Judge can weigh *alongside* (not merged into) the LLM/adversarial
+evidence, since a system that only ever reasons narratively about numbers
+has no non-LLM check on whether the narrative and the arithmetic agree.
+Persist it as `composite_factor_score` on the full-screened-universe record
+from task 8 below (column reserved by 3a).
+
+**7. Basic screening-stage anomaly / wash-trading flag.**
+Before an asset's factors are finalized, run a simple check for
+implausible volume/price behavior relative to that asset's own recent
+history (e.g. a volume or price z-score/percentage-jump threshold, similar
+in spirit to 3d's later per-call sanity check but applied here at discovery
+time, before an anomalous asset can even become a candidate). Flag, don't
+silently exclude — a flagged asset can still surface as a `CANDIDATE`, but
+the flag must be visible in its screening record and carried forward so
+later stages know to treat it with extra scrutiny. This is a heuristic
+guard against wash-trading/pump-and-dump patterns in the smaller-cap tier
+of the universe, not a general market-manipulation detector — keep it
+simple and inspectable, same rule as the regime classifier below.
+
+**8. Deterministic market-regime classifier.**
 This is new and important: compute a single, run-level market regime *once
 per run* — not separately guessed per-asset later by each LLM call in 3d,
 which risks inconsistent regime labels across assets in the same run. Use
@@ -90,27 +117,72 @@ auditable, not a black box. Every later stage (3d's model assessments, 3e's
 Judge) should read this one regime snapshot per run rather than each
 inferring its own.
 
-**7. Candidate output.**
+Add **BTC dominance and an altcoin-season/breadth index** as additional
+inputs alongside the risk-on/risk-off inputs above — this is a distinct axis
+from "is crypto broadly risk-on," namely "is capital currently rotating from
+BTC into alts or the reverse." Compute BTC's share of total screened-universe
+market cap (dominance) and its trend, plus the standard altcoin-season
+formulation (e.g. % of the top N non-stablecoin assets in the universe that
+have outperformed BTC over a trailing 90d window, a widely-used
+CoinMarketCap-style definition) from data this sub-phase already collects —
+no new external source needed. Store both as their own labeled fields in
+`market_regime_snapshots.inputs`, distinct from the risk-on/risk-off
+classification itself: a `RISK_ON` + `BTC_DOMINANT` regime and a `RISK_ON` +
+`ALTCOIN_SEASON` regime call for different candidate-tilt reasoning
+downstream, and collapsing the two axes into one label would lose that
+distinction. This does not change the small risk-on/off/neutral enum itself
+— it adds an orthogonal, equally auditable field alongside it.
+
+Add **BTC's position in the halving cycle** as a further, orthogonal regime
+input, using the same "cheap, deterministic, zero-marginal-cost" reasoning as
+BTC dominance above: the four-year block-subsidy halving is a fixed, publicly
+known schedule (not inferred from market data), so compute BTC's current
+block height against the known/estimated schedule of past and next halving
+dates and store both **days since the most recent halving** and **days until
+the next estimated halving** (estimated from recent average block time if the
+next halving hasn't occurred yet) in `market_regime_snapshots.inputs`,
+alongside — not blended into — the risk-on/off and BTC-dominance/altcoin-
+season fields. This is a distinct axis from both: cycle-timing frameworks
+(pre-halving accumulation, post-halving markup, cycle-peak, bear) are widely
+referenced in professional crypto research as a multi-month-to-multi-year
+backdrop, separate from both the current risk-on/off regime and the
+BTC-vs-alts rotation question. Do not hard-code a "N days post-halving =
+bullish" rule at the collector level — store the raw day-counts only; any
+cycle-phase interpretation belongs to the Judge (3e) or later research
+(3f's scenario modeling), consistent with the "no blended sentiment,
+no editorializing at the collector level" rule used everywhere else in this
+sub-phase. No new external source or table needed — block height is already
+retrievable from data sources this sub-phase collects (or, if not already
+available, a single call to any of the already-integrated providers that
+expose it); if none of the existing sources expose block height cleanly,
+mark this specific field `NOT_IMPLEMENTED` rather than adding a new provider
+just for it, and revisit in 3c/3f where new providers are already being
+added anyway.
+
+**9. Candidate output.**
 Produce a ranked `TOP_CANDIDATES` list. Assets already `HELD` remain
 distinguishable from newly surfaced candidates. Tag genuinely new discoveries
 with the 3a `CANDIDATE` status.
 
 Also persist a compact record of the **full screened universe** for the run
-(asset id + its screening factor values + rank), not just the assets that
-made `TOP_CANDIDATES` — a lightweight row per screened asset is enough, no
-need to store full evidence for assets that don't surface. This exists
-specifically so that later validation work (3g) can check for survivorship
-bias in discovery: if only assets that later performed well are ever visible
-in the historical record, any calibration or accuracy check built on "what
-got surfaced" is silently biased, because it never sees what got correctly
-or incorrectly screened out.
+(asset id + its screening factor values + rank + `composite_factor_score` +
+the anomaly flag from task 7), not just the assets that made
+`TOP_CANDIDATES` — a lightweight row per screened asset is enough, no need to
+store full evidence for assets that don't surface. This exists specifically
+so that later validation work (3g) can check for survivorship bias in
+discovery: if only assets that later performed well are ever visible in the
+historical record, any calibration or accuracy check built on "what got
+surfaced" is silently biased, because it never sees what got correctly or
+incorrectly screened out.
 
-**8. Tests & docs.**
+**10. Tests & docs.**
 `pytest` passes without live credentials (mock CoinMarketCap/Coinbase/Binance
-responses). Update `README.md`: mark 3b complete, document actual field
-availability/rate limits found at each provider's tier, and record the
-regime classifier's chosen inputs/thresholds as a "known limitations /
-decisions" note (like the existing Phase 2 section does for news coverage).
+responses, plus a fixture case that should trip the anomaly flag). Update
+`README.md`: mark 3b complete, document actual field availability/rate
+limits found at each provider's tier, and record the regime classifier's and
+composite factor score's chosen inputs/weights/thresholds as a "known
+limitations / decisions" note (like the existing Phase 2 section does for
+news coverage).
 
 ## Exit criteria
 
@@ -120,12 +192,26 @@ decisions" note (like the existing Phase 2 section does for news coverage).
   universe size.
 - Cross-source disagreement (CoinGecko vs. CoinMarketCap vs.
   Coinbase/Binance) is visible in output/logs for overlapping assets.
-- A `market_regime_snapshots` row is written each run with auditable inputs.
+- A `market_regime_snapshots` row is written each run with auditable inputs,
+  including BTC dominance and the altcoin-season/breadth index alongside the
+  risk-on/off inputs, and BTC's halving-cycle day-counts (or an explicit
+  `NOT_IMPLEMENTED` note if block height genuinely isn't available from any
+  in-scope source yet).
+- A `composite_factor_score` is computed per screened asset with the
+  weighting/method documented, and stays visibly distinct from the
+  individual factors and from any later LLM/Judge confidence value.
+- The screening-stage anomaly/wash-trading flag demonstrably triggers on a
+  synthetic bad-volume/price-jump test case without excluding the asset
+  outright.
 - The full screened universe for each run is persisted (not just
   `TOP_CANDIDATES`), enabling a future survivorship-bias check.
 - Zero new LLM calls/cost.
 - `pytest` green without credentials.
 - README updated with real tier/rate-limit findings.
 
-Stop here, report what was built, tier/rate-limit findings, and the regime
-classifier's behavior, and wait for confirmation before starting 3c.
+Stop here, report what was built, tier/rate-limit findings, the regime
+classifier's behavior (including the observed BTC dominance trend,
+altcoin-season/breadth reading, and halving-cycle day-counts, or why the
+latter was marked `NOT_IMPLEMENTED`), the composite factor score's chosen
+weighting, and any anomaly flags observed on the live universe, and wait for
+confirmation before starting 3c.

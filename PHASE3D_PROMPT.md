@@ -75,8 +75,13 @@ Every asset's prompt must include the **same** `market_regime_snapshots` row
 for this run (from 3b) — don't let each model or each asset infer its own
 regime label; that inconsistency was exactly what the regime classifier in
 3b was built to avoid. Combine this with asset-specific evidence: market
-data (CoinGecko/CMC/Coinbase/Binance), funding/options/on-chain data (3c),
-existing news (Phase 2), and current portfolio status (3a).
+data (CoinGecko/CMC/Coinbase/Binance), the deterministic `composite_factor_score`
+and anomaly flag (3b), funding/options/on-chain/stablecoin-velocity/ETF-flow/
+prediction-market data where available (3c), existing news (Phase 2), and
+current portfolio status (3a). The composite factor score is included as a
+labeled, distinct input (`source_assessment` entry, not folded into the
+model's own confidence) — models may reason about whether their own view
+agrees or disagrees with it, same as any other source.
 
 **3. New persistence table**, e.g. `model_market_assessments`, distinct from
 `llm_analyses`. Suggested columns: `id, run_id, asset_id, provider, model,

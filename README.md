@@ -7,19 +7,35 @@ no exchange credentials or live orders exist yet.
 
 The long-term goal is a full-fledged AI crypto research and advisory system: broad
 market screening across an open universe (not a fixed coin list), multi-source
-evidence collection (exchange-native market data, derivatives positioning,
-options skew, on-chain/DeFi flows, liquidations, news, macro, independent
-analysts), a deterministic market-regime classification, multi-model
-independent assessment (including, optionally, xAI's Grok alongside Claude/
-GPT/Gemini), adversarial (bull/bear) research, and a deterministic Judge +
-Risk Engine that turns all of this into paper-only recommendations — sized
-with volatility/correlation awareness, traced and versioned via optional
-Langfuse instrumentation, tracked against realized outcomes over time, and
-including the ability to say "no trade" when evidence is weak or
-contradictory. Further out, a read/query API (FastAPI) exposes this to a
-dashboard, and — only once the recommendation pipeline is proven out — a
-bounded, tool-restricted execution agent handles actual order placement on a
-testnet exchange.
+evidence collection (exchange-native market data, a deterministic BTC-
+dominance/altcoin-season regime input, derivatives positioning — funding
+rates, dated-futures term structure/basis with its annualized carry yield,
+aggregate open interest, CME futures positioning via the CFTC's Commitment
+of Traders report — options skew and the derived volatility risk premium,
+on-chain/DeFi flows, on-chain valuation-cycle metrics (MVRV/SOPR/NUPL and
+long-term/short-term holder cohorts), BTC-specific miner metrics (hash rate,
+difficulty, reserves), liquidations, stablecoin supply and velocity, spot
+ETF flows, prediction-market implied probabilities, scheduled token
+unlock/vesting events, wallet-entity-clustering/"smart money" flow
+intelligence, custody/OTC desk flow, network usage and developer-activity
+fundamentals, news, macro (including global liquidity proxies and BTC's
+rolling correlation to equities/gold/DXY), a dated regulatory/policy event
+calendar, independent analysts, aggregate social/narrative sentiment, and a
+regional exchange price premium), a deterministic market-regime
+classification, a deterministic composite quant factor score computed
+independently of any LLM, multi-model independent assessment (including,
+optionally, xAI's Grok alongside Claude/GPT/Gemini), adversarial (bull/bear)
+research, and a deterministic Judge + Risk Engine that turns all of this
+into paper-only recommendations — sized with volatility/correlation
+awareness and checked against a historical portfolio stress test, traced and
+versioned via optional Langfuse instrumentation, tracked against realized
+outcomes over time (including a learned, statistically-honest check on which
+evidence sources actually earn their keep, and whether that value drifts by
+regime over time), and including the ability to say "no trade" when evidence
+is weak or contradictory. Further out, a read/query API (FastAPI) exposes
+this to a dashboard, and — only once the recommendation pipeline is proven
+out — a bounded, tool-restricted execution agent handles actual order
+placement on a testnet exchange.
 
 This is a deliberate, large expansion beyond the original Phase 1/2 scope. It
 is being built **in verified sub-phases**, not as one monolithic phase,
@@ -45,36 +61,84 @@ because:
   output, cost tracking with daily/monthly caps. Complete and verified with
   live LLM calls against a real Supabase project.
 - ⬜ **Phase 3 — Broad intelligence, discovery & judgment** (see
-  `PHASE3A_PROMPT.md` through `PHASE3G_PROMPT.md`, one per sub-phase),
+  `PHASE3A_PROMPT.md` through `PHASE3I_PROMPT.md`, one per sub-phase, plus
+  the optional, gated `PHASE3J_PROMPT.md` and `PHASE3K_PROMPT.md` addenda),
   split into verified sub-phases:
   - **3a** — Candidate/universe status schema, evidence provenance + numeric
-    freshness-decay convention, `signal_sources` registry, and schema
-    groundwork for market-regime snapshots, a decision-outcome ledger, and
-    prompt/template versioning (all populated in later sub-phases)
+    freshness-decay convention (now with an explicit **point-in-time
+    integrity** rule — revisable evidence fields are append-only, with an
+    `is_revision_of` chain and a documented "value as known at time T"
+    query convention, so later backtests can never accidentally read a
+    since-revised value for a past decision), `signal_sources` registry, and
+    schema groundwork for market-regime snapshots, a decision-outcome
+    ledger, and prompt/template versioning (all populated in later
+    sub-phases)
   - **3b** — CoinMarketCap + **Coinbase** + **Binance** exchange-native data,
-    deterministic market screening, candidate discovery, and a **deterministic
-    market-regime classifier** computed once per run
+    deterministic market screening, candidate discovery, a **deterministic
+    market-regime classifier** computed once per run (now also tracking
+    **BTC dominance and an altcoin-season/breadth index** as an orthogonal
+    rotation-vs-risk-on/off axis, and BTC's **halving-cycle position** —
+    days since/until the nearest halving — as a further, zero-marginal-cost
+    deterministic axis reflecting the multi-year cycle-timing framing
+    professional crypto research commonly uses), a **deterministic
+    composite factor score** (a purely quantitative, non-LLM signal the
+    Judge later weighs alongside narrative evidence rather than blends with
+    it), and a basic screening-stage anomaly/wash-trading flag
   - **3c** — Official derivatives & on-chain sources: **Binance funding
-    rates**, **Binance/Deribit aggregate open interest**, **Deribit options**
-    (implied volatility, put/call skew), **Etherscan/DefiLlama** on-chain &
-    DeFi TVL flows, and **stablecoin supply / exchange reserve** flow as a
-    capital-rotation proxy distinct from protocol-level TVL — all documented
-    APIs, zero LLM cost
+    rates**, **Binance/Deribit dated-futures term structure/basis** (now
+    also expressed as an **annualized basis/carry yield**),
+    **Binance/Deribit aggregate open interest**, **CME futures positioning**
+    via the CFTC's weekly **Commitment of Traders (COT)** report — a
+    regulated-futures view of institutional positioning by trader category,
+    distinct from both perpetual funding rate and spot ETF flows —
+    **Deribit options** (implied volatility, put/call skew, and the derived
+    **volatility risk premium** against 3b's realized-volatility factor),
+    **Etherscan/DefiLlama** on-chain & DeFi TVL flows, **on-chain
+    valuation-cycle metrics** (MVRV/MVRV Z-Score, SOPR, NUPL, LTH-MVRV/
+    STH-MVRV cohort breakdowns, via Glassnode or CryptoQuant), **BTC miner
+    metrics** (hash rate, difficulty, miner reserves and exchange flow, via
+    the same on-chain analytics provider), **stablecoin supply and velocity
+    / exchange reserve** flow as capital-rotation proxies distinct from
+    protocol-level TVL, **spot BTC/ETH ETF net flows** (via Farside
+    Investors / SoSoValue) as an institutional-capital proxy,
+    **prediction-market implied probabilities** (Polymarket/Kalshi) for a
+    curated set of relevant contracts, and **token unlock/vesting
+    schedules** (via Messari or TokenUnlocks) as a known-in-advance calendar
+    event distinct from every other inferred-from-current-data source here
+    — all documented APIs (a couple may require a paid tier — a dollar
+    cost, not an LLM cost), zero LLM cost
   - **3d** — Multi-model current market assessment (separate from
     `llm_analyses`), now with consistent regime/derivatives/on-chain context,
     prompt-template versioning, an optional **Grok (xAI)** model in the
     OpenRouter model set, and optional **Langfuse** call tracing
-  - **3e** — Deterministic Judge, Risk Engine (volatility/correlation-aware
-    sizing), Portfolio Construction, and a **continuous decision-outcome
-    ledger** for ongoing calibration — each decision tagged with its market
-    regime and Judge confidence, a **held-out decision window** reserved and
-    respected from this point forward, and a baseline backtest against
-    existing Phase 1/2 data reporting **both hit-rate and calibration
-    (Brier score)**, not directional accuracy alone
-  - **3f** — Adversarial bull/bear research, scenario modeling, macro matrix,
-    and the remaining exploratory/fragile sources (CoinAnk, CoinGlass
-    liquidation heatmap, CryptoBubbles, PlanB/X — the latter accessed via
-    **xAI's API**, which has native X/Twitter search) — each gated on a real
+  - **3e** — Deterministic Judge (now also weighing 3b's non-LLM
+    `composite_factor_score` as a distinct input alongside model/adversarial
+    evidence), Risk Engine (volatility/correlation-aware sizing, now also
+    **uncertainty-aware**: position size scales down when model/source
+    agreement is weak, composed with the existing volatility adjustment
+    rather than replacing it), Portfolio Construction, and a **continuous
+    decision-outcome ledger** for ongoing calibration — each decision tagged
+    with its market regime and Judge confidence, a **held-out decision
+    window** reserved and respected from this point forward, and a baseline
+    backtest against existing Phase 1/2 data reporting **both hit-rate and
+    calibration (Brier score)**, not directional accuracy alone
+  - **3f** — Adversarial bull/bear research, scenario modeling, a macro
+    matrix extended with a **forward-looking scheduled macro-event
+    calendar** (known-in-advance FOMC/CPI/PCE/NFP release dates, distinct
+    from the after-the-fact print observations already in the matrix),
+    **global liquidity proxies** (M2, Fed balance
+    sheet, via FRED) and BTC's **rolling correlation to equities/gold/DXY**,
+    and the remaining exploratory/fragile-to-extract sources (CoinAnk,
+    CoinGlass liquidation heatmap, CryptoBubbles, PlanB/X — the latter
+    accessed via **xAI's API**, which has native X/Twitter search —
+    aggregate **social/narrative sentiment** via Santiment or LunarCrush-
+    style tracking, a **regulatory/policy event calendar** via SEC
+    EDGAR and congress.gov, official sources where the extraction of a
+    dated, asset-specific event is the unverified part, and a **regional
+    exchange price premium** — e.g. the historically-documented "Kimchi
+    premium" on Korean venues — as a proxy for regionally concentrated
+    retail speculative intensity, distinct from the ordinary cross-venue
+    aggregation noise already logged in 3b) — each gated on a real
     access-feasibility check; re-run calibration afterward (by regime, not
     just in aggregate) and spot-check whether the Judge's own stated
     reasoning actually follows from its cited evidence
@@ -82,11 +146,91 @@ because:
     probability-of-backtest-overfitting** correction across every
     prompt/logic iteration made in 3d–3f (so "it got better" claims account
     for how many times the system was tried, not just the final number), a
-    full calibration/reliability report broken down by regime, a report on
-    the held-out window in isolation, and a Judge-reasoning audit — the
-    gate this project treats as the actual determinant of whether Phase 3
-    improved prediction accuracy, rather than a raw before/after delta
+    full calibration/reliability report broken down by regime **and by
+    model/source-agreement bucket** (so disagreement functions as a genuine,
+    checked uncertainty signal rather than an unverified assumption), a
+    report on the held-out window in isolation, a **point-in-time/
+    look-ahead-bias audit** re-deriving revisable evidence (on-chain
+    valuation metrics, ETF flow figures, regulatory-event extraction) as it
+    would have appeared at decision time and confirming no since-revised
+    value leaked into training/calibration, a **purged/embargoed
+    walk-forward check** — a distinct leakage risk from point-in-time
+    correctness, since autocorrelated evidence (on-chain metrics, funding
+    rates, open interest) can leak across a held-out boundary even when
+    every individual value is correctly dated, so this task quantifies
+    whether the held-out window has an adequate embargo gap and flags it as
+    a finding if not — and a Judge-reasoning audit — the gate this project
+    treats as the actual determinant of whether Phase 3 improved prediction
+    accuracy, rather than a raw before/after delta
+  - **3h** — A later addendum, added after a gap-analysis against
+    professional crypto-advisory practice: a **learned evidence-value
+    ranking** (a simple, inspectable supervised model checked against
+    `decision_outcomes`, reported alongside — never blended into — the
+    Judge's own implicit evidence weighting, including a **rolling-window/
+    regime-sliced drift variant** that catches a source whose predictive
+    value shifts over time rather than only its full-history average) and a
+    deterministic **portfolio tail-risk stress test** (historical/
+    scenario-based drawdown and VaR/CVaR-style estimates under a
+    correlated-crash scenario). Reporting-only, same standing as 3g's
+    findings — neither auto-adjusts Judge, Risk Engine, or `signal_sources`
+    without explicit confirmation
+  - **3i** — A second later addendum from the same gap-analysis pass: three
+    further evidence sources closing gaps against institutional on-chain
+    research practice — **wallet-entity-clustering/"smart money" flow
+    intelligence** (Nansen/Arkham-class, resolving 3c's documented
+    unclustered-large-transfer limitation), **custody/OTC desk flow
+    tracking** (institutional accumulation that happens off public exchange
+    order books and outside the spot-ETF wrapper entirely), and **network
+    usage & developer-activity fundamentals** (active addresses, fee
+    revenue, GitHub commit velocity) as a slower-moving, more
+    fundamentals-oriented evidence type. Unlike 3h, this is new
+    evidence-collection work wired into the existing Judge, not a
+    diagnostic-only tool — the same "extend the input set" pattern 3f used.
+    Now the last **required** sub-phase of Phase 3.
+  - **3j** *(optional, gated backlog — not scheduled by default)* — A third
+    gap-analysis addendum identifying **options gamma exposure/dealer
+    positioning** (distinct from 3c's IV/skew), **exchange counterparty/
+    solvency risk** (proof-of-reserves and insurance-fund monitoring), and
+    **retail-demand proxies** (Google Trends/exchange-app-store rank,
+    complementary to 3f's social/narrative sentiment). Unlike every other
+    Phase 3 sub-phase, 3j is explicitly **not** implemented until 3h's
+    evidence-value ranking, run against real decision history, surfaces a
+    specific named gap one of these three would plausibly close — adding
+    them speculatively would mean shipping more cost-bearing, drift-prone
+    inputs with no evidence the existing 3a–3i evidence set is actually the
+    bottleneck. See `PHASE3J_PROMPT.md` for the exact gating condition.
+  - **3k** *(optional, gated backlog — not scheduled by default)* — A
+    fourth gap-analysis addendum identifying **DeFi lending/borrowing
+    rates** (Aave/Compound-style supply/borrow APYs and utilization, a
+    leverage/carry proxy distinct from 3c's TVL flows and funding rates),
+    **staking yield/validator queue depth** for proof-of-stake assets
+    (supply-side lockup dynamics distinct from 3c's valuation-cycle
+    cohorts), and **stablecoin depeg-risk monitoring** (distinct from 3c's
+    supply/velocity tracking — a tail-risk flag, not a directional input).
+    A fourth candidate, order-flow imbalance/LOB microstructure, was
+    considered and explicitly **not** added to this backlog — it was
+    already deliberately rejected earlier (see "Technology stack
+    decisions") as out of scope for this project's multi-day-to-multi-month
+    Judge horizon, and that reasoning stands. Same gating discipline as
+    3j — not implemented until 3h's evidence-value ranking (or 3g's
+    Judge-reasoning audit or purged-walk-forward finding) surfaces a
+    specific named gap one of these three would plausibly close. See
+    `PHASE3K_PROMPT.md` for the exact gating condition.
 - ⬜ Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
+  (see `PHASE4_PROMPT.md`). Simulated fills must be **order-book-depth-aware**
+  (volume-weighted execution price against real bid/ask depth, with a
+  labeled volatility-scaled fallback where depth data is unavailable) and
+  fee-aware, not mark-to-mid — every 3g/3h calibration and stress-test
+  number produced so far assumes costless, instant fills, so this phase
+  re-runs those numbers net of realistic execution costs as an explicit,
+  separately-reported comparison, not a silent replacement, since 3g's
+  accuracy claims are only as meaningful as the fill assumptions behind
+  them. Portfolio Construction's
+  current inverse-vol/capped-Kelly sizing (3e) is deliberately simple for a
+  paper system, and whether a fuller portfolio-optimization approach
+  (e.g. risk parity or a constrained mean-variance step) is worth the added
+  complexity is a decision for Phase 4's own scoping prompt, not assumed
+  here
 - ⬜ Phase 5 — Dashboard, scheduling, and a **FastAPI** read/query layer over
   the Evidence Store (candidates, assessments, Judge decisions, portfolio
   state, cost reports)
@@ -131,9 +275,13 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
    on-chain flow, TVL/DeFi        CoinDesk,       long/short    liquidation   │
    stablecoin     rotation,       CoinTelegraph,  ratio         heatmap       │
    supply/        stablecoin      Decrypt                                     │
-   reserve proxy  supply                                                      │
+   velocity/      supply                                                      │
+   reserve proxy                                                              │
                                                         CryptoBubbles* (3f)    │
                                                         market-cap bubbles     │
+                                                                               │
+   Farside/SoSoValue (3c)               Polymarket/Kalshi (3c)                │
+   spot BTC/ETH ETF net flows           prediction-market implied probabilities│
                                                                                │
    (* = fragile/unofficial, feasibility-gated in 3f)                         │
         │              │              │              │              │        │
@@ -158,8 +306,9 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
         └───────────────────────────┬────────────────────────────┘
                                      ▼
         ┌──────────────────────────────────────────────────────────┐
-        │      SCREENING & REGIME CLASSIFICATION (3b)                │
-        │      pure Python, zero LLM cost                            │
+        │      SCREENING, REGIME & FACTOR SCORING (3b)                │
+        │      pure Python, zero LLM cost — market-regime            │
+        │      classifier + composite_factor_score + anomaly flag    │
         └───────────────────────────┬────────────────────────────┘
                                      ▼
         ┌──────────────────────────────────────────────────────────┐
@@ -242,6 +391,25 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
         └───────────────────────────┬────────────────────────────┘
                                      ▼
         ┌──────────────────────────────────────────────────────────┐
+        │   ADAPTIVE WEIGHTING & STRESS TESTING (3h) — diagnostic only │
+        ├──────────────────────────────────────────────────────────┤
+        │ learned evidence-value ranking, incl. rolling-window/        │
+        │ regime-sliced drift check (checked vs. Judge's implicit      │
+        │ weighting, never fed back in) · portfolio stress test        │
+        │ (historical/scenario drawdown, VaR/CVaR, extends Risk Engine)│
+        │ (reports/flags only — no auto-adjustment without confirmation)│
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │   ENTITY-FLOW, CUSTODY/OTC & NETWORK FUNDAMENTALS (3i)       │
+        ├──────────────────────────────────────────────────────────┤
+        │ Nansen/Arkham entity-flow intelligence · custody/OTC desk    │
+        │ balance tracking · active addresses/fees/dev activity ·      │
+        │ wired into the Judge (3e) as new labeled inputs, same        │
+        │ extend-the-input-set pattern 3f used · zero new LLM cost     │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
         │   PAPER TRADING EXECUTION (Phase 4)                          │
         │   simulated fills, fees, slippage — no live exchange         │
         └───────────────────────────┬────────────────────────────┘
@@ -261,13 +429,67 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
      FastAPI (Phase 5) ── read/query API ──▶ Dashboard (Phase 5)
 ```
 
+**Additional 3b/3c/3f/3g/3h/3i evidence sources and derived analytics not
+redrawn into the boxes above** (same ingestion layer, same Evidence Store,
+added after the diagram was first drawn — see "Technology stack decisions"
+for the rationale behind each):
+- **3b, derived (no new external source):** BTC dominance and an
+  altcoin-season/breadth index, and BTC's halving-cycle position (days
+  since/until the nearest halving), all computed from market/block data
+  already collected, as additional axes on the market-regime snapshot.
+- **3c, official:** Binance/Deribit dated-futures term structure (basis
+  curve, alongside funding rate and OI, now also expressed as an
+  annualized carry yield), the CFTC's Commitment of Traders report for CME
+  BTC/ETH futures positioning, Glassnode/CryptoQuant on-chain
+  valuation-cycle metrics (MVRV/SOPR/NUPL, LTH/STH cohorts) and
+  BTC-specific miner metrics (hash rate, difficulty, reserves), Messari/
+  TokenUnlocks token unlock & vesting schedules, and the derived
+  volatility risk premium (Deribit implied volatility minus 3b's
+  realized-volatility factor).
+- **3f, official-but-extraction-fragile or feasibility-gated:** a
+  forward-looking scheduled macro-event calendar (FOMC/CPI/PCE/NFP dates,
+  official-source, low-risk); FRED-based
+  global liquidity proxies and cross-asset correlation tracking (official,
+  low-risk access); SEC EDGAR / congress.gov-based regulatory event
+  calendar (official access, unverified per-asset extraction reliability);
+  Santiment/LunarCrush-style aggregate social/narrative sentiment; CoinAnk;
+  CoinGlass; CryptoBubbles; PlanB/X; and a regional exchange price premium
+  (e.g. a Kimchi-premium-style Korean-venue gap), grouped here because
+  reliable, ToS-compliant access to the relevant regional exchange is
+  unverified going in.
+- **3g, methodology check (no new evidence):** a purged/embargoed
+  walk-forward audit alongside the existing point-in-time audit, checking
+  whether the held-out window (and any rolling/regime-sliced split) has an
+  adequate buffer against leakage from autocorrelated evidence — a finding,
+  not a new signal source.
+- **3h, diagnostic-only:** a learned evidence-value ranking (checked
+  against, never fed back into, the live pipeline) — including a
+  rolling-window/regime-sliced variant that checks whether a source's
+  value has drifted over time rather than only its full-history average —
+  and a portfolio stress-test module extending the Risk Engine.
+- **3i, official/paid-tier, evidence-collection:** Nansen/Arkham-class
+  wallet-entity-clustering and "smart money" flow intelligence, known
+  custody/OTC-desk address balance tracking, and network usage (active
+  addresses, fees) plus developer-activity (commit velocity) fundamentals
+  — wired into the Judge as new labeled inputs, the same pattern 3f used.
+- **3j, gated/optional (not scheduled by default):** options gamma
+  exposure/dealer positioning, exchange counterparty/solvency risk
+  (monitoring-only), and retail-demand proxies — implemented only if 3h's
+  evidence-value ranking surfaces a specific named gap.
+- **3k, gated/optional (not scheduled by default):** DeFi lending/borrowing
+  rates, staking yield/validator queue depth (PoS assets only), and
+  stablecoin depeg-risk monitoring (monitoring-only) — same gating
+  discipline as 3j. Order-flow imbalance/LOB microstructure was considered
+  for this list and deliberately excluded; see "Technology stack
+  decisions."
+
 ### Component purposes
 
 | Component | Introduced | Purpose |
 |---|---|---|
-| **Provider/ingestion layer** (`app/market_data`, `app/news`, future per-source modules) | Phase 1–3c | Talks to each external API/feed, normalizes its response into the shared evidence-provenance shape, and tags freshness/status — the only layer allowed to touch a raw external API. |
+| **Provider/ingestion layer** (`app/market_data`, `app/news`, future per-source modules) | Phase 1–3i | Talks to each external API/feed, normalizes its response into the shared evidence-provenance shape, and tags freshness/status — the only layer allowed to touch a raw external API. |
 | **Evidence Store** (Supabase/Postgres) | Phase 1 | Single source of truth for every observation, model output, and decision. Relational, so backtesting and the decision-outcome ledger can join across tables by asset/time; JSONB columns give document-like flexibility for nested, source-specific fields without needing a second database. |
-| **Screening & regime classification** (3b) | 3b | Deterministic, no-LLM factor computation that ranks/filters the open asset universe into candidates, and classifies one shared market regime per run so every downstream stage sees the same label instead of inferring its own. |
+| **Screening, regime & factor scoring** (3b) | 3b | Deterministic, no-LLM factor computation that ranks/filters the open asset universe into candidates, classifies one shared market regime per run so every downstream stage sees the same label instead of inferring its own, combines the factors into a `composite_factor_score` the Judge can weigh as an independent, purely quantitative check against LLM narrative evidence, and flags anomalous volume/price behavior before an asset can surface as a candidate. |
 | **Multi-model assessment** (`app/llm`, 3d) | Phase 2 / 3d | Sends each candidate's evidence to multiple independent LLMs (Claude, GPT, Gemini, optionally Grok) via OpenRouter, validates strict JSON output, and persists each model's standalone view plus a computed `model_agreement` — evidence, not a decision. |
 | **Adversarial research** (3f) | 3f | Generates an explicitly opposing bull case and bear case per serious candidate, plus scenario modeling and a macro evidence matrix — additional evidence layers for the Judge, not decisions themselves. |
 | **Judge** (`app/judge`, 3e) | 3e | Synthesizes every evidence layer above into one structured recommendation per asset, with confidence explicitly decoupled from model/source agreement, and a `NO_TRADE` outcome always available. |
@@ -275,6 +497,8 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
 | **Portfolio Construction** (`app/portfolio`, 3e) | 3e | Turns Risk-Engine-adjusted Judge output plus current holdings/watchlist into concrete increase/hold/reduce/remove/initiate decisions, never forcing full capital deployment. |
 | **Decision-outcome ledger** (3e/3f) | 3e | Records every decision with a resolution horizon and backfills realized returns, giving the system a continuously-updated, ground-truth accuracy measure instead of a one-off backtest. Tags every row with the market regime and Judge confidence in effect at decision time, and marks whether it falls inside the held-out window, so later accuracy claims can be sliced honestly rather than only reported in aggregate. |
 | **Statistical validation** (`app/benchmarks` or a dedicated module, 3g) | 3g | The layer that decides whether an accuracy claim is real: Deflated Sharpe Ratio / probability-of-backtest-overfitting correction across every prompt/logic iteration actually tried, full Brier/reliability calibration reporting by regime, an isolated held-out-window result, and a periodic audit of whether the Judge's stated reasoning follows from its own cited evidence. Produces findings and recommendations only — it does not modify upstream evidence collection or decision logic itself. |
+| **Adaptive weighting & stress testing** (3h) | 3h | Three diagnostic-only additions closing gaps identified against professional practice: a learned, sample-size-honest evidence-value ranking checked against the Judge's implicit weighting (including a rolling-window/regime-sliced drift variant, never fed back into the live pipeline), and a deterministic portfolio stress test (historical/scenario drawdown, VaR/CVaR-style estimate) extending the Risk Engine's existing sizing/correlation checks. Reports and flags only — same non-auto-adjusting standing as 3g. |
+| **Entity-flow, custody/OTC & network fundamentals** (3i) | 3i | Three further evidence sources from the same gap-analysis as 3h: wallet-entity-clustering/"smart money" flow intelligence, custody/OTC desk balance tracking, and network usage/developer-activity fundamentals. Unlike 3h, this is new evidence-collection work wired into the Judge's existing input set (3e), not a diagnostic-only tool. |
 | **CostGuard** (`app/llm/cost.py`) | Phase 2 | Cross-cutting spend cap checked before every LLM call from any stage; skips (not crashes) once a cap is hit. |
 | **Langfuse (optional)** | 3d onward | Cross-cutting, additive tracing of LLM calls (prompt, response, cost, latency) for debugging and comparing prompt versions from `prompt_templates` against real outcomes. Never a dependency of the decision pipeline — Supabase remains authoritative. |
 | **Paper Trading Execution** (`app/trading`) | Phase 4 | Simulates fills for Portfolio Construction's target changes without touching any real exchange. |
@@ -356,15 +580,223 @@ deliberately *not* adopted — doesn't get lost as the project grows.
   walk-forward and leakage-control methodology, not for the Judge's evidence
   format. Revisit explicitly (as its own scoped phase, with its own
   validation approach) rather than folding it into an existing sub-phase if
-  a shorter-horizon component is ever wanted.
-- **Aggregate open interest, stablecoin supply, and exchange-reserve flow —
-  adopted, 3c.** All three are official/documented-API-accessible from
+  a shorter-horizon component is ever wanted. Re-examined during the 3k
+  gap-analysis pass and reaffirmed unchanged — the horizon-mismatch
+  reasoning above doesn't depend on which other evidence sources exist, so
+  it wasn't reopened just because 3k was looking at nearby data (order-book
+  depth) for other purposes.
+- **Aggregate open interest, stablecoin supply/velocity, and exchange-reserve
+  flow — adopted, 3c.** All are official/documented-API-accessible from
   venues already integrated by 3c (Binance, Deribit, DefiLlama, the existing
   on-chain explorer), so they're near-zero marginal cost, and each captures
   a distinct fact — position magnitude (OI), capital entering the crypto
-  ecosystem (stablecoin supply), and capital sitting on exchanges specifically
-  (reserves) — that the funding-rate and TVL sources already in scope don't
-  capture on their own.
+  ecosystem (stablecoin supply), whether that capital is actually moving
+  (velocity), and capital sitting on exchanges specifically (reserves) —
+  that the funding-rate and TVL sources already in scope don't capture on
+  their own.
+- **Spot ETF flows — adopted, 3c.** Institutional-desk practice increasingly
+  treats spot BTC/ETH ETF net flows as the primary medium/long-horizon
+  proxy for institutional positioning, read *alongside* (not instead of)
+  derivatives leverage data to distinguish capital-driven demand from
+  leveraged speculation. Accessed via a documented aggregator (Farside
+  Investors / SoSoValue) rather than per-issuer scraping, so it fits the
+  same "official/documented source" bar as everything else in 3c. Not
+  adopted earlier (3b) because it's a capital-flow fact, not a screening
+  input over the open universe — most assets in the universe don't have a
+  spot ETF at all.
+- **Prediction markets — adopted, 3c, narrowly scoped.** Polymarket/Kalshi
+  implied probabilities are a genuinely distinct evidence *type* — a
+  market-priced probability for a specific, well-defined outcome, unlike
+  options IV (which prices uncertainty magnitude, not a specific outcome) or
+  LLM-stated confidence (which isn't backed by capital at risk). Scoped
+  narrowly to a curated, liquid contract set rather than broad coverage,
+  since thin-liquidity implied probabilities are noise, not signal — this is
+  a "verify real access and real liquidity before relying on it" source like
+  everything else in 3c, not an assumed-reliable one.
+- **Deterministic composite factor score — adopted, 3b.** The Judge's
+  primary evidence (3d model assessments, 3f adversarial research) is all
+  LLM-narrative-derived, even when it's reasoning over real numbers. A
+  simple, deterministic, non-LLM combination of the screening factors
+  already computed in 3b (momentum, volatility, drawdown, relative
+  strength) gives the Judge — and later, 3g's validation — a purely
+  quantitative reference point to check the narrative against, at zero
+  marginal LLM cost. Deliberately kept simple and inspectable (documented
+  weights, not a trained model) rather than a fitted quant model, consistent
+  with this project's "simple and auditable over sophisticated and opaque"
+  approach to every other deterministic component (Risk Engine sizing,
+  regime classifier).
+- **On-chain valuation-cycle metrics (MVRV/SOPR/NUPL/LTH-STH cohorts) —
+  adopted, 3c.** Professional on-chain research treats these as the
+  foundational metric set for cycle-position valuation — distinct from both
+  the transfer-flow/TVL data already in 3c (which measures capital
+  movement, not where the holder base sits relative to cost basis) and from
+  the LLM-narrative evidence in 3d/3f. Accessed via a documented provider
+  (Glassnode or CryptoQuant); a paid tier may be required for full
+  coverage, which is a dollar cost to weigh against project budget, not an
+  LLM cost, so it doesn't touch `CostGuard`. Coverage is expected to be
+  BTC/ETH-strong and thin-to-absent for most smaller-cap assets in the
+  universe, consistent with how every other 3c source handles uneven
+  per-asset coverage.
+- **Futures term structure / basis — adopted, 3c.** The perpetual funding
+  rate (already in 3c) captures perpetual-specific positioning and open
+  interest captures magnitude, but neither captures how futures desks price
+  forward expectations across concrete expiries the way a dated-futures
+  contango/backwardation curve does — a materially different signal, at
+  near-zero marginal integration cost since it's the same Binance/Deribit
+  venues already integrated for funding and options.
+- **Token unlock/vesting schedule — adopted, 3c.** Structurally unlike every
+  other source in this project: it's a calendar-dated *known future event*
+  rather than a read of current market/on-chain state. Particularly
+  relevant to this project's altcoin-heavy `in_asset = true` universe
+  (ONDO, ENA, JASMY, S, STORJ, JTO, etc.), where scheduled unlocks are a
+  real, foreseeable supply-side catalyst that price/volume/on-chain data
+  alone won't surface in advance. A natural input to the Judge's
+  `invalidation_conditions` (3e) rather than just another risk factor,
+  since the event date is known rather than inferred.
+- **Social/narrative sentiment — adopted, 3f, fragile.** Aggregate social
+  volume / trending-narrative tracking (Santiment/LunarCrush-style) is a
+  genuinely distinct evidence type from both Phase 2's RSS news (editorial
+  coverage) and 3f's PlanB/X source (one named analyst's stated opinion) —
+  it's an aggregate attention signal across many unnamed accounts. Placed
+  in 3f rather than 3c because reliable, reasonably priced programmatic
+  access is unverified going in, unlike the documented-API sources in 3c;
+  a low-effort/`UNAVAILABLE` outcome here is an acceptable result, same as
+  CoinAnk or CryptoBubbles.
+- **CME futures positioning (CFTC COT) — adopted, 3c.** A free, official,
+  weekly government report giving a regulated-futures view of institutional
+  positioning by trader category — distinct in kind from spot ETF flows
+  (fund-level capital movement) and perpetual funding rate (crypto-native
+  leverage), both already in 3c. Deliberately does not hard-code the
+  traditional "commercials are smart money" reading, since independent
+  analysis of BTC's COT data finds that relationship doesn't reliably
+  transfer from other commodities — the raw category breakdown is stored,
+  and any smart-money inference is left to the Judge.
+- **BTC miner metrics — adopted, 3c.** Hash rate, difficulty, and miner
+  reserve/exchange-flow data are a standard on-chain research category
+  (miner capitulation/recovery signals) sitting alongside the MVRV/SOPR/
+  NUPL metrics already scoped for 3c, typically from the same vendor
+  (Glassnode/CryptoQuant), so the marginal integration cost is low.
+  BTC-specific only — the mining security-budget dynamic doesn't transfer
+  to most of the rest of the universe.
+- **Global liquidity & cross-asset correlation (FRED) — adopted, 3f.** M2
+  growth, Fed balance sheet, and reverse-repo levels are widely treated in
+  crypto-macro research as a more informative multi-month driver than any
+  single data print, and BTC's rolling correlation to equities/gold/DXY
+  speaks directly to whether crypto is currently trading as a macro risk
+  asset. FRED is free, official, and documented, which keeps this to the
+  same reliability bar as everything else — placed in 3f because that's
+  where the macro-evidence-matrix logic already lives, not because the
+  access itself is fragile.
+- **Regulatory/policy event calendar — adopted, 3f, feasibility-gated.**
+  SEC EDGAR and congress.gov are both free, official, documented government
+  APIs — the access itself is not the risky part. What's unverified is
+  reliably extracting a dated, asset-specific, investment-relevant event
+  from raw filings/bills without an unacceptable false-positive/negative
+  rate, which is a similar risk profile to PlanB/X's post-parsing. Grouped
+  with 3f's feasibility-gated sources for that reason; a global/macro-scope
+  version (not attributed to a specific asset) is an acceptable fallback if
+  per-asset attribution isn't reliably achievable.
+- **Adaptive evidence-value ranking — adopted, 3h, diagnostic only.**
+  3f/3g's before/after calibration comparisons and manual
+  `signal_sources.enabled` toggling answer "did this source help" only in
+  aggregate and only when a human explicitly re-runs the comparison. A
+  simple, inspectable supervised model trained on `decision_outcomes`
+  produces a learned importance ranking across all structured evidence
+  fields at once, checked against — never blended into — the Judge's own
+  implicit weighting. Kept strictly diagnostic (same rule as
+  `composite_factor_score`'s relationship to the Judge) because turning a
+  small-sample learned model into a live re-weighting mechanism risks
+  exactly the overfitting-to-noise failure mode 3g's Deflated Sharpe/PBO
+  correction exists to catch.
+- **Evidence-value drift detection (rolling-window/regime-sliced) —
+  adopted, 3h.** A single full-history importance ranking (above) can hide
+  a source whose predictive value has genuinely shifted — crypto regimes
+  turn over fast enough (pre-ETF vs. post-ETF, a deleveraging year vs. a
+  quieter one) that a source informative in one stretch and inert in
+  another can average out to "mediocre" rather than surface as the more
+  actionable finding, "this source's value is regime-dependent." Re-running
+  task 1's method over rolling windows and regime slices, with the same
+  minimum-sample-size gating, catches that distinction at negligible extra
+  cost since it reuses the same modeling approach and data.
+- **Portfolio tail-risk stress testing — adopted, 3h.** The Risk Engine's
+  per-asset caps, volatility-adjusted sizing, and correlation-concentration
+  flag (3e) are all real-time/forward-looking checks; none of them asks
+  "what would this portfolio's drawdown have been in a historical
+  correlated-crash scenario," which is standard practice at institutional
+  risk desks before sizing is trusted. Kept simple and inspectable
+  (documented scenario templates, not a fitted tail-risk model), consistent
+  with every other deterministic component in this project, and explicitly
+  labels any cross-asset historical-data assumption as an assumption rather
+  than measured history.
+- **Screening-stage anomaly/wash-trading flag — adopted, 3b.** The smaller-
+  cap tier of an open, discovery-driven universe is exactly where wash
+  trading and pump-and-dump volume patterns are most likely to surface as
+  a "candidate" on raw momentum/volume factors alone. A cheap z-score/
+  percentage-jump check at screening time, before any evidence collection
+  or LLM cost is spent on an asset, is a proportionate response — flagging
+  rather than excluding, so the anomaly stays visible rather than silently
+  filtering the universe.
+- **BTC dominance / altcoin-season index — adopted, 3b.** The risk-on/
+  risk-off regime classification answers "is crypto broadly attracting or
+  shedding capital," but not the orthogonal, equally-watched professional
+  question of whether capital is rotating *within* crypto, from BTC into
+  alts or back. A derived, zero-marginal-cost computation from data 3b
+  already collects (BTC's share of screened-universe market cap and its
+  trend, plus the standard "% of the universe outperforming BTC over a
+  trailing window" formulation) gives the regime snapshot that second axis
+  without a new external source or a new table.
+- **Volatility risk premium (VRP) — adopted, 3c.** Deribit's implied
+  volatility (already captured) says how much uncertainty options are
+  pricing in, but professional options desks read that relative to
+  realized volatility — the spread between the two is what actually prices
+  the risk premium options sellers earn, and it behaves differently from
+  either input alone. A derived field pairing task 3's IV with 3b's
+  already-computed realized-volatility factor, at zero marginal cost.
+- **Annualized futures basis/carry yield — adopted, 3c.** The raw
+  dated-futures basis curve (already captured) is comparable within an
+  asset across expiries but awkward to compare across assets or against a
+  risk-free-rate benchmark. Annualizing it — a straightforward
+  transformation of data already collected — makes the term-structure
+  signal directly usable the way a fixed-income desk reads a carry trade,
+  without adding a new source or an interpretation judgment at the
+  collector level.
+- **Regional exchange premium — adopted, 3f, fragile.** A structural,
+  region-specific price gap (historically documented as the Korean "Kimchi
+  premium") reflects a genuinely different economic mechanism — capital
+  controls and regionally concentrated retail speculative intensity — than
+  the ordinary cross-venue aggregation noise 3b already logs between
+  globally arbitraged venues. Grouped with 3f's fragile sources because
+  reliable, ToS-compliant programmatic access to the relevant regional
+  exchange is unverified going in; a low-effort/`UNAVAILABLE` outcome is an
+  acceptable result, same as CoinAnk or CryptoBubbles.
+- **Entity-flow intelligence (Nansen/Arkham-class) — adopted, 3i.** 3c's
+  Etherscan-based on-chain source explicitly documents a known limitation:
+  a raw large-transfer count has no entity clustering behind it, so it
+  conflates genuine whale accumulation with routine exchange-internal
+  traffic. A paid, documented wallet-entity-clustering provider closes that
+  specific gap by labeling *who* is moving funds, not just that a transfer
+  occurred — a materially higher-confidence fact, though still not a
+  directional signal on its own (a labeled "smart money" cohort can be
+  wrong same as anyone). Scoped to 3i, after 3h, since it's genuinely new
+  evidence-collection work identified in the same gap-analysis pass that
+  produced 3h, not a diagnostic addition.
+- **Custody/OTC desk flow tracking — adopted, 3i.** A growing share of
+  institutional crypto activity, especially post-spot-ETF, happens through
+  custody providers or OTC desks and never touches a public exchange order
+  book — meaning it's invisible to both 3c's exchange-reserve proxy and
+  its spot-ETF-flow source. Tracking known custody-provider address
+  balances (e.g. Coinbase Custody, Fidelity Digital Assets) closes that
+  visibility gap at near-zero marginal cost, reusing the on-chain explorer
+  relationship already established in 3c.
+- **Network usage & developer-activity fundamentals — adopted, 3i.**
+  Distinct from both price-derived screening factors (3b) and on-chain
+  valuation-cycle metrics (3c, which describe where the holder base sits
+  relative to cost basis): active addresses, transaction throughput, and
+  fee revenue measure raw usage, and developer/commit activity measures
+  building activity — both slower-moving, more fundamentals-oriented
+  evidence types that professional long-horizon research treats as
+  differentiated inputs, fitting the Judge's existing 90-day-and-longer
+  horizon reasoning.
 - **Langfuse — adopted, optional starting 3d.** Complements, not replaces,
   the manual prompt-versioning (`prompt_templates`) and cost tracking
   (`CostGuard`, `estimated_cost` columns) already designed into Phase 3 —
@@ -400,6 +832,49 @@ deliberately *not* adopted — doesn't get lost as the project grows.
    - (Optional, Phase 3d onward) `LANGFUSE_*` credentials — only needed if you
      choose to enable call tracing; the pipeline runs identically without
      them.
+   - (Optional, Phase 3c onward) `GLASSNODE_API_KEY` / `CRYPTOQUANT_API_KEY`
+     — only needed to enable on-chain valuation-cycle metrics
+     (MVRV/SOPR/NUPL/LTH-STH cohorts); a paid tier may be required for full
+     coverage. Leave blank to have that source recorded as
+     `NOT_IMPLEMENTED`/`UNAVAILABLE` in `signal_sources` rather than
+     approximated.
+   - (Optional, Phase 3c onward) `TOKEN_UNLOCK_SOURCE_API_KEY` (Messari or
+     TokenUnlocks) — only needed to enable token unlock/vesting schedule
+     data for the altcoin tier of the universe.
+   - (Optional, Phase 3c onward) `CME_COT_SOURCE` config — the CFTC
+     publishes Commitment of Traders data for free with no key required;
+     this setting only exists if you choose to point at a documented
+     aggregator instead of the CFTC's own published data directly. Leave
+     unset to have `CME_COT_POSITIONING` recorded as `NOT_IMPLEMENTED`
+     rather than approximated.
+   - (Optional, Phase 3f onward) `FRED_API_KEY` — free, required by FRED for
+     the global-liquidity/cross-asset-correlation macro extension (M2, Fed
+     balance sheet, S&P 500/dollar-index series). Leave blank to have
+     `GLOBAL_LIQUIDITY_MACRO` recorded as `NOT_IMPLEMENTED`.
+   - (Optional, Phase 3f onward) `SEC_EDGAR_USER_AGENT` /
+     `CONGRESS_GOV_API_KEY` — only needed to enable the regulatory/policy
+     event calendar. Both underlying APIs are free; leave blank to have
+     `REGULATORY_EVENT_CALENDAR` recorded as `NOT_IMPLEMENTED`.
+   - (Optional, Phase 3f onward) `REGIONAL_EXCHANGE_API_KEY` / endpoint
+     config (e.g. Upbit/Bithumb) — only needed to enable the regional
+     exchange price-premium source. Leave unset to have
+     `REGIONAL_EXCHANGE_PREMIUM` recorded as `NOT_IMPLEMENTED`.
+   - (Optional, Phase 3i onward) `NANSEN_API_KEY` / `ARKHAM_API_KEY` — only
+     needed to enable wallet-entity-clustering/"smart money" flow
+     intelligence; a paid tier is required. Leave blank to have
+     `ENTITY_FLOW_INTELLIGENCE` recorded as `NOT_IMPLEMENTED`.
+   - (Optional, Phase 3i onward) `DEV_ACTIVITY_SOURCE_API_KEY` (e.g. an
+     Electric Capital Developer Report-style aggregator, or a direct
+     GitHub API token) — only needed to enable the developer-activity half
+     of `NETWORK_FUNDAMENTALS_DEV_ACTIVITY`; the network-usage half (active
+     addresses, fees) reuses the on-chain explorer credentials already
+     configured for 3c. Leave blank to have the developer-activity field
+     recorded as `NOT_IMPLEMENTED`.
+   - (Optional, Phase 3i onward) `CUSTODY_WATCH_ADDRESSES` config — a
+     documented list of known custody-provider addresses to track balance
+     deltas for; no paid API required if using publicly known addresses via
+     the existing on-chain explorer. Leave unset to have `CUSTODY_OTC_FLOW`
+     recorded as `NOT_IMPLEMENTED`.
 
 3. Apply the database schema — both migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
@@ -532,16 +1007,20 @@ per process — each `python -m app.main` invocation gets its own unique id.
 app/
   config/        Settings (env-driven)
   database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, and Phase 3 tables)
-  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance and screening/regime classification
+  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with ETF-flow/prediction-market/stablecoin-velocity/CME-COT/miner-metrics providers and the derived volatility-risk-premium/annualized-carry-yield fields; extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
   news/          RSS collection, relevance matching, dedup (Phase 2)
   llm/           OpenRouter integration, structured output, cost guard (Phase 2); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
-  judge/         Phase 3e — deterministic decision synthesis
+  judge/         Phase 3e — deterministic decision synthesis; input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
   portfolio/     Phase 3e — portfolio construction
-  risk/          Phase 3e — deterministic risk engine
-  trading/       Phase 4 — paper trading execution; Phase 6 — testnet execution agent (LangChain/LangGraph)
+  risk/          Phase 3e — deterministic risk engine, incl. uncertainty-aware position scaling; extended in 3h with a
+                 deterministic portfolio tail-risk stress test
+  trading/       Phase 4 — order-book-depth-aware, fee-aware paper-fill simulation (see PHASE4_PROMPT.md); Phase 6 — testnet execution agent (LangChain/LangGraph)
   benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f);
                  statistical validation — Deflated Sharpe/PBO, Brier/reliability,
-                 held-out-window reporting, Judge reasoning audit (3g)
+                 held-out-window reporting, point-in-time and purged/embargoed
+                 walk-forward audits, Judge reasoning audit (3g); adaptive
+                 evidence-value ranking incl. rolling-window/regime drift check,
+                 diagnostic only (3h)
   api/           Phase 5 — FastAPI read/query layer (not yet created)
   main.py        Entrypoint (python -m app.main [--with-llm])
 tests/
@@ -557,7 +1036,8 @@ the next begins. Live trading is only ever activated after a separate, explicit
 safety review; the default and current mode is PAPER.
 
 Starting with Phase 3, this also applies *within* a phase: Phase 3 is large
-enough that it is split into sub-phases (3a–3g), each with its own live
+enough that it is split into sub-phases (3a–3i, plus the optional, gated 3j
+and 3k addenda — see their own gating rules below), each with its own live
 verification and cost check, rather than implemented as one block. Rules that
 carry across every sub-phase:
 
@@ -574,7 +1054,12 @@ carry across every sub-phase:
   `MAX_DAILY_LLM_COST` / `MAX_MONTHLY_LLM_COST`. Any sub-phase that adds LLM
   calls (3d, 3f) estimates calls/day and cost/day before merging. Market-data
   sources (3b, 3c) have no LLM cost but should still be checked against
-  provider rate limits.
+  provider rate limits. A small number of 3c/3f/3i sources (on-chain
+  valuation metrics, token unlock schedules, social/narrative sentiment,
+  entity-flow intelligence, developer-activity aggregation) may require a
+  paid data-API subscription — a dollar cost against project budget, tracked
+  and documented separately from `CostGuard`, which exists specifically to
+  cap LLM spend, not general data-vendor spend.
 - **Predictions are tracked against reality, continuously.** Starting in 3e,
   every Judge decision is recorded in a decision-outcome ledger and later
   backfilled with realized returns, so the system's own accuracy — not just
@@ -598,4 +1083,52 @@ carry across every sub-phase:
   adopted for a specific, scoped reason (see "Technology stack decisions"
   above) and introduced only in the phase where that reason applies —
   MongoDB was considered and deliberately not adopted, for the same kind of
-  reasoning.
+  reasoning; order-flow imbalance/LOB microstructure features were
+  considered and deliberately not adopted for the same reason, on a
+  horizon-mismatch basis rather than an availability basis (see "Technology
+  stack decisions"). **3j and 3k apply this rule to evidence sources, not
+  just infrastructure**: options gamma exposure, exchange counterparty/
+  solvency risk, and retail-demand proxies (3j), and DeFi lending rates,
+  staking yield/validator queue depth, and stablecoin depeg-risk monitoring
+  (3k), were all identified as things professional crypto desks track, but
+  none is scheduled for implementation until 3h's evidence-value ranking
+  (or 3g's Judge-reasoning audit or purged-walk-forward finding) shows a
+  specific, named gap one of them would close — being used elsewhere is
+  not, by itself, a reason to add a new cost-bearing, drift-prone input to
+  this system.
+- **A learned model is a checking tool until proven otherwise, never a
+  silent decision-maker.** 3h's evidence-value ranking exists specifically
+  to catch cases where the Judge's narrative weighting and a
+  statistically-learned weighting disagree — but a small-sample learned
+  model is exactly as vulnerable to the multiple-comparisons/overfitting
+  problem 3g exists to correct for, so it stays diagnostic-only (reported
+  alongside `composite_factor_score`, never blended into the Judge or used
+  to auto-adjust `signal_sources`) until it has survived the same kind of
+  scrutiny 3g applies to the Judge itself.
+- **Point-in-time integrity is checked, not assumed.** Several evidence
+  types (on-chain valuation metrics, ETF flow figures, regulatory-event
+  extraction) get revised by their own provider after the fact. From 3a
+  onward, revisable fields are append-only (`is_revision_of`, never an
+  overwrite) so a "value as known at time T" query is always available, and
+  3g explicitly audits a sample of resolved decisions to confirm no
+  since-revised value leaked into a historical evaluation. An accuracy
+  number that turns out to be quietly using hindsight is worse than an
+  honestly-reported low accuracy number, because it fails silently.
+- **Model/source disagreement is a risk-sizing input, checked for whether it
+  actually earns that role.** 3d/3e compute `model_agreement`/
+  `source_agreement` as evidence distinct from any single model's
+  confidence, and 3e's Risk Engine scales position size down when
+  agreement is weak, composed with (not instead of) volatility-based
+  sizing. 3g then checks — via a reliability breakdown by agreement bucket,
+  the same discipline already applied by regime — whether low-agreement
+  decisions genuinely resolve less reliably than high-agreement ones at the
+  same stated confidence, rather than assuming disagreement is informative
+  just because it's intuitive that it should be.
+- **Execution realism is part of the accuracy claim, not a separate
+  concern.** Every calibration/stress-test number produced through 3g/3h is
+  computed against mark-to-mid `market_snapshots` prices, which assumes
+  costless, instant fills. Phase 4 does not treat this as good enough to
+  call "paper trading" — it adds order-book-depth-aware, fee-aware fill
+  simulation and re-reports calibration net of realistic execution costs,
+  specifically because a system's real-world accuracy is only as
+  trustworthy as the fill assumptions behind the numbers describing it.
