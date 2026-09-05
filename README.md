@@ -92,86 +92,144 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          EXTERNAL DATA SOURCES                            │
-│  CoinGecko · CoinMarketCap · Coinbase · Binance · Deribit · Etherscan ·    │
-│  DefiLlama · RSS News · Macro data · CoinAnk* · CoinGlass* ·               │
-│  CryptoBubbles* · X/PlanB via xAI*        (* fragile/unofficial, built 3f) │
-└───────────────────────────────────┬───────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────┐
+│                              EXTERNAL DATA SOURCES                              │
+└────────────────────────────────────────────────────────────────────────────────┘
+        │              │              │              │              │
+        ▼              ▼              ▼              ▼              ▼
+   CoinGecko      CoinMarketCap   Coinbase        Binance        Deribit
+   (Phase 1)      (3b)            (3b)            (3b, 3c)       (3c)
+   aggregated     aggregated      exchange-       exchange-      options IV,
+   price/mcap     price/mcap      native trade    native funding put/call skew
+                                  price, spread    rate, price
+        │              │              │              │              │
+        │              │              │              │              ▼
+        │              │              │              │         ┌─────────┐
+        │              │              │              │         │  xAI /  │
+        │              │              │              │         │  Grok   │──┐
+        │              │              │              │         └─────────┘  │
+        │              │              │              │      (3d model +     │
+        │              │              │              │       3f PlanB/X)    │
+        ▼              ▼                                                     │
+   Etherscan      DefiLlama       RSS News        CoinAnk*      CoinGlass*   │
+   (3c)           (3c)            (Phase 2)       (3f)          (3f)         │
+   on-chain flow  TVL/DeFi        CoinDesk,       long/short    liquidation   │
+   proxies        rotation        CoinTelegraph,  ratio         heatmap       │
+                                  Decrypt                                     │
+                                                        CryptoBubbles* (3f)    │
+                                                        market-cap bubbles     │
+                                                                               │
+   (* = fragile/unofficial, feasibility-gated in 3f)                         │
+        │              │              │              │              │        │
+        └──────┬───────┴──────┬───────┴──────┬───────┴──────┬───────┴────────┘
+               ▼               ▼              ▼              ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │              PROVIDER / INGESTION LAYER                  │
+        │   app/market_data · app/news · per-source 3c/3f modules  │
+        │   - normalizes each response to the evidence-provenance  │
+        │     shape (source, scope, timestamps, decay_half_life)   │
+        │   - never fabricates missing data → UNAVAILABLE/UNKNOWN  │
+        └───────────────────────────┬────────────────────────────┘
                                      ▼
-                     ┌───────────────────────────────────┐
-                     │     PROVIDER / INGESTION LAYER      │
-                     │  app/market_data, app/news, and      │
-                     │  future per-source provider modules  │
-                     │  - normalizes each source             │
-                     │  - tags provenance + freshness decay  │
-                     │  - never fabricates missing data       │
-                     └───────────────────┬───────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │        EVIDENCE STORE (Supabase/Postgres)│
-                     │ assets · market_snapshots · news ·         │
-                     │ signal_sources · model_market_assessments ·│
-                     │ market_regime_snapshots · decision_outcomes·│
-                     │ prompt_templates · llm_analyses             │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │  SCREENING & REGIME CLASSIFICATION (3b)  │
-                     │  deterministic factors, zero LLM cost      │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   MULTI-MODEL ASSESSMENT (3d)              │
-                     │   Claude / GPT / Gemini / Grok (optional)  │
-                     │   via OpenRouter, gated by CostGuard         │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   ADVERSARIAL RESEARCH (3f)                 │
-                     │   Bull · Bear · Scenario · Macro matrix     │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   JUDGE (3e) — synthesizes all evidence     │
-                     │   into one decision, deterministic logic    │
-                     │   wrapping a single structured LLM call     │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   RISK ENGINE (3e)                          │
-                     │   deterministic, hard-coded constraints,    │
-                     │   no AI can override                        │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   PORTFOLIO CONSTRUCTION (3e)                │
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                     ┌───────────────────────────────────────┐
-                     │   DECISION-OUTCOME LEDGER (3e / 3f)          │
-                     │   backfills realized returns; results feed   │
-                     │   back into evaluating sources/prompts/models│
-                     └───────────────────┬───────────────────────┘
-                                          ▼
-                  ┌──────────────────────────────────────────────┐
-                  │   PAPER TRADING EXECUTION (Phase 4)              │
-                  └───────────────────┬──────────────────────────┘
-                                       ▼
-                  ┌──────────────────────────────────────────────┐
-                  │   EXCHANGE EXECUTION AGENT (Phase 6, testnet)    │
-                  │   LangChain/LangGraph agent, bounded tool-use    │
-                  └──────────────────────────────────────────────┘
-
-  Cross-cutting, applied to every LLM call from "Multi-Model Assessment"
-  downward through "Adversarial Research" and the Judge:
-    - CostGuard          — enforces MAX_DAILY_LLM_COST / MAX_MONTHLY_LLM_COST
-    - Langfuse (optional)— traces prompt/response/cost/latency per call,
-                            versioned against prompt_templates
+        ┌──────────────────────────────────────────────────────────┐
+        │             EVIDENCE STORE — Supabase / Postgres          │
+        ├──────────────────────────────────────────────────────────┤
+        │ assets · market_snapshots · news · signal_sources ·        │
+        │ model_market_assessments · market_regime_snapshots ·       │
+        │ decision_outcomes · prompt_templates · llm_analyses        │
+        │ (JSONB columns: payload, key_drivers, source_assessment)   │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │      SCREENING & REGIME CLASSIFICATION (3b)                │
+        │      pure Python, zero LLM cost                            │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │              MULTI-MODEL ASSESSMENT (3d)                   │
+        └───────────────────────────┬────────────────────────────┘
+                                     │
+                    ┌────────────────┼────────────────┬──────────────┐
+                    ▼                ▼                ▼              ▼
+              OpenRouter        OpenRouter        OpenRouter    OpenRouter
+              → Claude          → GPT             → Gemini      → Grok (opt.)
+                    │                │                │              │
+                    └────────────────┴────────────────┴──────────────┘
+                                     │
+                        ┌────────────┴────────────┐
+                        ▼                          ▼
+                   CostGuard                  Langfuse (optional)
+                   (hard spend cap,            trace prompt/response/
+                   checked pre-call)           cost/latency, versioned
+                                                against prompt_templates
+                                     │
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │            ADVERSARIAL RESEARCH (3f)                        │
+        └───────────────────────────┬────────────────────────────┘
+                    │                │                │
+                    ▼                ▼                ▼
+              Bull research    Bear research    Scenario modeling
+              (OpenRouter LLM  (OpenRouter LLM  (OpenRouter LLM,
+              call, CostGuard) rebuts bull,     bull/base/bear per
+                                CostGuard)       candidate, CostGuard)
+                    │                │                │
+                    └────────────────┼────────────────┘
+                                     ▼
+                              Macro evidence matrix
+                              (ADP, CPI, PCE, DXY, yields —
+                              manual/API feed, no LLM cost to collect)
+                                     │
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │      JUDGE (3e) — single structured OpenRouter call        │
+        │      wrapped in deterministic weighing logic;              │
+        │      gated by CostGuard, versioned via prompt_templates    │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │      RISK ENGINE (3e) — deterministic Python, no LLM       │
+        ├──────────────────────────────────────────────────────────┤
+        │ env-configured caps: MAX_SINGLE_ASSET_ALLOCATION,           │
+        │ MAX_NEW_POSITION_SIZE, MAX_WEEKLY_TURNOVER,                 │
+        │ MIN_BUY/REBALANCE/SELL_CONFIDENCE                           │
+        │        │                              │                    │
+        │        ▼                              ▼                    │
+        │  volatility-adjusted sizing     correlation-matrix check    │
+        │  (inverse-vol / capped Kelly,   (flags concentrated,        │
+        │  from 3b screening factors)     co-moving exposure)         │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │       PORTFOLIO CONSTRUCTION (3e) — deterministic Python    │
+        │       replacement logic vs. risk_adjusted_alpha threshold   │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │   DECISION-OUTCOME LEDGER (3e/3f)                            │
+        │   decision_outcomes table + scheduled/manual evaluation      │
+        │   step, backfilled from market_snapshots (triple-barrier-    │
+        │   style HIT_TARGET/HIT_STOP/TIMED_OUT)                       │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │   PAPER TRADING EXECUTION (Phase 4)                          │
+        │   simulated fills, fees, slippage — no live exchange         │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │   EXCHANGE EXECUTION AGENT (Phase 6, testnet only)           │
+        ├──────────────────────────────────────────────────────────┤
+        │   LangChain/LangGraph agent                                  │
+        │        │                                                     │
+        │        ▼                                                     │
+        │   allow-listed tools: place_order · cancel_order ·            │
+        │   check_balance  →  Testnet/Sandbox exchange API              │
+        │   (Risk Engine re-checked at execution time)                  │
+        └──────────────────────────────────────────────────────────┘
 
   Cross-cutting, reads from the Evidence Store (does not write decisions):
-    - FastAPI + Dashboard (Phase 5) — read/query API and UI over everything
-      the pipeline has produced
+     FastAPI (Phase 5) ── read/query API ──▶ Dashboard (Phase 5)
 ```
 
 ### Component purposes
