@@ -45,7 +45,7 @@ because:
   output, cost tracking with daily/monthly caps. Complete and verified with
   live LLM calls against a real Supabase project.
 - ⬜ **Phase 3 — Broad intelligence, discovery & judgment** (see
-  `PHASE3A_PROMPT.md` through `PHASE3F_PROMPT.md`, one per sub-phase),
+  `PHASE3A_PROMPT.md` through `PHASE3G_PROMPT.md`, one per sub-phase),
   split into verified sub-phases:
   - **3a** — Candidate/universe status schema, evidence provenance + numeric
     freshness-decay convention, `signal_sources` registry, and schema
@@ -55,23 +55,37 @@ because:
     deterministic market screening, candidate discovery, and a **deterministic
     market-regime classifier** computed once per run
   - **3c** — Official derivatives & on-chain sources: **Binance funding
-    rates**, **Deribit options** (implied volatility, put/call skew),
-    **Etherscan/DefiLlama** on-chain & DeFi TVL flows — all documented APIs,
-    zero LLM cost
+    rates**, **Binance/Deribit aggregate open interest**, **Deribit options**
+    (implied volatility, put/call skew), **Etherscan/DefiLlama** on-chain &
+    DeFi TVL flows, and **stablecoin supply / exchange reserve** flow as a
+    capital-rotation proxy distinct from protocol-level TVL — all documented
+    APIs, zero LLM cost
   - **3d** — Multi-model current market assessment (separate from
     `llm_analyses`), now with consistent regime/derivatives/on-chain context,
     prompt-template versioning, an optional **Grok (xAI)** model in the
     OpenRouter model set, and optional **Langfuse** call tracing
   - **3e** — Deterministic Judge, Risk Engine (volatility/correlation-aware
     sizing), Portfolio Construction, and a **continuous decision-outcome
-    ledger** for ongoing calibration (plus a baseline backtest against
-    existing Phase 1/2 data)
+    ledger** for ongoing calibration — each decision tagged with its market
+    regime and Judge confidence, a **held-out decision window** reserved and
+    respected from this point forward, and a baseline backtest against
+    existing Phase 1/2 data reporting **both hit-rate and calibration
+    (Brier score)**, not directional accuracy alone
   - **3f** — Adversarial bull/bear research, scenario modeling, macro matrix,
     and the remaining exploratory/fragile sources (CoinAnk, CoinGlass
     liquidation heatmap, CryptoBubbles, PlanB/X — the latter accessed via
     **xAI's API**, which has native X/Twitter search) — each gated on a real
-    access-feasibility check; re-run calibration afterward to check whether
-    they actually improved accuracy
+    access-feasibility check; re-run calibration afterward (by regime, not
+    just in aggregate) and spot-check whether the Judge's own stated
+    reasoning actually follows from its cited evidence
+  - **3g** — Statistical validation: a **Deflated Sharpe Ratio /
+    probability-of-backtest-overfitting** correction across every
+    prompt/logic iteration made in 3d–3f (so "it got better" claims account
+    for how many times the system was tried, not just the final number), a
+    full calibration/reliability report broken down by regime, a report on
+    the held-out window in isolation, and a Judge-reasoning audit — the
+    gate this project treats as the actual determinant of whether Phase 3
+    improved prediction accuracy, rather than a raw before/after delta
 - ⬜ Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
 - ⬜ Phase 5 — Dashboard, scheduling, and a **FastAPI** read/query layer over
   the Evidence Store (candidates, assessments, Judge decisions, portfolio
@@ -100,8 +114,9 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
    CoinGecko      CoinMarketCap   Coinbase        Binance        Deribit
    (Phase 1)      (3b)            (3b)            (3b, 3c)       (3c)
    aggregated     aggregated      exchange-       exchange-      options IV,
-   price/mcap     price/mcap      native trade    native funding put/call skew
-                                  price, spread    rate, price
+   price/mcap     price/mcap      native trade    native funding put/call skew,
+                                  price, spread    rate, open      open interest
+                                                    interest, price
         │              │              │              │              │
         │              │              │              │              ▼
         │              │              │              │         ┌─────────┐
@@ -113,9 +128,10 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
         ▼              ▼                                                     │
    Etherscan      DefiLlama       RSS News        CoinAnk*      CoinGlass*   │
    (3c)           (3c)            (Phase 2)       (3f)          (3f)         │
-   on-chain flow  TVL/DeFi        CoinDesk,       long/short    liquidation   │
-   proxies        rotation        CoinTelegraph,  ratio         heatmap       │
-                                  Decrypt                                     │
+   on-chain flow, TVL/DeFi        CoinDesk,       long/short    liquidation   │
+   stablecoin     rotation,       CoinTelegraph,  ratio         heatmap       │
+   supply/        stablecoin      Decrypt                                     │
+   reserve proxy  supply                                                      │
                                                         CryptoBubbles* (3f)    │
                                                         market-cap bubbles     │
                                                                                │
@@ -136,7 +152,8 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
         ├──────────────────────────────────────────────────────────┤
         │ assets · market_snapshots · news · signal_sources ·        │
         │ model_market_assessments · market_regime_snapshots ·       │
-        │ decision_outcomes · prompt_templates · llm_analyses        │
+        │ decision_outcomes · prompt_templates · llm_analyses ·      │
+        │ calibration_runs                                            │
         │ (JSONB columns: payload, key_drivers, source_assessment)   │
         └───────────────────────────┬────────────────────────────┘
                                      ▼
@@ -209,7 +226,19 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
         │   DECISION-OUTCOME LEDGER (3e/3f)                            │
         │   decision_outcomes table + scheduled/manual evaluation      │
         │   step, backfilled from market_snapshots (triple-barrier-    │
-        │   style HIT_TARGET/HIT_STOP/TIMED_OUT)                       │
+        │   style HIT_TARGET/HIT_STOP/TIMED_OUT); rows tagged with      │
+        │   regime_at_decision, judge_confidence, in_holdout_window     │
+        └───────────────────────────┬────────────────────────────┘
+                                     ▼
+        ┌──────────────────────────────────────────────────────────┐
+        │   STATISTICAL VALIDATION (3g) — the accuracy gate            │
+        ├──────────────────────────────────────────────────────────┤
+        │ Deflated Sharpe / PBO across every 3d–3f prompt & logic      │
+        │ iteration · Brier score + reliability diagrams by regime ·   │
+        │ held-out-window results reported in isolation · Judge        │
+        │ reasoning audit (OpenRouter LLM, CostGuard-gated) ·           │
+        │ go/no-go statement for Phase 4, grounded in the above         │
+        │ (reports/recommends only — does not alter upstream logic)    │
         └───────────────────────────┬────────────────────────────┘
                                      ▼
         ┌──────────────────────────────────────────────────────────┐
@@ -244,7 +273,8 @@ programmatic access is recorded as `UNAVAILABLE`/`NOT_IMPLEMENTED` in
 | **Judge** (`app/judge`, 3e) | 3e | Synthesizes every evidence layer above into one structured recommendation per asset, with confidence explicitly decoupled from model/source agreement, and a `NO_TRADE` outcome always available. |
 | **Risk Engine** (`app/risk`, 3e) | 3e | Deterministic, non-negotiable position-sizing and exposure limits (volatility-adjusted sizing, correlation-concentration checks, hard caps) that the Judge's output cannot override. |
 | **Portfolio Construction** (`app/portfolio`, 3e) | 3e | Turns Risk-Engine-adjusted Judge output plus current holdings/watchlist into concrete increase/hold/reduce/remove/initiate decisions, never forcing full capital deployment. |
-| **Decision-outcome ledger** (3e/3f) | 3e | Records every decision with a resolution horizon and backfills realized returns, giving the system a continuously-updated, ground-truth accuracy measure instead of a one-off backtest. |
+| **Decision-outcome ledger** (3e/3f) | 3e | Records every decision with a resolution horizon and backfills realized returns, giving the system a continuously-updated, ground-truth accuracy measure instead of a one-off backtest. Tags every row with the market regime and Judge confidence in effect at decision time, and marks whether it falls inside the held-out window, so later accuracy claims can be sliced honestly rather than only reported in aggregate. |
+| **Statistical validation** (`app/benchmarks` or a dedicated module, 3g) | 3g | The layer that decides whether an accuracy claim is real: Deflated Sharpe Ratio / probability-of-backtest-overfitting correction across every prompt/logic iteration actually tried, full Brier/reliability calibration reporting by regime, an isolated held-out-window result, and a periodic audit of whether the Judge's stated reasoning follows from its own cited evidence. Produces findings and recommendations only — it does not modify upstream evidence collection or decision logic itself. |
 | **CostGuard** (`app/llm/cost.py`) | Phase 2 | Cross-cutting spend cap checked before every LLM call from any stage; skips (not crashes) once a cap is hit. |
 | **Langfuse (optional)** | 3d onward | Cross-cutting, additive tracing of LLM calls (prompt, response, cost, latency) for debugging and comparing prompt versions from `prompt_templates` against real outcomes. Never a dependency of the decision pipeline — Supabase remains authoritative. |
 | **Paper Trading Execution** (`app/trading`) | Phase 4 | Simulates fills for Portfolio Construction's target changes without touching any real exchange. |
@@ -289,6 +319,52 @@ deliberately *not* adopted — doesn't get lost as the project grows.
   Construction's already-approved target change (not an open-ended
   instruction), and Risk Engine constraints are re-checked at execution
   time, not just at recommendation time.
+- **Deflated Sharpe Ratio / Probability of Backtest Overfitting — adopted,
+  3g.** A raw hit-rate or Sharpe ratio computed after several rounds of
+  prompt/logic iteration (3d–3f each version bumps, plus repeated
+  calibration re-runs) is a classic multiple-comparisons setup: enough
+  attempts against the same historical data will eventually produce a
+  good-looking number by chance alone, independent of whether the system
+  actually has an edge. Deflated Sharpe / PBO exist specifically to correct
+  for this, and this project has the bookkeeping to do it properly
+  (`prompt_templates`, `calibration_runs`) because that bookkeeping was
+  designed in from 3a rather than reconstructed after the fact.
+- **Brier score / reliability diagrams — adopted, 3e onward.** The Judge and
+  every model assessment emit an explicit `confidence` value that the Risk
+  Engine uses directly for position sizing — so whether that confidence is
+  *calibrated* (a 70%-confidence call actually resolving positively ~70% of
+  the time) is a separate, and arguably more actionable, question than
+  whether calls are directionally right on average. Computed per regime, not
+  just in aggregate, since a system calibrated in one regime and
+  overconfident in another is a materially different (and more dangerous)
+  system than one that's uniformly miscalibrated.
+- **Held-out decision window — adopted, 3e onward.** Every sub-phase from
+  3e forward tags decisions as inside or outside a window that's never used
+  to tune prompts or logic, so the 3f/3g "did accuracy improve" comparison
+  has at least one slice of results that wasn't iterated against. Cheap to
+  add (one boolean column, decided once), and the alternative — discovering
+  after months of iteration that there was never a genuinely untouched
+  sample — is much more expensive.
+- **Order-book / limit-order-book microstructure features (order-flow
+  imbalance, spread, price-impact, toxicity) — considered, not adopted.**
+  Current research shows these features have real, portable short-horizon
+  predictive value on official, already-integrated venues (Binance/Deribit),
+  so this isn't a source-availability rejection like CoinAnk/CryptoBubbles —
+  it's a scope rejection. This project's Judge operates on multi-day to
+  multi-month horizons via structured LLM reasoning; LOB features are
+  validated for sub-minute to intraday statistical/ML models with their own
+  walk-forward and leakage-control methodology, not for the Judge's evidence
+  format. Revisit explicitly (as its own scoped phase, with its own
+  validation approach) rather than folding it into an existing sub-phase if
+  a shorter-horizon component is ever wanted.
+- **Aggregate open interest, stablecoin supply, and exchange-reserve flow —
+  adopted, 3c.** All three are official/documented-API-accessible from
+  venues already integrated by 3c (Binance, Deribit, DefiLlama, the existing
+  on-chain explorer), so they're near-zero marginal cost, and each captures
+  a distinct fact — position magnitude (OI), capital entering the crypto
+  ecosystem (stablecoin supply), and capital sitting on exchanges specifically
+  (reserves) — that the funding-rate and TVL sources already in scope don't
+  capture on their own.
 - **Langfuse — adopted, optional starting 3d.** Complements, not replaces,
   the manual prompt-versioning (`prompt_templates`) and cost tracking
   (`CostGuard`, `estimated_cost` columns) already designed into Phase 3 —
@@ -463,7 +539,9 @@ app/
   portfolio/     Phase 3e — portfolio construction
   risk/          Phase 3e — deterministic risk engine
   trading/       Phase 4 — paper trading execution; Phase 6 — testnet execution agent (LangChain/LangGraph)
-  benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f)
+  benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f);
+                 statistical validation — Deflated Sharpe/PBO, Brier/reliability,
+                 held-out-window reporting, Judge reasoning audit (3g)
   api/           Phase 5 — FastAPI read/query layer (not yet created)
   main.py        Entrypoint (python -m app.main [--with-llm])
 tests/
@@ -479,7 +557,7 @@ the next begins. Live trading is only ever activated after a separate, explicit
 safety review; the default and current mode is PAPER.
 
 Starting with Phase 3, this also applies *within* a phase: Phase 3 is large
-enough that it is split into sub-phases (3a–3f), each with its own live
+enough that it is split into sub-phases (3a–3g), each with its own live
 verification and cost check, rather than implemented as one block. Rules that
 carry across every sub-phase:
 
@@ -502,6 +580,19 @@ carry across every sub-phase:
   backfilled with realized returns, so the system's own accuracy — not just
   its internal model agreement — is measurable and improves the design over
   time rather than being assessed once at the end.
+- **An accuracy claim isn't accepted until it survives multiple-testing and
+  calibration checks, not just a hit-rate.** Every prompt or logic change
+  followed by a calibration re-run is a "trial" in the statistical sense —
+  enough trials against the same historical data will eventually produce a
+  good-looking number by chance. From 3e onward this project tracks that
+  trial count (`calibration_runs`, `prompt_templates`) and, in 3g, applies
+  Deflated Sharpe / probability-of-backtest-overfitting correction before
+  treating any before/after comparison as a real improvement. Directional
+  hit-rate alone is also insufficient — confidence values feed position
+  sizing directly, so calibration (Brier score / reliability by regime)
+  is tracked as a separate, equally-required metric, and a held-out decision
+  window is reserved from 3e onward specifically so at least one result
+  hasn't been iterated against.
 - **New tooling earns its place by matching a real need, not by being
   available.** FastAPI, xAI, LangChain/LangGraph, and Langfuse are each
   adopted for a specific, scoped reason (see "Technology stack decisions"

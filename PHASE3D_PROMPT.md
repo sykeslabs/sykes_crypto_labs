@@ -34,6 +34,11 @@ and wait for confirmation.
   number here. This stage produces evidence, not a decision.
 - Do not hard-code per-model weights. Treat all configured models as
   independent evidence.
+- Store confidence values exactly as returned (after Pydantic validation),
+  never rounded/bucketed/clamped for cosmetic reasons. Starting in 3e/3g,
+  every stored confidence value is checked for calibration (Brier score /
+  reliability diagrams), not just directional accuracy — artificially
+  cleaned-up confidence values would quietly corrupt that check.
 
 ## Task detail
 

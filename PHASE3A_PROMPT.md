@@ -43,6 +43,15 @@ fragile/unofficial ones:
 - 3f — Adversarial bull/bear research, scenario modeling, macro matrix, and
   the remaining fragile/unofficial sources (CoinAnk, CoinGlass, CryptoBubbles,
   PlanB/X), each gated on a real feasibility check.
+- 3g — Statistical validation and robustness: multiple-testing-aware
+  accuracy reporting (deflated Sharpe / probability of backtest overfitting
+  across every prompt/logic iteration, not just the final result),
+  probabilistic-forecast calibration (Brier score / reliability diagrams,
+  not just directional hit-rate), regime-conditional accuracy breakdowns, a
+  respected held-out decision window, and a periodic audit of whether the
+  Judge's own stated reasoning follows from its cited evidence. This is what
+  makes the 3e/3f "did accuracy actually improve" question answerable
+  honestly rather than just answerable.
 
 **You are only implementing 3a right now.** Stop after 3a is complete and
 verified, summarize what you built and any decisions you made, and wait for
@@ -106,7 +115,12 @@ Add a `signal_sources` table: `name, enabled (bool), status
 (OK/UNAVAILABLE/UNKNOWN/NOT_IMPLEMENTED), last_checked_at, notes`. Seed it
 with every source in the long-term vision — CoinGecko and News as `OK`
 (already implemented); CoinMarketCap, Coinbase, Binance, Deribit, Etherscan,
-DefiLlama, CoinAnk, CoinGlass, CryptoBubbles, PlanB, and Macro as
+DefiLlama, CoinAnk, CoinGlass, CryptoBubbles, PlanB, Macro,
+**`AGGREGATE_OPEN_INTEREST`** (Binance/Deribit futures open interest —
+distinct from the funding-rate source, additive positioning evidence, built
+in 3c), and **`STABLECOIN_SUPPLY_AND_EXCHANGE_RESERVES`** (net stablecoin
+supply growth + exchange reserve balances — a capital-rotation/dry-powder
+proxy distinct from DefiLlama's protocol-level TVL, also built in 3c) as
 `NOT_IMPLEMENTED`.
 
 **5. Schema groundwork for later sub-phases (structure only, not populated
@@ -118,11 +132,29 @@ yet):**
   columns: `id, decision_id (FK to wherever Judge decisions will live),
   asset_id, decision_timestamp, horizon_days, target_return, stop_return,
   realized_return, outcome_label (HIT_TARGET/HIT_STOP/TIMED_OUT/UNRESOLVED),
-  evaluated_at`. Nothing populates this yet — it's schema only, so 3e doesn't
-  need a schema migration mid-implementation.
+  evaluated_at, regime_at_decision (FK to `market_regime_snapshots`,
+  denormalized for cheap per-regime accuracy breakdowns later),
+  judge_confidence (denormalized from the Judge decision row, so calibration
+  queries don't need to join back through a decisions table that doesn't
+  exist yet), `in_holdout_window` (bool, default false)`. The last column
+  exists so that, starting in 3e, a defined slice of decisions can be marked
+  as never-touched-during-iteration — the only slice later sub-phases (3g)
+  may honestly call "out of sample." Nothing populates this yet — it's
+  schema only, so 3e doesn't need a schema migration mid-implementation.
 - `prompt_templates` — for prompt/template versioning starting in 3d.
   Suggested columns: `id, name, stage, version, template_hash, created_at`.
   Again, schema only.
+- `calibration_runs` — for tracking calibration/backtest attempts themselves
+  as first-class, countable events, starting with 3e's baseline script and
+  extended by 3g. Suggested columns: `id, run_at, method (e.g.
+  BASELINE_HIT_RATE/BRIER/DEFLATED_SHARPE/PBO), sample_size,
+  prompt_template_ids (JSONB array — which template versions were in effect),
+  hit_rate, brier_score, notes`. The reason this exists as its own table
+  rather than being inferred after the fact: correcting for how many times a
+  prompt/logic change was tried and re-evaluated (multiple-comparisons bias)
+  requires an honest count of *attempts*, not just a count of resolved
+  decisions — and that count is easy to lose track of retroactively. Schema
+  only; first populated in 3e.
 
 You do not need to get every column exactly right — the point is that these
 concepts exist in the schema now so later sub-phases extend rather than
@@ -148,8 +180,8 @@ vs. history table, and the initial decay half-life values chosen.
 - `assets` (or new history table) can represent `HELD` / `WATCHLIST` /
   `CANDIDATE` / `REJECTED` without ambiguity.
 - `signal_sources` table exists, seeded correctly for all planned sources.
-- `market_regime_snapshots`, `decision_outcomes`, `prompt_templates` tables
-  exist (empty), ready for later sub-phases.
+- `market_regime_snapshots`, `decision_outcomes`, `prompt_templates`,
+  `calibration_runs` tables exist (empty), ready for later sub-phases.
 - No behavior change to any existing Phase 1/2 code path.
 - `pytest` passes without credentials.
 - Zero new external API calls, zero new LLM calls, zero new cost.

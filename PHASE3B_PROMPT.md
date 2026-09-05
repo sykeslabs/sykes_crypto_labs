@@ -95,6 +95,16 @@ Produce a ranked `TOP_CANDIDATES` list. Assets already `HELD` remain
 distinguishable from newly surfaced candidates. Tag genuinely new discoveries
 with the 3a `CANDIDATE` status.
 
+Also persist a compact record of the **full screened universe** for the run
+(asset id + its screening factor values + rank), not just the assets that
+made `TOP_CANDIDATES` — a lightweight row per screened asset is enough, no
+need to store full evidence for assets that don't surface. This exists
+specifically so that later validation work (3g) can check for survivorship
+bias in discovery: if only assets that later performed well are ever visible
+in the historical record, any calibration or accuracy check built on "what
+got surfaced" is silently biased, because it never sees what got correctly
+or incorrectly screened out.
+
 **8. Tests & docs.**
 `pytest` passes without live credentials (mock CoinMarketCap/Coinbase/Binance
 responses). Update `README.md`: mark 3b complete, document actual field
@@ -111,6 +121,8 @@ decisions" note (like the existing Phase 2 section does for news coverage).
 - Cross-source disagreement (CoinGecko vs. CoinMarketCap vs.
   Coinbase/Binance) is visible in output/logs for overlapping assets.
 - A `market_regime_snapshots` row is written each run with auditable inputs.
+- The full screened universe for each run is persisted (not just
+  `TOP_CANDIDATES`), enabling a future survivorship-bias check.
 - Zero new LLM calls/cost.
 - `pytest` green without credentials.
 - README updated with real tier/rate-limit findings.

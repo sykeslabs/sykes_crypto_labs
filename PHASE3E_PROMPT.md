@@ -41,6 +41,20 @@ before starting 3f.
   almost never outputs it, that's a sign of action bias in the prompt/logic —
   fix it before moving on.
 - Risk Engine constraints are deterministic code, not AI-influenced.
+- Every `decision_outcomes` row must be tagged with the `market_regime_snapshots`
+  row in effect at decision time (`regime_at_decision`, per 3a's schema) and
+  with the Judge's own confidence at decision time (`judge_confidence`,
+  denormalized). Both exist specifically so accuracy can be reported *per
+  regime* and *per confidence bucket*, not only in aggregate — an aggregate
+  number that's only accurate because most decisions happened to fall in one
+  regime is not a finding, it's a sampling artifact.
+- Reserve an explicit **held-out decision window** starting from whenever
+  this sub-phase's Judge first runs live: mark those `decision_outcomes` rows
+  `in_holdout_window = true` (per 3a's schema) and do not use them to tune
+  Judge prompts, Risk Engine formulas, or Portfolio Construction logic going
+  forward. This is what lets 3f's and 3g's "did accuracy actually improve"
+  comparison mean something instead of being contaminated by however many
+  times the system was iterated against its own results.
 
 ## Task detail
 
@@ -133,9 +147,29 @@ than only via the one-off baseline script below.
 **5. Baseline calibration script.**
 Using existing historical data already in Supabase (`market_snapshots` +
 `llm_analyses` from Phase 1/2), write a script checking whether past
-directional calls correlated with subsequent price movement — a simple
-hit-rate or directional-accuracy check is enough. This establishes a
-baseline *before* 3f adds more evidence sources.
+directional calls correlated with subsequent price movement. Report two
+distinct things, not one:
+- **Directional hit-rate** (was the call right), as before.
+- **Calibration**: a Brier score (or log-loss) between stated confidence and
+  realized outcome, plus a simple reliability breakdown (e.g. bucket
+  decisions into confidence deciles/quintiles and report realized hit-rate
+  per bucket). A system can have a fine hit-rate and still be badly
+  overconfident or underconfident — that's a different failure mode, and one
+  that matters more once position sizing (Risk Engine, above) is reading
+  confidence directly.
+
+Persist the result as a row in 3a's `calibration_runs` table (`method`,
+`sample_size`, `hit_rate`, `brier_score`, which `prompt_template_ids` were in
+effect). This establishes a *counted, reproducible* baseline before 3f adds
+more evidence sources — "counted" matters because every future re-run of
+this script against a changed prompt/logic is itself a trial, and 3g will
+need an honest count of how many times this was tried, not just the final
+number reported.
+
+Do not attempt deflated-Sharpe/probability-of-backtest-overfitting
+correction here — that requires more `calibration_runs` history than exists
+at this point and is 3g's job. Just make sure this script's own invocation
+is counted so 3g can do that correction later.
 
 **6. Tests & docs.**
 `pytest` passes without live credentials — Judge/Risk/Portfolio logic tested
@@ -156,7 +190,11 @@ chosen.
 - `decision_outcomes` rows are created for real decisions and the evaluation
   step correctly backfills at least a synthetic past-horizon test case.
 - Calibration script runs against real historical data and produces a
-  documented baseline number.
+  documented baseline number for both hit-rate and Brier score, persisted to
+  `calibration_runs`.
+- `decision_outcomes` rows carry `regime_at_decision`, `judge_confidence`,
+  and `in_holdout_window`, and the held-out window's boundary is documented
+  in the README.
 - `pytest` green without credentials.
 - README updated.
 

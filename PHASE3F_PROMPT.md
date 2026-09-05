@@ -2,11 +2,13 @@
 
 ## Context
 
-This is the final sub-phase of Phase 3. Complete and live-verified so far:
-3a (schema/provenance/registries), 3b (CoinMarketCap/Coinbase/Binance,
-screening, regime classifier), 3c (funding/options/on-chain), 3d (multi-model
-assessment), 3e (Judge, Risk Engine, Portfolio Construction, decision-outcome
-ledger, baseline calibration).
+This is the last **evidence/decision-pipeline** sub-phase of Phase 3 — 3g
+(statistical validation) follows this one before Phase 4. Complete and
+live-verified so far: 3a (schema/provenance/registries), 3b (CoinMarketCap/
+Coinbase/Binance, screening, regime classifier), 3c (funding/open interest/
+options/on-chain/stablecoin-reserve sources), 3d (multi-model assessment),
+3e (Judge, Risk Engine, Portfolio Construction, decision-outcome ledger with
+regime tagging and a held-out window, baseline hit-rate + Brier calibration).
 
 **Before writing any code**, inspect what actually exists across 3a–3e,
 especially the Judge's current input shape (3e) and the `signal_sources`
@@ -35,6 +37,12 @@ failure, especially since 3b/3c already cover funding-rate positioning
   the `prompt_templates` versioning convention from 3d.
 - No hard-coded macro-sensitivity assumptions without the system showing its
   per-asset reasoning.
+- The held-out decision window established in 3e (`in_holdout_window = true`
+  rows) is not used to tune any bull/bear/scenario prompt, Judge logic, or
+  Risk Engine formula introduced here. New decisions made during 3f continue
+  the same tagging convention (`regime_at_decision`, `judge_confidence`,
+  `in_holdout_window`) established in 3e — this sub-phase does not get its
+  own separate bookkeeping.
 
 ## Task detail
 
@@ -116,15 +124,35 @@ rather than raising the cap by default.
 
 **8. Re-run calibration and check the outcome ledger.**
 Compare the 3e baseline against post-3f results using both the one-off
-calibration script and the `decision_outcomes` ledger going forward. This
-comparison is the actual point of building 3f — record whether the added
-evidence sources changed accuracy or just added cost and complexity, and note
-it plainly in the README even if the answer is "no measurable improvement
-yet." If a source shows no measurable value after a reasonable sample of
-decisions, consider disabling it via `signal_sources.enabled` rather than
-leaving it on by default indefinitely.
+calibration script (now reporting hit-rate **and** Brier score, per 3e) and
+the `decision_outcomes` ledger going forward, and persist this run to
+`calibration_runs` like every other calibration attempt — this one included
+in whatever trial count 3g later corrects for. Report the comparison broken
+down **by regime** (`regime_at_decision`), not only in aggregate. Record
+whether the added evidence sources changed accuracy or just added cost and
+complexity, and note it plainly in the README even if the answer is "no
+measurable improvement yet." Treat any raw before/after delta at this stage
+as a candidate finding, not a conclusion — a single before/after comparison
+cannot distinguish real improvement from noise or from having iterated the
+prompts against the same data multiple times; 3g's deflated-Sharpe/PBO pass
+is what actually adjudicates that, and this sub-phase should say so rather
+than declare victory early. If a source shows no measurable value after a
+reasonable sample of decisions, consider disabling it via
+`signal_sources.enabled` rather than leaving it on by default indefinitely.
 
-**9. Tests & docs.**
+**9. Judge reasoning spot-check.**
+Sample a handful of resolved decisions from this sub-phase's live runs —
+weighted toward `requires_review = true`, low-confidence, and
+low-model-agreement cases, since that's where synthesis errors are most
+likely — and check whether the Judge's stored `thesis` actually follows from
+its own `key_evidence`/`contradictory_evidence`, rather than sounding
+plausible while quietly ignoring evidence that was fed to it. A second LLM
+call (fed the same evidence + the Judge's output, asked to identify
+unsupported leaps) or a manual read-through are both acceptable at this
+sample size — this is a spot-check, not a new automated stage. Log findings;
+do not auto-correct the Judge from this feedback in this sub-phase.
+
+**10. Tests & docs.**
 `pytest` passes without live credentials for every new provider and stage
 (mocked responses, fixed fixtures for bull/bear/scenario/macro logic). Update
 `README.md`: mark 3f complete, document real availability findings for each
@@ -139,11 +167,19 @@ exploratory source, and record the calibration before/after comparison.
 - Scenario modeling and macro matrix are populated for real candidates and
   visible as distinct Judge inputs.
 - Cost report includes bull/bear/scenario as their own line items.
-- Calibration before/after comparison recorded, whatever the result.
+- Calibration before/after comparison recorded (hit-rate and Brier score,
+  broken down by regime), persisted to `calibration_runs`, explicitly framed
+  as provisional pending 3g's statistical correction — whatever the result.
+- Judge reasoning spot-check completed and findings logged.
 - `pytest` green without credentials.
 - README updated.
 
-This completes Phase 3. Report the full before/after calibration comparison
-and the real availability results across all sources before considering
-Phase 4 (paper trading execution, benchmarks, and ongoing accuracy tracking
-via the decision-outcomes ledger built in 3e).
+This completes the evidence-collection and decision-pipeline portion of
+Phase 3. Report the full before/after calibration comparison, the real
+availability results across all sources, and the Judge reasoning spot-check
+findings. Do not present the before/after delta as a confirmed accuracy
+improvement — that determination belongs to 3g (statistical validation:
+deflated Sharpe / probability of backtest overfitting, full calibration
+reporting, and held-out-window results), which runs next, before Phase 4
+(paper trading execution, benchmarks, and ongoing accuracy tracking via the
+decision-outcomes ledger).

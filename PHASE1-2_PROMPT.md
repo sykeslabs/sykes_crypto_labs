@@ -908,3 +908,27 @@ Do not ask me for API secrets in chat.
 If credentials are required, tell me exactly which environment variable I need to populate locally.
 
 Start by inspecting the project.
+
+
+---
+
+## Addendum (added after Phase 3 planning review — does not change what was already built)
+
+Phase 1/2 were implemented and verified before this addendum was written, so
+this is guidance for anyone re-reading or extending this document, not a
+retroactive rebuild instruction. It records two forward-looking expectations
+that later phases (3e onward, and the new 3g) depend on, so they are written
+down at the source rather than assumed later:
+
+- **`llm_analyses.confidence` is a calibration input, not just a display
+  field.** From 3e onward, every stored confidence value (here, and later in
+  `model_market_assessments` and Judge output) will be checked for
+  calibration (Brier score / reliability, not just directional hit-rate).
+  Do not retroactively round, clamp, or bucket confidence values for
+  cosmetic reasons — a model's actual stated confidence, however granular,
+  is more useful data than a cleaned-up version of it.
+- **Every LLM call's `run_id`, `prompt_version`, and timestamps are the
+  bookkeeping that later multiple-testing corrections (3g) depend on.** No
+  action needed now beyond what's already specified above — just noting why
+  these fields matter beyond simple auditability: every prompt change is
+  effectively a new "trial," and 3g will need to count them.
