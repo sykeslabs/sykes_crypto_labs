@@ -84,7 +84,7 @@ because:
     composite factor score** (a purely quantitative, non-LLM signal the
     Judge later weighs alongside narrative evidence rather than blends with
     it), and a basic screening-stage anomaly/wash-trading flag
-  - **3c** — Official derivatives & on-chain sources: **Binance funding
+  - ✅ **3c** (complete) — Official derivatives & on-chain sources: **Binance funding
     rates**, **Binance/Deribit dated-futures term structure/basis** (now
     also expressed as an **annualized basis/carry yield**),
     **Binance/Deribit aggregate open interest**, **CME futures positioning**
@@ -876,12 +876,13 @@ deliberately *not* adopted — doesn't get lost as the project grows.
      the existing on-chain explorer. Leave unset to have `CUSTODY_OTC_FLOW`
      recorded as `NOT_IMPLEMENTED`.
 
-3. Apply the database schema — all four migrations, in order. Either:
+3. Apply the database schema — all five migrations, in order. Either:
    - **Recommended**: open the Supabase SQL Editor and paste the contents of
      `migrations/0001_init.sql`, run it, then do the same for
      `migrations/0002_llm_and_news.sql`,
-     `migrations/0003_phase3a_universe_provenance.sql`, and
-     `migrations/0004_phase3b_screening_regime.sql`. All are idempotent —
+     `migrations/0003_phase3a_universe_provenance.sql`,
+     `migrations/0004_phase3b_screening_regime.sql`, and
+     `migrations/0005_phase3c_derivatives_onchain.sql`. All are idempotent —
      safe to re-run any time they change.
    - Or, with `DATABASE_URL` set:
      ```
@@ -889,6 +890,7 @@ deliberately *not* adopted — doesn't get lost as the project grows.
      python scripts/apply_migration.py migrations/0002_llm_and_news.sql
      python scripts/apply_migration.py migrations/0003_phase3a_universe_provenance.sql
      python scripts/apply_migration.py migrations/0004_phase3b_screening_regime.sql
+     python scripts/apply_migration.py migrations/0005_phase3c_derivatives_onchain.sql
      ```
 
 4. Run the collector:
@@ -919,6 +921,17 @@ deliberately *not* adopted — doesn't get lost as the project grows.
    ```
 
    Combine with `--with-llm` if you want both in one run. See the Phase 3b
+   section below for what this does.
+
+7. Optionally, also run 3c's derivatives/on-chain collection (zero LLM cost —
+   Binance Futures/Deribit/CFTC/DefiLlama market data, no key required for
+   any of those four):
+
+   ```
+   python -m app.main --with-derivatives
+   ```
+
+   Combine with `--with-llm`/`--with-screening` as needed. See the Phase 3c
    section below for what this does.
 
 ## Verifying it worked
@@ -1164,13 +1177,113 @@ change to any Phase 1/2 code path):
   but not live-verified end-to-end** — no key was available while building
   this. Verify once `COINMARKETCAP_API_KEY` is set.
 
+## Phase 3c — Derivatives, CME positioning, on-chain/DeFi, stablecoin supply
+
+`python -m app.main --with-derivatives` collects, into one shared
+`evidence_observations` table (see below), zero LLM cost:
+
+1. **Binance funding rate + open interest** (`app/market_data/binance.py`,
+   extended) — for every tracked asset with a Binance perpetual (18 of 21
+   currently tracked; missing STORJ, BONK, WBT — verified live).
+2. **Futures term structure / annualized carry yield** — Binance's and
+   Deribit's dated (quarterly) futures vs. spot, for **BTC/ETH only**:
+   verified live that neither venue lists dated futures for any other
+   currently tracked asset (SOL, XRP, BNB, LINK, etc. all show zero dated
+   contracts despite having perpetuals). Raw basis and the annualized
+   carry-yield transformation are both stored.
+3. **CME Commitment of Traders (COT) positioning** (`app/market_data/cftc.py`)
+   — the CFTC's free, official "Traders in Financial Futures" report via
+   their public Socrata API, for BTC and ETH (as `MICRO ETHER` — CME's actual
+   contract name; there's no plain "ETHEREUM" listing). Categorized by
+   Dealer/Asset Manager/Leveraged Money/Other Reportables, exactly as
+   professional COT analysis expects. Stored with `freshness=STALE` by
+   design — the report reflects the prior Tuesday's close, published
+   Fridays; `decay_half_life_hours=84` (half the ~7-day publication cycle).
+4. **Deribit options** (`app/market_data/deribit.py`) — implied volatility
+   (near-dated, near-the-money) and aggregate put/call open-interest ratio,
+   **BTC/ETH only** (verified live: every other currency shows zero option
+   instruments on Deribit, despite some listing perpetuals there).
+5. **Volatility risk premium (VRP)** (`app/market_data/derivatives_factors.py`)
+   — Deribit's annualized implied vol minus 3b's realized 30d volatility
+   (itself annualized to match scale) for the same asset. Only computed
+   when both sides are genuinely available; a documented, testable pure
+   function, not a new external source.
+6. **DefiLlama TVL** (`app/market_data/defillama.py`) — protocol TVL +
+   1d/7d change, matched to tracked assets by governance-token symbol
+   (best-effort; ties broken by highest TVL). Fully free, no key.
+7. **Stablecoin supply growth** — DefiLlama's dedicated stablecoins API
+   directly exposes `circulating`/`circulatingPrevWeek`/`circulatingPrevMonth`,
+   so 7d/30d growth needed no derived computation or new provider. Captured
+   for the top 5 stablecoins by circulating supply, as `GLOBAL_CRYPTO`-scope
+   evidence (`asset_id = null`) — a market-wide capital-flow proxy, not
+   asset-specific.
+8. **Etherscan large-transfer proxy** (`app/market_data/etherscan.py`,
+   optional, gated behind `ETHERSCAN_API_KEY`) — counts native ETH transfers
+   above a threshold to/from a small set of known exchange addresses in the
+   last 24h, attributed to ETH's own evidence record.
+9. **Glassnode** (`app/market_data/glassnode.py`, optional, gated behind
+   `GLASSNODE_API_KEY`) — on-chain valuation-cycle metrics (MVRV/SOPR/NUPL/
+   cohorts) and BTC miner metrics. Client built and ready; **not
+   subscribed to** (see decisions below), reports `NOT_IMPLEMENTED`.
+
+Every raw observation is stored as-is — funding rate, open interest, the
+futures curve, IV, put/call ratio, VRP, and COT positioning are all
+positioning/pricing facts, not directional signals; no BUY/SELL inference
+happens at the collector level anywhere in this sub-phase (that's the
+Judge's job in 3e, per every per-source interpretation constraint in
+`PHASE3C_PROMPT.md`).
+
+**Signal sources confirmed genuinely inaccessible this round** (investigated
+live, not guessed): **Spot ETF flows** — Farside has no real API, just a
+Cloudflare-protected webpage; SoSoValue's API requires an authenticated
+login not available here. **Token unlock schedules** — Messari requires a
+key not available here (and its tier's unlock-data coverage is unconfirmed);
+TokenUnlocks.app has no discoverable public API. **Prediction markets** —
+Polymarket and Kalshi both fail DNS resolution from this specific
+development sandbox (confirmed it's not a general connectivity issue), so
+neither could be verified at all; both are `NOT_IMPLEMENTED` pending
+verification from a network that can reach them. All three remain seeded
+`NOT_IMPLEMENTED` from 3a — this sub-phase confirmed why, rather than
+leaving it unexamined.
+
+**Known limitations / decisions:**
+- **One shared `evidence_observations` table, not one table per source.**
+  3a's evidence-provenance shape was designed as a generic, reusable shape;
+  with 7+ structurally similar new sources this sub-phase, one table with a
+  `source` column and a `payload` JSONB is the generalization that shape was
+  built for — `market_snapshots`/`news`/`screened_universe` stay dedicated
+  tables because their columns are stable and well-known in advance, which
+  isn't true of most of 3c's smaller, heterogeneous observations.
+- **Glassnode/CryptoQuant deliberately not subscribed to.** MVRV/SOPR/NUPL/
+  cohort data and BTC miner metrics are very likely behind a paid tier at
+  either provider (confirmed both require an API key; free tiers are
+  typically limited to basic price data) — a real recurring-dollar-cost
+  decision, not a quick free signup like Etherscan/CoinMarketCap. Deferred
+  rather than committed to without deliberate consideration.
+- **Etherscan's large-transfer proxy is a narrower scope than full
+  exchange-reserve tracking** — it counts transfers to/from two well-known
+  public exchange addresses, not a comprehensive reserve-balance product,
+  and has no entity-clustering behind it (conflates genuine whale activity
+  with routine exchange-internal/protocol traffic — the same caveat
+  `PHASE3C_PROMPT.md` itself calls out). Recorded in the observation's own
+  payload, not just this doc.
+- **Stablecoin supply *velocity*** (transaction volume relative to
+  circulating supply) **was not built** — DefiLlama's stablecoins endpoint
+  exposes supply figures but no transfer-volume field, and computing it
+  properly needs on-chain transfer aggregation beyond this sub-phase's
+  scope. Supply *growth* (7d/30d) is captured; velocity is not.
+- **Exchange reserve balances were not built** — same reasoning: a real
+  reserve-tracking product needs a curated, maintained set of known
+  exchange wallet addresses per asset, which is its own research effort
+  beyond what a free/cheap tier reasonably supports right now.
+
 ## Project layout
 
 ```
 app/
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources, screened_universe, market_regime_snapshots); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
-  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with ETF-flow/prediction-market/stablecoin-velocity/CME-COT/miner-metrics providers and the derived volatility-risk-premium/annualized-carry-yield fields; extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
+  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources, screened_universe, market_regime_snapshots, evidence_observations); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
+  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with Binance-futures/Deribit/CFTC/DefiLlama providers (funding rate, open interest, term structure + annualized carry yield, options IV/put-call, VRP, CME COT, protocol TVL, stablecoin supply growth), plus optional Etherscan (large-transfer proxy) and Glassnode (on-chain valuation/miner metrics, built but not subscribed to — see Phase 3c decisions); ETF flows, prediction markets, token unlocks, and stablecoin velocity/exchange-reserve tracking investigated in 3c and confirmed NOT_IMPLEMENTED (no accessible free API found — see Phase 3c); extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
   news/          RSS collection, relevance matching, dedup (Phase 2)
   llm/           OpenRouter integration, structured output, cost guard (Phase 2); cost.py extended in 3a with COST_TRACKED_TABLES/CostLedgerRepository (multi-table cost summing, zero behavior change); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
   judge/         decisions.py — DecisionValue placeholder (BUY/HOLD/SELL/WATCH/NO_TRADE), 3a; Phase 3e — deterministic decision synthesis, persisted to `judge_decisions` (schema reserved in 3a); input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e

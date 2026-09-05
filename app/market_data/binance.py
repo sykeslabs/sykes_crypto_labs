@@ -20,6 +20,7 @@ class BinanceClient:
 
     def __init__(self, settings: Settings) -> None:
         self._base_url = settings.binance_base_url
+        self._futures_base_url = settings.binance_futures_base_url
 
     def list_usdt_symbols(self) -> set[str]:
         """Returns the set of base-asset symbols with a TRADING USDT pair."""
@@ -61,3 +62,69 @@ class BinanceClient:
         if not rows:
             return None
         return [(float(row[4]), float(row[5])) for row in rows]
+
+    # --- Futures (3c): funding rate, open interest, dated-futures term structure ---
+    # Verified live: premiumIndex/openInterest/fundingRate/exchangeInfo all
+    # work with no key. Perpetuals exist for 18 of the 21 currently tracked
+    # assets (missing STORJ, BONK, WBT); dated (quarterly) futures exist for
+    # BTC/ETH only — Binance doesn't list dated futures for any other
+    # currently-tracked asset (verified against exchangeInfo).
+
+    def list_perpetual_symbols(self) -> set[str]:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(f"{self._futures_base_url}/fapi/v1/exchangeInfo")
+            response.raise_for_status()
+            data = response.json()
+        return {
+            s["baseAsset"]
+            for s in data["symbols"]
+            if s["status"] == "TRADING" and s["quoteAsset"] == "USDT" and s["contractType"] == "PERPETUAL"
+        }
+
+    def fetch_funding_rate(self, symbol: str) -> dict | None:
+        """Current funding rate + next funding time for `<symbol>USDT` perpetual."""
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._futures_base_url}/fapi/v1/premiumIndex", params={"symbol": f"{symbol}USDT"}
+            )
+            if response.status_code == 400:
+                return None
+            response.raise_for_status()
+            return response.json()
+
+    def fetch_open_interest(self, symbol: str) -> float | None:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._futures_base_url}/fapi/v1/openInterest", params={"symbol": f"{symbol}USDT"}
+            )
+            if response.status_code == 400:
+                return None
+            response.raise_for_status()
+            return float(response.json()["openInterest"])
+
+    def list_dated_futures(self, symbol: str) -> list[dict]:
+        """Returns [{symbol, delivery_date}] for `symbol`'s dated (quarterly)
+        futures contracts — empty if none exist (true for every currently
+        tracked asset except BTC/ETH)."""
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(f"{self._futures_base_url}/fapi/v1/exchangeInfo")
+            response.raise_for_status()
+            data = response.json()
+        return [
+            {"symbol": s["symbol"], "delivery_date": s["deliveryDate"]}
+            for s in data["symbols"]
+            if s["baseAsset"] == symbol
+            and s["quoteAsset"] == "USDT"
+            and s["status"] == "TRADING"
+            and s["contractType"] != "PERPETUAL"
+        ]
+
+    def fetch_futures_price(self, futures_symbol: str) -> float | None:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._futures_base_url}/fapi/v1/ticker/price", params={"symbol": futures_symbol}
+            )
+            if response.status_code == 400:
+                return None
+            response.raise_for_status()
+            return float(response.json()["price"])

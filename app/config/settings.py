@@ -61,6 +61,23 @@ class Settings(BaseSettings):
     screening_universe_size: int = 30
     top_candidates_size: int = 10
 
+    # Derivatives / on-chain evidence (Phase 3c, used only with --with-derivatives)
+    binance_futures_base_url: str = "https://fapi.binance.com"
+    deribit_base_url: str = "https://www.deribit.com/api/v2"
+    cftc_base_url: str = "https://publicreporting.cftc.gov"
+    defillama_base_url: str = "https://api.llama.fi"
+    defillama_stablecoins_base_url: str = "https://stablecoins.llama.fi"
+    # Etherscan v2 API. Optional — free tier at etherscan.io/apis. Without a
+    # key, reported NOT_IMPLEMENTED, never approximated.
+    etherscan_api_key: SecretStr | None = None
+    etherscan_base_url: str = "https://api.etherscan.io/v2/api"
+    # Glassnode (on-chain valuation metrics: MVRV/SOPR/NUPL/cohorts, miner
+    # metrics). Optional — very likely a paid tier for these specific
+    # metrics; deliberately not subscribed to yet (see README). Client is
+    # built and ready; reports NOT_IMPLEMENTED until a key is added.
+    glassnode_api_key: SecretStr | None = None
+    glassnode_base_url: str = "https://api.glassnode.com"
+
     # Logging
     log_level: str = "INFO"
 

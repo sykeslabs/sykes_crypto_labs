@@ -6,6 +6,7 @@ from app.database.client import get_supabase_client
 from app.database.repository import (
     AssetRepository,
     AssetStatusRepository,
+    EvidenceObservationRepository,
     LLMAnalysisRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
@@ -18,9 +19,15 @@ from app.llm.openrouter_client import OpenRouterProvider
 from app.llm.service import LLMResearchService
 from app.logging_config import new_run_id, setup_logging
 from app.market_data.binance import BinanceClient
+from app.market_data.cftc import CftcClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.coingecko import CoinGeckoClient
 from app.market_data.coinmarketcap import CoinMarketCapClient
+from app.market_data.defillama import DefiLlamaClient
+from app.market_data.deribit import DeribitClient
+from app.market_data.derivatives_service import DerivativesService
+from app.market_data.etherscan import EtherscanClient
+from app.market_data.glassnode import GlassnodeClient
 from app.market_data.screening_service import ScreeningService
 from app.market_data.service import MarketDataCollectionService
 from app.news.rss_client import RssClient
@@ -42,6 +49,14 @@ def parse_args(argv=None) -> argparse.Namespace:
             "(CoinMarketCap/Coinbase/Binance; zero LLM cost)."
         ),
     )
+    parser.add_argument(
+        "--with-derivatives",
+        action="store_true",
+        help=(
+            "Also run 3c's derivatives (funding/OI/term-structure/options/VRP), "
+            "CME COT, and on-chain/DeFi collection (zero LLM cost)."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -51,7 +66,10 @@ def main() -> int:
     run_id = new_run_id()
     logger = setup_logging(run_id, settings.log_level)
 
-    logger.info("Starting run (with_llm=%s, with_screening=%s)", args.with_llm, args.with_screening)
+    logger.info(
+        "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s)",
+        args.with_llm, args.with_screening, args.with_derivatives,
+    )
 
     try:
         client = get_supabase_client()
@@ -100,6 +118,22 @@ def main() -> int:
         if screening_result.anomalies:
             logger.warning("Anomaly flags: %s", screening_result.anomalies)
         screening_failed = screening_result.screened_count == 0
+
+    if args.with_derivatives:
+        derivatives_service = DerivativesService(
+            asset_repo=asset_repo,
+            evidence_repo=EvidenceObservationRepository(client),
+            screened_universe_repo=ScreenedUniverseRepository(client),
+            signal_source_repo=SignalSourceRepository(client),
+            binance_client=BinanceClient(settings),
+            deribit_client=DeribitClient(settings),
+            cftc_client=CftcClient(settings),
+            defillama_client=DefiLlamaClient(settings),
+            etherscan_client=EtherscanClient(settings),
+            glassnode_client=GlassnodeClient(settings),
+        )
+        derivatives_result = derivatives_service.run(run_id)
+        logger.info("Derivatives/on-chain collection finished: %s", derivatives_result.summary)
 
     exit_code = 1 if (market_result.failed or screening_failed) else 0
 

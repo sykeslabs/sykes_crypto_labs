@@ -4,6 +4,7 @@ from supabase import Client
 
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.llm.schemas import LLMAnalysisRecord
+from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.schemas import MarketSnapshot
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
@@ -229,6 +230,21 @@ class ScreenedUniverseRepository:
             return
         self._client.table("screened_universe").insert([r.to_row() for r in rows]).execute()
 
+    def get_latest_volatility(self, symbol: str) -> float | None:
+        """Most recent `volatility_30d` computed for `symbol` by 3b's
+        screening — used by 3c's VRP computation (implied vs. realized)."""
+        response = (
+            self._client.table("screened_universe")
+            .select("volatility_30d")
+            .eq("symbol", symbol)
+            .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data or response.data[0]["volatility_30d"] is None:
+            return None
+        return float(response.data[0]["volatility_30d"])
+
 
 class MarketRegimeRepository:
     """Persists/reads `market_regime_snapshots` — the one regime label per
@@ -251,3 +267,40 @@ class MarketRegimeRepository:
         if not response.data:
             return None
         return MarketRegimeSnapshot.model_validate(response.data[0])
+
+
+class EvidenceObservationRepository:
+    """Persists/reads `evidence_observations` — the shared 3a
+    evidence-provenance shape reused by every 3c/3f source."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, observation: EvidenceObservation) -> None:
+        self._client.table("evidence_observations").insert(observation.to_row()).execute()
+
+    def insert_many(self, observations: list[EvidenceObservation]) -> None:
+        if not observations:
+            return
+        self._client.table("evidence_observations").insert(
+            [o.to_row() for o in observations]
+        ).execute()
+
+    def get_latest_value_as_of(
+        self, source: str, asset_id: str | None, as_of: datetime
+    ) -> EvidenceObservation | None:
+        """The "value as known at time T" query from 3a: latest row by
+        `retrieval_timestamp` where `retrieval_timestamp <= as_of`."""
+        query = (
+            self._client.table("evidence_observations")
+            .select("*")
+            .eq("source", source)
+            .lte("retrieval_timestamp", as_of.isoformat())
+            .order("retrieval_timestamp", desc=True)
+            .limit(1)
+        )
+        query = query.eq("asset_id", asset_id) if asset_id else query.is_("asset_id", "null")
+        response = query.execute()
+        if not response.data:
+            return None
+        return EvidenceObservation.model_validate(response.data[0])

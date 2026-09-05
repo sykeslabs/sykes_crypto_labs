@@ -28,6 +28,28 @@ DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE: dict[str, float] = {
     # next release supersedes it; 30 days is a placeholder for "about a
     # month," refined once 3f actually builds this.
     "macro": 720.0,
+    # 3c — funding settles every 8h on Binance; the current rate is most
+    # relevant until roughly the next settlement.
+    "binance_funding_rate": 8.0,
+    # 3c — open interest (either venue) drifts over the course of a day.
+    "open_interest": 12.0,
+    # 3c — the futures curve/basis moves with spot but the annualized carry
+    # yield reflects a slower-moving term-structure expectation.
+    "futures_term_structure": 24.0,
+    # 3c — options IV/put-call ratio move intraday but not as fast as spot.
+    "options_data": 12.0,
+    # 3c — derived from IV, same cadence.
+    "volatility_risk_premium": 12.0,
+    # 3c — CFTC's COT report is published weekly and reflects the prior
+    # Tuesday's close — stale by design, not a bug. Half of the ~7-day
+    # publication cycle.
+    "cftc_cot": 84.0,
+    # 3c — protocol/chain TVL and stablecoin supply both move on a roughly
+    # daily cadence.
+    "defillama_tvl": 24.0,
+    "stablecoin_supply": 24.0,
+    # 3c — a large-transfer-count proxy is close to real-time.
+    "etherscan_large_transfer": 6.0,
 }
 
 
