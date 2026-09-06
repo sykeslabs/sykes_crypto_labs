@@ -280,21 +280,32 @@ because:
     Judge-reasoning audit or purged-walk-forward finding) surfaces a
     specific named gap one of these three would plausibly close. See
     `PHASE3K_PROMPT.md` for the exact gating condition.
-- ⬜ Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
-  (see `PHASE4_PROMPT.md`). Simulated fills must be **order-book-depth-aware**
-  (volume-weighted execution price against real bid/ask depth, with a
-  labeled volatility-scaled fallback where depth data is unavailable) and
-  fee-aware, not mark-to-mid — every 3g/3h calibration and stress-test
-  number produced so far assumes costless, instant fills, so this phase
-  re-runs those numbers net of realistic execution costs as an explicit,
-  separately-reported comparison, not a silent replacement, since 3g's
-  accuracy claims are only as meaningful as the fill assumptions behind
-  them. Portfolio Construction's
-  current inverse-vol/capped-Kelly sizing (3e) is deliberately simple for a
-  paper system, and whether a fuller portfolio-optimization approach
-  (e.g. risk parity or a constrained mean-variance step) is worth the added
-  complexity is a decision for Phase 4's own scoping prompt, not assumed
-  here
+- ✅ **Phase 4** (complete) — Paper trading execution, benchmarks, ongoing
+  accuracy tracking (see `PHASE4_PROMPT.md`). Built a real, live-verified
+  **order-book-depth-aware fill simulator** (`app/trading/fill_simulator.py`)
+  — a multi-level book walk producing a genuine VWAP and (when the order
+  exceeds fetched depth) a real partial fill, backed by real public Binance/
+  Coinbase order-book endpoints — plus a documented, clearly-labeled
+  **volatility-scaled fallback** for when no real depth data exists (true
+  for every currently-resolved decision, since order books aren't stored
+  historically anywhere in this project). `decision_outcomes` now carries
+  `realized_return_net_of_costs`/`assumed_fill_method` alongside the
+  original mark-to-mid `realized_return`, never instead of it. **Real
+  finding**: execution costs are small relative to this sample's realized
+  returns (avg. drag ≈0.21 percentage points/decision) — hit-rate and Brier
+  are **unchanged**, Sharpe drops modestly (~3.5% relative). Benchmark
+  tracking (`app/benchmarks/baseline_comparison.py`) compared the system
+  against real BTC and equal-weight-universe buy-and-hold over the same
+  real 28-day window, identically costed — with an explicit, disclosed
+  caveat that the system's decision-level Sharpe and the baselines'
+  daily-return Sharpe are not directly comparable in magnitude (different
+  return periodicities), so no "system beats market" claim is made from
+  this alone. Portfolio-optimization sizing review (task 4): **decided
+  against adding complexity now** — costs are demonstrably small and 3g/3h
+  already found the bigger open problem is a lack of resolved, out-of-
+  sample data to validate even the current simple sizing scheme; added
+  optimization machinery would introduce new overfitting risk before that
+  gap closes, same philosophy as 3j's own gating.
 - ⬜ Phase 5 — Dashboard, scheduling, and a **FastAPI** read/query layer over
   the Evidence Store (candidates, assessments, Judge decisions, portfolio
   state, cost reports)
@@ -2681,6 +2692,177 @@ mocked `UNAVAILABLE`/not-configured cases for every source and the
 - **CUSTODY_OTC_FLOW stays `NOT_IMPLEMENTED`** by explicit user decision,
   given no verifiable address source exists — revisit only if a real,
   citable source of custody-provider addresses is identified.
+
+## Phase 4 — Paper trading execution, benchmarks, ongoing accuracy tracking
+
+Builds the execution-simulation and benchmarking layer *underneath* the
+decisions Judge/Risk Engine/Portfolio Construction already produce — no
+Judge/Risk/Portfolio decision-logic changes. Every 3g/3h calibration/
+stress-test number up to this point assumed costless, instant mark-to-mid
+fills; this phase makes that assumption explicit and re-reports the
+accuracy picture net of realistic execution costs, alongside (never
+instead of) the original numbers.
+
+### Task 1: order-book-aware fill simulator (`app/trading/`)
+
+`app/trading/fill_simulator.py` — two real fill methods, each recorded on
+every result:
+
+- **`DEPTH_WALKED`**: a real order-book snapshot is available — walks the
+  book level-by-level to compute a genuine volume-weighted average
+  execution price, and reports a real **partial fill** (`fully_filled=
+  False`, `filled_usd < requested_usd`) when the order exceeds the fetched
+  depth, rather than assuming unlimited liquidity. Backed by two new,
+  live-verified real client methods: `BinanceClient.fetch_order_book_depth`
+  (public `/api/v3/depth`, no key — verified live: 100 real bid/ask levels
+  for BTCUSDT) and `CoinbaseClient.fetch_order_book_depth` (public
+  `/products/{id}/book?level=2`, no key — verified live: ~22,000/21,000
+  real bid/ask levels for BTC-USD).
+- **`VOLATILITY_SCALED_ESTIMATE`**: a documented, clearly-labeled fallback
+  (a simple square-root market-impact form: slippage scales with recent
+  realized volatility and the order's participation rate relative to
+  typical daily volume) — used whenever no real depth snapshot exists.
+  **This is every currently-resolved decision** — order books are not
+  stored historically anywhere in this project, and exchanges don't serve
+  historical depth via free APIs, so retroactive `DEPTH_WALKED` fills are
+  genuinely impossible for past decisions (a real point-in-time
+  constraint, not a shortcut). `DEPTH_WALKED` is built, tested, and
+  live-verified, ready for real-time use the moment this system executes
+  a fill as it happens.
+
+Fee rates (`TAKER_FEE_RATE_BY_EXCHANGE`): Binance spot standard/VIP0 (0.10%
+maker/taker, no BNB discount) and Coinbase Advanced Trade base tier (0.40%
+maker/0.60% taker, <$10K 30-day volume) — each exchange's own commonly-
+published standard rate; **not fetched from a live authenticated
+fee-schedule API** (both exchanges' fee-schedule pages returned bot-
+detection/JS-rendering walls when checked live, and exact current tiers
+are account-specific) — re-verify periodically, same convention as
+`llm/cost.py`'s `PRICING_PER_1K_TOKENS`.
+
+### Task 2: extending `decision_outcomes` evaluation
+
+Migration `0013` adds `realized_return_net_of_costs`/`assumed_fill_method`,
+always stored alongside the original `realized_return`.
+`scripts/apply_execution_costs.py` computed a net-of-costs figure for all
+**109** currently-resolved decisions (all backfilled — no live decision has
+resolved yet), using real historical volatility/volume as of each
+decision's own entry and exit dates (point-in-time-safe via the same
+`HistoricalSeries.as_of` convention 3e.1's replay established), with a
+documented `ASSUMED_PORTFOLIO_NOTIONAL_USD=$10,000` paper-bankroll
+reference for sizing the participation-rate term (this project tracks
+fractional allocation only, no dollar total — a documented assumption, not
+a measured figure).
+
+A real methodological simplification, disclosed rather than hidden: a
+one-time round-trip fee doesn't change how an asset's price moves day to
+day (return/drawdown ratios are scale-invariant to a flat one-time cost),
+so `realized_return_net_of_costs = realized_return - round_trip_cost_pct`
+— a flat drag on the terminal directional-call figure, not a reconstructed
+position-level P&L series. `round_trip_cost_pct` combines entry+exit fee
+and entry+exit volatility-scaled slippage; verified with a known hand
+computation in `tests/test_fill_simulator.py`.
+
+**Real result — the calibration/reliability picture barely changes**:
+
+| | Mark-to-mid | Net-of-costs | Delta |
+|---|---|---|---|
+| Hit rate (n=36 directional) | 0.8333 | 0.8333 | +0.0000 |
+| Brier score | 0.1949 | 0.1949 | +0.0000 |
+| Sharpe (decision-level) | 1.8214 | 1.7866 | −0.0348 (~3.5% relative) |
+| DSR (n_trials=1) | 0.999985 | 0.999984 | negligible |
+
+Hit-rate/Brier are **exactly unchanged** — no single decision's directional
+call flipped sign once costs were applied (average drag: **0.21 percentage
+points/decision**, small relative to this sample's typically much larger
+real moves — single digits to +20%/-10%). This is a real, honest finding
+at this project's current assumed position size ($10K notional,
+single-digit-percent allocations), not a claim that execution costs never
+matter — a materially larger real portfolio (higher participation rate
+against real order-book depth) would show a bigger effect. Persisted as a
+new calibration trial (`PHASE4_NET_OF_COSTS_COMPARISON`), same provisional
+framing as every prior calibration re-run.
+
+### Task 3: benchmark tracking (`app/benchmarks/baseline_comparison.py`)
+
+Compared the system against real BTC buy-and-hold and a real equal-weight-
+across-universe buy-and-hold (19 real assets with a full matching window),
+over the exact real calendar window the system's own resolved decisions
+span (2026-08-09 to 2026-09-05, 28 real daily points), identically costed
+via the same `round_trip_cost_pct` methodology:
+
+| | System (decision-level) | BTC buy-and-hold | Equal-weight universe |
+|---|---|---|---|
+| Sharpe | 1.7866 | 0.3135 (daily) | 0.3368 (daily) |
+| Max drawdown | −0.1060 (worst single decision) | −0.0363 | −0.0620 |
+| Total return, net of costs | — (directional, not cumulative) | +0.2279 | +0.3670 |
+
+**A real methodological limitation, disclosed prominently, not glossed
+over**: the system's Sharpe is computed over 36 individual decision-level
+returns (each its own realized outcome over its own horizon), while the
+baselines' Sharpe is computed over 28 continuous daily returns of a single
+buy-and-hold position — **these are not the same statistical object** and
+are not directly comparable in magnitude (a decision-level return
+aggregates far more information per "observation" than one day's price
+move, so the system's Sharpe is structurally larger for reasons unrelated
+to genuine skill vs. buy-and-hold). No "the system beats the market" claim
+is made from this comparison — it's reported as the real, honestly-costed
+numbers with this caveat attached, consistent with 3g/3h's own standard
+for what counts as a validated claim. A true apples-to-apples comparison
+needs the system's own resolved decisions reconstructed as a continuous
+portfolio equity curve, which requires live decisions to actually resolve
+first (3g's own held-out-window finding) — noted as follow-up work, not
+solved here.
+
+### Task 4: portfolio-construction sizing review — decided against, for now
+
+**Explicit decision: do not add a fuller portfolio-optimization step (risk
+parity, constrained mean-variance) at this time.** Reasoning, grounded in
+tasks 1–3's real findings:
+- Execution costs are demonstrably small at this project's current
+  position sizes (task 2's 0.21pp average drag) — there's no cost-driven
+  case for smarter sizing yet.
+- 3g found no genuine out-of-sample validation exists yet (the embargo gap
+  finding), and 3h found insufficient real data (n=36 < required 50) to
+  even validate the CURRENT simple sizing scheme's evidence weighting.
+  Adding portfolio-optimization complexity now would introduce a new
+  source of overfitting risk before the more fundamental data/validation
+  gap closes — the same philosophy 3j's own gating already applies to new
+  evidence sources.
+- Revisit once either (a) enough live decisions resolve to give 3h's
+  ranking and 3g's held-out-window check a real sample, or (b) real
+  turnover/fee costs become material at larger position sizes or higher
+  trading frequency than currently observed.
+
+### Tests
+
+392 tests passing (`pytest`, no live credentials needed): `tests/
+test_fill_simulator.py` (13 — hand-computed VWAP/partial-fill/round-trip-
+cost cases, the volatility-scaled fallback, and its known reference
+computation), `tests/test_order_book_fetch.py` (4 — real response-shape
+parsing for both exchanges, mocked), `tests/test_baseline_comparison.py`
+(6 — hand-computed basket/drawdown/return cases).
+
+### Known limitations / decisions
+
+- **No live decision has resolved yet** — every net-of-costs/benchmark
+  number in this phase uses the 109 backfilled decisions; the 50 real live
+  decisions (3f/3g/3h/3i) remain unresolved, same standing finding as 3g's
+  held-out-window result.
+- **Fee rates are commonly-published standard rates, not live-fetched from
+  an authenticated fee-schedule API** — both exchanges' public fee pages
+  are bot/JS-gated; re-verify periodically.
+- **`ASSUMED_PORTFOLIO_NOTIONAL_USD=$10,000` is a documented sizing
+  assumption**, not a real tracked total — this project has no dollar-
+  denominated portfolio value, only fractional allocation.
+- **The system-vs-baseline Sharpe comparison mixes two different return
+  periodicities** (decision-level vs. daily) — disclosed above, not
+  resolved; a genuine apples-to-apples comparison needs a continuous
+  system equity curve, which needs resolved live decisions to build.
+- **`DEPTH_WALKED` fills are built, tested, and live-verified but not yet
+  used on any real decision** — every currently-resolved decision predates
+  this phase or is backfilled, so only the volatility-scaled estimate has
+  real applicability today; the depth-walked path is ready for genuine
+  real-time use going forward.
 
 ## Project layout
 

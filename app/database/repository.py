@@ -622,6 +622,30 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
+    def get_resolved_without_net_of_costs(self, limit: int = 500) -> list[DecisionOutcome]:
+        """Phase 4 task 2: resolved rows still missing a net-of-costs
+        figure — lets `scripts/apply_execution_costs.py` be re-run safely
+        without recomputing already-processed rows."""
+        response = (
+            self._client.table("decision_outcomes")
+            .select("*")
+            .neq("outcome_label", "UNRESOLVED")
+            .is_("realized_return_net_of_costs", "null")
+            .limit(limit)
+            .execute()
+        )
+        return [DecisionOutcome.model_validate(row) for row in response.data]
+
+    def update_net_of_costs(
+        self, decision_id: str, realized_return_net_of_costs: float, assumed_fill_method: str
+    ) -> None:
+        self._client.table("decision_outcomes").update(
+            {
+                "realized_return_net_of_costs": realized_return_net_of_costs,
+                "assumed_fill_method": assumed_fill_method,
+            }
+        ).eq("decision_id", decision_id).execute()
+
 
 class CalibrationRunRepository:
     """Persists `calibration_runs` — every calibration/backtest attempt as a

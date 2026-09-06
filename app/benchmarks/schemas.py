@@ -28,6 +28,10 @@ class DecisionOutcome(BaseModel):
     judge_confidence: float
     in_holdout_window: bool = False
     is_backfilled: bool = False
+    # Phase 4: fee/slippage-adjusted realized return, stored ALONGSIDE the
+    # mark-to-mid `realized_return` above, never instead of it.
+    realized_return_net_of_costs: float | None = None
+    assumed_fill_method: str | None = None
 
     def to_row(self) -> dict:
         return {
@@ -44,6 +48,8 @@ class DecisionOutcome(BaseModel):
             "judge_confidence": self.judge_confidence,
             "in_holdout_window": self.in_holdout_window,
             "is_backfilled": self.is_backfilled,
+            "realized_return_net_of_costs": self.realized_return_net_of_costs,
+            "assumed_fill_method": self.assumed_fill_method,
         }
 
 

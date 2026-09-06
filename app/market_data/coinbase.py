@@ -87,3 +87,25 @@ class CoinbaseClient:
             (datetime.fromtimestamp(row[0], tz=UTC), float(row[4]), float(row[5]))
             for row in recent
         ]
+
+    def fetch_order_book_depth(self, symbol: str, level: int = 2) -> "OrderBookSnapshot | None":
+        """Phase 4: real public order-book depth for `<symbol>-USD` — no key
+        required. Verified live: `/products/{id}/book?level=2` returns real
+        bids/asks (thousands of levels for a liquid pair like BTC-USD).
+        None if not listed."""
+        from app.trading.fill_simulator import OrderBookLevel, OrderBookSnapshot
+
+        with httpx.Client(timeout=15.0, headers=_HEADERS) as client:
+            response = client.get(
+                f"{self._base_url}/products/{symbol}-USD/book", params={"level": level}
+            )
+            if response.status_code in (400, 404):
+                return None
+            response.raise_for_status()
+            data = response.json()
+
+        return OrderBookSnapshot(
+            bids=[OrderBookLevel(float(row[0]), float(row[1])) for row in data["bids"]],
+            asks=[OrderBookLevel(float(row[0]), float(row[1])) for row in data["asks"]],
+            source="COINBASE",
+        )

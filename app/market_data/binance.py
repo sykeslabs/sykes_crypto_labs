@@ -175,3 +175,24 @@ class BinanceClient:
                 return None
             response.raise_for_status()
             return float(response.json()["price"])
+
+    def fetch_order_book_depth(self, symbol: str, limit: int = 100) -> "OrderBookSnapshot | None":
+        """Phase 4: real public order-book depth for `<symbol>USDT` — no key
+        required. Verified live: `/api/v3/depth` returns real bids/asks
+        (100 levels each at `limit=100`). None if no such pair."""
+        from app.trading.fill_simulator import OrderBookLevel, OrderBookSnapshot
+
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._base_url}/api/v3/depth", params={"symbol": f"{symbol}USDT", "limit": limit}
+            )
+            if response.status_code == 400:
+                return None
+            response.raise_for_status()
+            data = response.json()
+
+        return OrderBookSnapshot(
+            bids=[OrderBookLevel(float(p), float(q)) for p, q in data["bids"]],
+            asks=[OrderBookLevel(float(p), float(q)) for p, q in data["asks"]],
+            source="BINANCE",
+        )
