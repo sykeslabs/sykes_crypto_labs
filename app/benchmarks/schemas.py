@@ -73,6 +73,32 @@ class CalibrationRunRecord(BaseModel):
         }
 
 
+class EvidenceValueReportRecord(BaseModel):
+    """One row of `evidence_value_reports` (3h tasks 1/1a) — a countable,
+    reproducible ranking/drift-check attempt, same convention as
+    `calibration_runs`."""
+
+    id: str | None = None
+    run_at: datetime
+    method: str
+    sample_size: int
+    decision_outcomes_window: str | None = None
+    feature_importances: dict[str, float] = {}
+    sufficient_sample: bool = False
+    notes: str | None = None
+
+    def to_row(self) -> dict:
+        return {
+            "run_at": self.run_at.isoformat(),
+            "method": self.method,
+            "sample_size": self.sample_size,
+            "decision_outcomes_window": self.decision_outcomes_window,
+            "feature_importances": self.feature_importances,
+            "sufficient_sample": self.sufficient_sample,
+            "notes": self.notes,
+        }
+
+
 class ReasoningAuditResult(BaseModel):
     """The LLM's structured output for one audited decision (3g task 5) —
     given only the decision's stored `thesis`/`key_evidence`/

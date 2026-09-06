@@ -2,7 +2,12 @@ from datetime import UTC, datetime
 
 from supabase import Client
 
-from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome, JudgeReasoningAuditRecord
+from app.benchmarks.schemas import (
+    CalibrationRunRecord,
+    DecisionOutcome,
+    EvidenceValueReportRecord,
+    JudgeReasoningAuditRecord,
+)
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.judge.schemas import JudgeDecisionRecord
 from app.llm.adversarial_schemas import AdversarialResearchRecord
@@ -706,3 +711,13 @@ class JudgeReasoningAuditRepository:
 
     def insert(self, record: JudgeReasoningAuditRecord) -> None:
         self._client.table("judge_reasoning_audits").insert(record.to_row()).execute()
+
+
+class EvidenceValueReportRepository:
+    """Persists `evidence_value_reports` (3h tasks 1/1a)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: EvidenceValueReportRecord) -> None:
+        self._client.table("evidence_value_reports").insert(record.to_row()).execute()

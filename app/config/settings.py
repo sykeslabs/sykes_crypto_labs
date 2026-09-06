@@ -118,6 +118,11 @@ class Settings(BaseSettings):
     # Two assets' 30d daily-return correlation at/above this is treated as
     # "concentrated" by the correlation-awareness flag (task 2).
     correlation_flag_threshold: float = 0.7
+    # Phase 3h task 2: a candidate/current portfolio whose estimated stress-
+    # scenario drawdown (magnitude) exceeds this is FLAGGED in output/logs,
+    # same reporting-only standing as `requires_review` — never blocks
+    # Portfolio Construction in this sub-phase.
+    max_stress_scenario_drawdown: float = 0.5
 
     # Adversarial research, macro matrix, remaining fragile sources (Phase 3f,
     # used only with --with-adversarial / --with-macro)

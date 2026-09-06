@@ -199,18 +199,28 @@ because:
     still-unresolved live decisions. **Go/no-go for Phase 4: not yet** — see
     findings below for the full reasoning, led by the embargo/generalization
     problem, not sample size alone.
-  - **3h** — A later addendum, added after a gap-analysis against
-    professional crypto-advisory practice: a **learned evidence-value
-    ranking** (a simple, inspectable supervised model checked against
-    `decision_outcomes`, reported alongside — never blended into — the
-    Judge's own implicit evidence weighting, including a **rolling-window/
-    regime-sliced drift variant** that catches a source whose predictive
-    value shifts over time rather than only its full-history average) and a
-    deterministic **portfolio tail-risk stress test** (historical/
-    scenario-based drawdown and VaR/CVaR-style estimates under a
-    correlated-crash scenario). Reporting-only, same standing as 3g's
-    findings — neither auto-adjusts Judge, Risk Engine, or `signal_sources`
-    without explicit confirmation
+  - ✅ **3h** (complete) — A later addendum, added after a gap-analysis
+    against professional crypto-advisory practice. **Evidence-value ranking**:
+    a from-scratch, inspectable logistic regression (no new ML dependency —
+    pure Python gradient descent, matching this project's "new tooling
+    earns its place" discipline), verified against engineered synthetic
+    fixtures with a known relationship (both a plain perfect-predictor-vs-
+    noise case and a regime-dependent case) before running on real data.
+    **Real result: insufficient data** — n=36 real directional resolved
+    decisions, below the documented minimum of 50 (~10 observations/feature,
+    Peduzzi et al. 1996) — reported honestly, not fabricated; rolling-window
+    variants (n=20, n=16) are smaller still. A further real limitation
+    found: `source_assessment` and `composite_factor_score` are not usable
+    at all — neither is joinable to any resolved backfilled decision (same
+    root persistence gap 3g found for `regime_at_decision` — see below).
+    Regime-sliced drift: **not computable**, same reason. Deterministic
+    **portfolio tail-risk stress testing** (`app/risk/stress_test.py`, zero
+    LLM cost): two scenarios — `HISTORICAL_WORST_DRAWDOWN` (each asset's own
+    REAL historical peak-to-trough drawdown, fetched live from Binance/
+    Coinbase) and `ALTCOIN_CONTAGION_LUNA_FTX_STYLE` (a stated, documented
+    assumption) — run against the real live portfolio (see findings below).
+    Reporting-only throughout — neither capability altered Judge prompts,
+    Risk Engine formulas, Portfolio Construction, or `signal_sources`.
   - **3i** — A second later addendum from the same gap-analysis pass: three
     further evidence sources closing gaps against institutional on-chain
     research practice — **wallet-entity-clustering/"smart money" flow
@@ -2299,6 +2309,186 @@ rendering, schema validation, `CostGuard` registration, a mocked-LLM call).
   point** — flagged here as a caveat on those specific decisions rather than
   rerun; none of the 109 resolved backfilled outcomes ever cited term
   structure, so no calibration number is affected.
+
+## Phase 3h — Adaptive evidence-value weighting & portfolio stress testing
+
+A later addendum to Phase 3, added after a gap-analysis against
+professional crypto-advisory/quant-research practice. Both capabilities are
+diagnostic/reporting-only, same standing as 3g's findings — neither is wired
+into the live Judge/Risk Engine pipeline, and no `signal_sources`,
+Judge-prompt, or Risk Engine change was made.
+
+### Task 1/1a: adaptive evidence-value ranking + drift detection
+
+Implemented `app/benchmarks/evidence_value.py`: a logistic regression
+written from scratch (batch gradient descent, standardized features, a
+small L2 penalty for stability) rather than adding numpy/scikit-learn as a
+new dependency — this project already declines new tooling that doesn't
+match a specific, scoped need, and a hand-rolled fit over ≤6 features and a
+few dozen real observations is fully tractable in pure Python.
+
+**Verified against engineered fixtures with a known relationship before
+running on real data** (per the task's own non-negotiable): a
+perfect-predictor-vs-pure-noise case (one feature constructed to perfectly
+determine the label, another constructed — via an exact block structure,
+not probabilistic luck — to have precisely zero sample correlation with the
+label) confirms the mechanism recovers a large coefficient for the real
+signal and a near-zero one for noise; a regime-dependent case (the same
+feature is perfectly predictive in one synthetic "regime" and pure noise in
+another) confirms the regime-sliced drift check specifically recovers
+regime-dependence, not just that the aggregate model runs. 8 tests, all
+passing.
+
+**Minimum sample size: 50**, documented reasoning — ~10 observations per
+candidate feature is a conservative, commonly-cited rule of thumb for a
+stable logistic-regression fit (Peduzzi et al., 1996), and this project's
+real candidate feature set has up to 6 fields (implying ~60 by the strict
+rule; 50 is used as a slightly relaxed but still defensible, honestly
+reachable bar as more decisions resolve).
+
+**Real result: insufficient data.** n=36 real directional resolved
+decisions (the same dataset 3g's DSR/Brier work used) — below the required
+50. Reported and persisted honestly as `sufficient_sample=false`, not
+forced into a fabricated ranking. Rolling-window variants (20, 16) are
+smaller still, same honest result.
+
+**A further real limitation, found while building this task, not
+anticipated by the phase prompt's own framing**: the intended candidate
+feature set — `source_assessment` entries (the Judge's per-named-source
+read) and `composite_factor_score` — turned out to be **entirely
+unusable**, not merely small-sample. Neither is joinable to any of the 109
+resolved decisions: `model_market_assessments` (which holds
+`source_assessment`) has **zero** rows with a `BACKFILL-*` run_id — 3e.1's
+replay builds these records in-memory to feed the Judge's context but never
+persists them to the real table — and `composite_factor_score` hits the
+identical gap already found in 3g (`screened_universe` only has live
+`RUN-*` run_ids). This is the **same root persistence pattern as 3g's
+`regime_at_decision` finding**, now confirmed a third time across three
+independent fields (regime, composite score, source assessment) — 3e.1's
+replay consistently computes real values in-memory for context-building but
+never persists a clean, joinable record of them alongside the resulting
+decision, leaving only their narrative embedding in free text. The usable
+candidate feature set was therefore restricted to fields genuinely
+persisted on every `judge_decisions` row: `model_agreement`,
+`source_agreement`, `confidence`, `risk_score`, `uncertainty`,
+`investment_horizon_days` — a real, disclosed narrowing, not silently
+substituted for the task's original intent. A regex-based extraction of
+`composite_factor_score` from `key_evidence` free text was considered and
+rejected as too misparse-prone for a statistical input (inconsistent
+phrasing across decisions, e.g. "Composite score 0.637" vs. "Highest
+composite score among momentum leaders (0.668)") — same discipline 3g
+applied when it hit this identical question.
+
+**Regime-sliced drift: not computable**, for the same reason —
+`regime_at_decision` is NULL for every resolved backfilled decision, so
+there is no real regime label to slice by. Both null results persisted to
+`evidence_value_reports` (migration `0012`) alongside the full-history and
+rolling-window attempts — 4 real rows, all `sufficient_sample=false`,
+each with its specific reason.
+
+### Task 2: portfolio tail-risk stress testing
+
+Extended `app/risk/` with `app/risk/stress_test.py` — pure, deterministic,
+zero LLM cost. Two scenarios, chosen to satisfy all three of the task's
+named examples without redundancy (the first scenario below directly
+satisfies both the "~70% BTC drawdown, 2022-style" example and the "at
+least one scenario using actual historical returns" requirement in a single
+real computation):
+
+1. **`HISTORICAL_WORST_DRAWDOWN`** — each asset's own real historical
+   peak-to-trough drawdown, computed from real fetched Binance/Coinbase
+   daily OHLCV (`scripts/run_stress_test.py`, same clients 3e.1's replay
+   already verified live). **A real, disclosed constraint**: Binance's
+   kline endpoint caps at 1000 daily candles per call counted back from
+   "now," so the reachable real window is ~2.7 years (2023-12-12 to
+   2026-09-06 in this project's real timeline) — it does **not** reach back
+   to the actual 2022 cycle, so real computed drawdowns come in smaller
+   than the task's own "~70%" example figure for BTC specifically (real:
+   **-53.0%**). This is disclosed, not silently patched over by fabricating
+   deeper history. Real per-asset drawdowns fetched for the full active
+   universe found two more honest findings: **`WBT` has no real data on
+   either exchange** (falls back to the documented BTC proxy) and **`XMR`'s
+   real data is genuinely stale** — its series ends 2024-02-20, not near the
+   current date (consistent with Monero's real exchange delistings around
+   that period) — used as-is (it's real, not fabricated) but flagged
+   `is_stale=true` distinctly from a proxy, so it's never silently treated
+   as equally current as a fresh reading. `HYPE`'s real window is short
+   (214 days, since 2026-02-05) — its real drawdown (-29.9%) likely
+   understates its true tail risk given limited history, noted as such.
+2. **`ALTCOIN_CONTAGION_LUNA_FTX_STYLE`** — a stated scenario ASSUMPTION,
+   not fitted from data (correlations move toward 1 in a contagion event):
+   BTC/ETH assumed to fall 50%, every other asset assumed to fall 85% — a
+   modeling choice broadly consistent with (though not derived from) this
+   project's own real per-asset numbers above, where every real altcoin
+   drawdown was meaningfully deeper than BTC's/ETH's.
+
+Each scenario's "CVaR-style estimate" is deliberately identical to its
+portfolio drawdown — with one deterministic scenario per template (not a
+return distribution), expected-loss-beyond-a-threshold reduces exactly to
+that scenario's own loss; disclosed as a real simplification, not dressed
+up as a full historical VaR computation, consistent with the task's own
+instruction to keep this simple and inspectable.
+
+**Real result, run against the real live portfolio** (BTC 5.78%, HYPE
+0.76%, BNB 6.40%, SOL 4.66%, LINK 3.16% — 20.75% total allocated, the rest
+in cash):
+
+| Scenario | Portfolio drawdown | Flagged (`MAX_STRESS_SCENARIO_DRAWDOWN`=50%) |
+|---|---|---|
+| `HISTORICAL_WORST_DRAWDOWN` | **-12.94%** | No |
+| `ALTCOIN_CONTAGION_LUNA_FTX_STYLE` | **-15.62%** | No |
+
+Neither scenario flags at the current allocation level — but this
+reflects the portfolio being only ~21% deployed right now (per-asset
+drawdowns are severe: -53% to -76% under scenario 1 alone), not low
+underlying asset risk. If fully allocated at the current asset mix, both
+figures would scale roughly proportionally (≈5x, since ~21%→100%),
+putting `ALTCOIN_CONTAGION_LUNA_FTX_STYLE` close to the flag threshold —
+worth keeping in mind as allocation grows, not a static "safe" reading.
+
+### Task 3: cost sizing
+
+Confirmed: this sub-phase added **zero new LLM cost**. Both capabilities
+are deterministic — evidence-value ranking is pure Python gradient descent
+over already-persisted structured fields, and the stress test is pure
+arithmetic over freely-fetched real market data (no API key, no LLM call).
+No optional LLM-based explanation step was added.
+
+### Tests
+
+344 tests passing (`pytest`, no live credentials needed):
+`tests/test_evidence_value.py` (8 tests — the perfect-predictor and
+regime-dependent fixture recoveries, sample-size gating, rolling-window
+splitting, schema serialization) and `tests/test_stress_test.py` (8 tests —
+hand-computed known drawdowns for both scenarios, proxy fallback, stale-data
+handling, threshold flagging).
+
+### Known limitations / decisions
+
+- **The `source_assessment`/`composite_factor_score`/`regime_at_decision`
+  persistence gap is now confirmed across three independent fields** —
+  3e.1's replay computes real values in-memory for context-building but
+  never persists a clean, joinable record of them for backfilled decisions.
+  This is a real, reportable structural gap in replay's bookkeeping, not
+  fixed here (changing `replay.py` is outside both 3g's and 3h's scope) —
+  worth a dedicated look if backfilled data is ever relied on again for a
+  learned-model or regime-conditional analysis.
+- **`HISTORICAL_WORST_DRAWDOWN` cannot reach the actual 2022 cycle** —
+  Binance's kline endpoint's 1000-candle-per-call cap, counted back from
+  "now," limits the real reachable window to ~2.7 years. Extending this
+  would need pagination (`startTime`/`endTime` params) added to
+  `BinanceClient` — a real, scoped follow-up, not implemented here to avoid
+  touching a collector client beyond this sub-phase's stated scope.
+- **`evidence_value_reports` carries no `estimated_cost` column and is not
+  registered in `COST_TRACKED_TABLES`** — correctly, since this sub-phase
+  adds zero LLM cost (task 3).
+- **The evidence-value ranking's real result (insufficient data) means task
+  1's "disagreement between the learned ranking and the Judge's implicit
+  weighting" comparison has nothing to compare yet** — there is no learned
+  ranking to disagree with the Judge's weighting until n≥50 real directional
+  decisions resolve. Not a gap in the mechanism (verified against fixtures);
+  a real fact about this project's current age, same standing as 3g's DSR/
+  PBO/held-out-window findings.
 
 ## Project layout
 
