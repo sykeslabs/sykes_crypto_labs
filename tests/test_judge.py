@@ -81,6 +81,22 @@ def test_judge_decision_record_to_row_serializes_decimal_and_datetime():
     assert isinstance(row["created_at"], str)
 
 
+def test_judge_decision_record_accepts_null_macro_sensitivity_for_pre_3f_rows():
+    # Real bug found live (Phase 5): pre-3f backfilled judge_decisions rows
+    # genuinely have macro_sensitivity=NULL in the DB (the column didn't
+    # exist before migration 0010) -- reading one back must not crash.
+    record = JudgeDecisionRecord(
+        run_id="BACKFILL-2026-08-09", asset_id="a1", created_at=datetime(2026, 8, 9, tzinfo=UTC),
+        decision="BUY", confidence=0.6, target_allocation=0.05, expected_return=0.1,
+        expected_alpha=0.05, risk_score=0.4, uncertainty=0.3, model_agreement=0.8,
+        source_agreement=0.7, investment_horizon_days=30, key_evidence=[], contradictory_evidence=[],
+        key_risks=[], invalidation_conditions=[], requires_review=False, thesis="t",
+        macro_sensitivity=None, regime_id=None, prompt_template_id="p1", estimated_cost=Decimal("0.01"),
+        is_backfilled=True,
+    )
+    assert record.macro_sensitivity is None
+
+
 # --- context building: no silent fallback -----------------------------------
 
 def _asset(symbol="BTC", asset_id="a1"):

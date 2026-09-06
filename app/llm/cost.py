@@ -85,6 +85,28 @@ class CostLedgerRepository:
             )
         return total
 
+    def get_cost_sum_by_table_since(self, since: datetime) -> dict[str, Decimal]:
+        """Phase 5: the same sum as `get_cost_sum_since`, broken down per
+        `COST_TRACKED_TABLES` entry — so the cost-reporting endpoint can
+        show which stage actually spent what, not just one combined total."""
+        result: dict[str, Decimal] = {}
+        for table, timestamp_column in COST_TRACKED_TABLES.items():
+            response = (
+                self._client.table(table)
+                .select("estimated_cost")
+                .gte(timestamp_column, since.isoformat())
+                .execute()
+            )
+            result[table] = sum(
+                (
+                    Decimal(str(row["estimated_cost"]))
+                    for row in response.data
+                    if row["estimated_cost"] is not None
+                ),
+                Decimal("0"),
+            )
+        return result
+
 
 class CostGuard:
     """Enforces MAX_DAILY_LLM_COST / MAX_MONTHLY_LLM_COST before each LLM call."""

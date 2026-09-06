@@ -6,5 +6,9 @@ supabase>=2.4
 pytest>=8.0
 pytest-mock>=3.12
 
+# Phase 5: read/query API + dashboard, localhost/personal-machine only (see README).
+fastapi>=0.110
+uvicorn>=0.29
+
 # Optional: only needed for scripts/apply_migration.py (direct Postgres DDL application)
 psycopg2-binary>=2.9

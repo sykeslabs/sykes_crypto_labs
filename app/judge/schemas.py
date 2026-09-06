@@ -78,7 +78,13 @@ class JudgeDecisionRecord(BaseModel):
     invalidation_conditions: list[str]
     requires_review: bool
     thesis: str
-    macro_sensitivity: str
+    # Nullable here (unlike JudgeDecisionItem's required field above): every
+    # NEW decision always provides a real value, but real pre-3f backfilled
+    # rows in the DB genuinely have NULL (macro_sensitivity didn't exist
+    # before migration 0010) -- found live when Phase 5's calibration
+    # endpoint tried to read one back. None means "predates 3f", never a
+    # fabricated placeholder.
+    macro_sensitivity: str | None = None
     regime_id: str | None
     prompt_template_id: str | None
     estimated_cost: Decimal

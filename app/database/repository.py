@@ -371,6 +371,28 @@ class ScreenedUniverseRepository:
         )
         return [ScreenedAsset.model_validate(row) for row in response.data]
 
+    def get_latest_full_universe(self) -> list[ScreenedAsset]:
+        """Phase 5: every screened asset (not just TOP_CANDIDATES) from the
+        most recent screening run — the dashboard's full-universe view."""
+        latest = (
+            self._client.table("screened_universe")
+            .select("run_id, computed_at")
+            .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not latest.data:
+            return []
+
+        run_id = latest.data[0]["run_id"]
+        response = (
+            self._client.table("screened_universe")
+            .select("*")
+            .eq("run_id", run_id)
+            .execute()
+        )
+        return [ScreenedAsset.model_validate(row) for row in response.data]
+
 
 class MarketRegimeRepository:
     """Persists/reads `market_regime_snapshots` — the one regime label per
@@ -589,6 +611,22 @@ class JudgeDecisionRepository:
             return None
         return JudgeDecisionRecord.model_validate(response.data[0])
 
+    def get_recent(self, limit: int = 50, is_backfilled: bool | None = None) -> list[JudgeDecisionRecord]:
+        """Phase 5: recent decisions across every asset, newest first — the
+        dashboard's decisions feed. `is_backfilled` optionally filters to
+        just backfilled or just live rows (never mixes them silently)."""
+        query = self._client.table("judge_decisions").select("*")
+        if is_backfilled is not None:
+            query = query.eq("is_backfilled", is_backfilled)
+        response = query.order("created_at", desc=True).limit(limit).execute()
+        return [JudgeDecisionRecord.model_validate(row) for row in response.data]
+
+    def get_by_id(self, decision_id: str) -> JudgeDecisionRecord | None:
+        response = self._client.table("judge_decisions").select("*").eq("id", decision_id).limit(1).execute()
+        if not response.data:
+            return None
+        return JudgeDecisionRecord.model_validate(response.data[0])
+
 
 class DecisionOutcomeRepository:
     """Persists/reads `decision_outcomes` (3a schema) — the continuous
@@ -646,6 +684,22 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
+    def get_recent(self, limit: int = 200, is_backfilled: bool | None = None) -> list[DecisionOutcome]:
+        """Phase 5: recent outcomes newest-first, for the calibration/ledger
+        views — never mixes backfilled/live silently (see 3e.1's own
+        non-negotiable)."""
+        query = self._client.table("decision_outcomes").select("*")
+        if is_backfilled is not None:
+            query = query.eq("is_backfilled", is_backfilled)
+        response = query.order("decision_timestamp", desc=True).limit(limit).execute()
+        return [DecisionOutcome.model_validate(row) for row in response.data]
+
+    def get_by_decision_id(self, decision_id: str) -> DecisionOutcome | None:
+        response = self._client.table("decision_outcomes").select("*").eq("decision_id", decision_id).limit(1).execute()
+        if not response.data:
+            return None
+        return DecisionOutcome.model_validate(response.data[0])
+
 
 class CalibrationRunRepository:
     """Persists `calibration_runs` — every calibration/backtest attempt as a
@@ -656,6 +710,20 @@ class CalibrationRunRepository:
 
     def insert(self, record: CalibrationRunRecord) -> None:
         self._client.table("calibration_runs").insert(record.to_row()).execute()
+
+    def get_recent(self, limit: int = 50) -> list[CalibrationRunRecord]:
+        """Phase 5: every calibration attempt newest-first — the dashboard
+        must show these as the distinct, method-tagged trials they are
+        (never merged into one figure), same as 3g's own trial-count
+        discipline."""
+        response = (
+            self._client.table("calibration_runs")
+            .select("*")
+            .order("run_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [CalibrationRunRecord.model_validate(row) for row in response.data]
 
 
 class PortfolioPositionRepository:
@@ -726,6 +794,18 @@ class AdversarialResearchRepository:
             return None
         return AdversarialResearchRecord.model_validate(response.data[0])
 
+    def get_recent(self, limit: int = 50) -> list[AdversarialResearchRecord]:
+        """Phase 5: recent bull/bear/scenario research across every asset,
+        newest first."""
+        response = (
+            self._client.table("adversarial_research")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [AdversarialResearchRecord.model_validate(row) for row in response.data]
+
 
 class JudgeReasoningAuditRepository:
     """Persists `judge_reasoning_audits` (3g task 5)."""
@@ -736,6 +816,26 @@ class JudgeReasoningAuditRepository:
     def insert(self, record: JudgeReasoningAuditRecord) -> None:
         self._client.table("judge_reasoning_audits").insert(record.to_row()).execute()
 
+    def get_recent(self, limit: int = 50) -> list[JudgeReasoningAuditRecord]:
+        response = (
+            self._client.table("judge_reasoning_audits")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [JudgeReasoningAuditRecord.model_validate(row) for row in response.data]
+
+    def get_by_decision_id(self, decision_id: str) -> list[JudgeReasoningAuditRecord]:
+        response = (
+            self._client.table("judge_reasoning_audits")
+            .select("*")
+            .eq("decision_id", decision_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return [JudgeReasoningAuditRecord.model_validate(row) for row in response.data]
+
 
 class EvidenceValueReportRepository:
     """Persists `evidence_value_reports` (3h tasks 1/1a)."""
@@ -745,3 +845,13 @@ class EvidenceValueReportRepository:
 
     def insert(self, record: EvidenceValueReportRecord) -> None:
         self._client.table("evidence_value_reports").insert(record.to_row()).execute()
+
+    def get_recent(self, limit: int = 50) -> list[EvidenceValueReportRecord]:
+        response = (
+            self._client.table("evidence_value_reports")
+            .select("*")
+            .order("run_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [EvidenceValueReportRecord.model_validate(row) for row in response.data]

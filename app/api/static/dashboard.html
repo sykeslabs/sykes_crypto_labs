@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Crypto AI Portfolio — Dashboard</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; max-width: 1100px; }
+  h1 { font-size: 1.4rem; margin-bottom: 4px; }
+  .subtitle { color: #888; margin-top: 0; margin-bottom: 20px; font-size: 0.9rem; }
+  section { border: 1px solid #8888; border-radius: 8px; padding: 16px; margin-bottom: 20px; }
+  section h2 { margin-top: 0; font-size: 1.05rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #8884; vertical-align: top; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+  .badge.ok { background: #2e7d3222; color: #2e7d32; }
+  .badge.unavailable { background: #c6282822; color: #c62828; }
+  .badge.not-implemented { background: #6c6c6c22; color: #6c6c6c; }
+  .badge.backfilled { background: #ef6c0022; color: #ef6c00; }
+  .badge.live { background: #1565c022; color: #1565c0; }
+  .badge.insufficient { background: #6c6c6c22; color: #6c6c6c; }
+  .null-note { color: #ef6c00; font-style: italic; font-size: 0.85rem; }
+  .key-setup { display: flex; gap: 8px; align-items: center; margin-bottom: 20px; }
+  .key-setup input { flex: 1; padding: 6px; }
+  .error { color: #c62828; }
+  .thesis { max-width: 420px; white-space: normal; }
+  #key-status { font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Crypto AI Portfolio</h1>
+<p class="subtitle">Read-only dashboard over the Evidence Store — localhost/personal-machine only (Phase 5).</p>
+
+<div class="key-setup">
+  <input id="api-key-input" type="password" placeholder="X-API-Key">
+  <button id="save-key">Save key</button>
+  <span id="key-status"></span>
+</div>
+
+<section>
+  <h2>Signal sources</h2>
+  <div id="signal-sources">Loading…</div>
+</section>
+
+<section>
+  <h2>Cost / spend</h2>
+  <div id="cost-summary">Loading…</div>
+</section>
+
+<section>
+  <h2>Portfolio state</h2>
+  <div id="portfolio-state">Loading…</div>
+</section>
+
+<section>
+  <h2>Calibration summary</h2>
+  <div id="calibration-summary">Loading…</div>
+</section>
+
+<section>
+  <h2>Recent Judge decisions</h2>
+  <div id="judge-decisions">Loading…</div>
+</section>
+
+<script>
+const KEY_STORAGE = "cryptoAiPortfolio.apiKey";
+
+function getKey() {
+  try { return localStorage.getItem(KEY_STORAGE) || ""; } catch { return ""; }
+}
+function setKey(k) {
+  try { localStorage.setItem(KEY_STORAGE, k); } catch {}
+}
+
+async function apiGet(path) {
+  const key = getKey();
+  const res = await fetch(path, { headers: key ? { "X-API-Key": key } : {} });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(`${res.status}: ${body.detail || "request failed"}`);
+  }
+  return res.json();
+}
+
+function statusBadgeClass(status) {
+  if (status === "OK") return "ok";
+  if (status === "UNAVAILABLE") return "unavailable";
+  return "not-implemented";
+}
+
+function el(html) {
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return div.firstElementChild;
+}
+
+async function loadSignalSources() {
+  const target = document.getElementById("signal-sources");
+  try {
+    const sources = await apiGet("/signal-sources");
+    const rows = sources.map(s => `
+      <tr>
+        <td>${s.name}</td>
+        <td><span class="badge ${statusBadgeClass(s.status)}">${s.status}</span></td>
+        <td>${s.enabled ? "yes" : "no"}</td>
+        <td>${s.notes || ""}</td>
+      </tr>`).join("");
+    target.innerHTML = `<table><tr><th>Source</th><th>Status</th><th>Enabled</th><th>Notes</th></tr>${rows}</table>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+async function loadCostSummary() {
+  const target = document.getElementById("cost-summary");
+  try {
+    const c = await apiGet("/cost/summary");
+    const tableRows = (window) => window.by_table.map(t => `<tr><td>${t.table}</td><td>$${t.cost_usd}</td></tr>`).join("");
+    target.innerHTML = `
+      <p><strong>Today:</strong> $${c.daily.total_usd} / $${c.daily.cap_usd} cap ($${c.daily.remaining_usd} remaining)</p>
+      <table><tr><th>Table</th><th>Cost</th></tr>${tableRows(c.daily)}</table>
+      <p><strong>This month:</strong> $${c.monthly.total_usd} / $${c.monthly.cap_usd} cap ($${c.monthly.remaining_usd} remaining)</p>
+      <p class="null-note">${c.note}</p>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+async function loadPortfolioState() {
+  const target = document.getElementById("portfolio-state");
+  try {
+    const state = await apiGet("/portfolio/state");
+    if (state.length === 0) {
+      target.innerHTML = "<p>No positions currently allocated.</p>";
+      return;
+    }
+    const rows = state.map(p => {
+      const o = p.outcome;
+      const fillMethod = o && o.assumed_fill_method ? o.assumed_fill_method : "—";
+      const mtm = o && o.realized_return !== null ? o.realized_return.toFixed(4) : "unresolved";
+      const net = o && o.realized_return_net_of_costs !== null ? o.realized_return_net_of_costs.toFixed(4) : "unresolved";
+      return `<tr>
+        <td>${p.symbol}</td>
+        <td>${(p.current_allocation * 100).toFixed(2)}%</td>
+        <td>${o ? o.outcome_label : "—"}</td>
+        <td>${mtm}</td>
+        <td>${net}</td>
+        <td>${fillMethod}</td>
+      </tr>`;
+    }).join("");
+    target.innerHTML = `<table><tr><th>Asset</th><th>Allocation</th><th>Outcome</th><th>Mark-to-mid</th><th>Net of costs</th><th>Fill method</th></tr>${rows}</table>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+async function loadCalibrationSummary() {
+  const target = document.getElementById("calibration-summary");
+  try {
+    const s = await apiGet("/calibration/summary");
+    target.innerHTML = `
+      <table>
+        <tr><td>Resolved (backfilled)</td><td><span class="badge backfilled">backfilled</span> ${s.resolved_backfilled_count}</td></tr>
+        <tr><td>Resolved (live)</td><td><span class="badge live">live</span> ${s.resolved_live_count}</td></tr>
+        <tr><td>Unresolved (backfilled)</td><td>${s.unresolved_backfilled_count}</td></tr>
+        <tr><td>Unresolved (live)</td><td>${s.unresolved_live_count}</td></tr>
+        <tr><td>Directional sample size</td><td>${s.directional_sample_size}</td></tr>
+        <tr><td>Hit rate</td><td>${s.hit_rate !== null ? s.hit_rate.toFixed(4) : '<span class="badge insufficient">n/a</span>'}</td></tr>
+        <tr><td>Brier score</td><td>${s.brier_score !== null ? s.brier_score.toFixed(4) : '<span class="badge insufficient">n/a</span>'}</td></tr>
+        <tr><td>Sharpe (decision-level)</td><td>${s.sharpe_decision_level !== null ? s.sharpe_decision_level.toFixed(4) : "n/a"}</td></tr>
+        <tr><td>Deflated Sharpe Ratio</td><td>${s.deflated_sharpe_ratio !== null ? s.deflated_sharpe_ratio.toFixed(6) : "n/a"}</td></tr>
+      </table>
+      <p class="null-note">By-regime: ${s.by_regime_note}</p>
+      <p class="null-note">Held-out window: ${s.held_out_window_note}</p>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+async function loadJudgeDecisions() {
+  const target = document.getElementById("judge-decisions");
+  try {
+    const decisions = await apiGet("/judge/decisions/recent?limit=15");
+    if (decisions.length === 0) {
+      target.innerHTML = "<p>No decisions yet.</p>";
+      return;
+    }
+    const rows = decisions.map(d => `
+      <tr>
+        <td>${d.created_at.slice(0, 10)}</td>
+        <td><span class="badge ${d.is_backfilled ? "backfilled" : "live"}">${d.is_backfilled ? "backfilled" : "live"}</span></td>
+        <td>${d.decision}</td>
+        <td>${d.confidence.toFixed(2)}</td>
+        <td class="thesis">${d.thesis}</td>
+      </tr>`).join("");
+    target.innerHTML = `<table><tr><th>Date</th><th>Source</th><th>Decision</th><th>Confidence</th><th>Thesis</th></tr>${rows}</table>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+function loadAll() {
+  loadSignalSources();
+  loadCostSummary();
+  loadPortfolioState();
+  loadCalibrationSummary();
+  loadJudgeDecisions();
+}
+
+document.getElementById("api-key-input").value = getKey();
+document.getElementById("save-key").addEventListener("click", () => {
+  setKey(document.getElementById("api-key-input").value.trim());
+  document.getElementById("key-status").textContent = "Key saved (this browser only).";
+  loadAll();
+});
+
+loadAll();
+</script>
+</body>
+</html>

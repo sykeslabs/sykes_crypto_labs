@@ -306,9 +306,26 @@ because:
   sample data to validate even the current simple sizing scheme; added
   optimization machinery would introduce new overfitting risk before that
   gap closes, same philosophy as 3j's own gating.
-- ⬜ Phase 5 — Dashboard, scheduling, and a **FastAPI** read/query layer over
-  the Evidence Store (candidates, assessments, Judge decisions, portfolio
-  state, cost reports)
+- ✅ **Phase 5** (complete) — A **FastAPI** read/query layer (20 endpoints)
+  over the Evidence Store (candidates, assessments, Judge decisions,
+  portfolio state, cost reports) plus a minimal read-only dashboard.
+  Deployment scope decided up front (see the Phase 5 section below):
+  **localhost/personal-machine only**, not a public deployment — every
+  prior phase has been operated entirely via local CLI by a single user,
+  no hosting infrastructure exists anywhere in this project, and nothing
+  about this phase's stated purpose (replacing manual Supabase queries with
+  a local view) requires remote access. A single API-key header is
+  therefore a genuinely sufficient minimum bar for this scope, not a
+  deliberately under-scoped one — if this
+  is ever exposed beyond localhost, the security posture (TLS, stronger
+  auth, rate limiting) must be revisited before that happens, not after.
+  Scheduling was explicitly considered and **deferred** (reasoning in the
+  Phase 5 section) — this project's real bottleneck is elapsed time for
+  decisions to resolve, not run frequency. Live-verification (required, not
+  optional, per this phase's own non-negotiable) found and fixed two real
+  bugs: a nullability mismatch that crashed the calibration endpoint on
+  real pre-3f data, and a dashboard JS syntax error that would have broken
+  every panel in a real browser.
 - ⬜ Phase 6 — Exchange integration (testnet only): a bounded **execution
   agent** (LangChain/LangGraph) that turns Portfolio Construction's approved
   target changes into actual (testnet) orders — the only agentic component
@@ -2863,6 +2880,227 @@ parsing for both exchanges, mocked), `tests/test_baseline_comparison.py`
   this phase or is backfilled, so only the volatility-scaled estimate has
   real applicability today; the depth-walked path is ready for genuine
   real-time use going forward.
+
+## Phase 5 — Read/query API, scheduling & dashboard
+
+A read/query and orchestration layer over already-existing state (see
+`PHASE5_PROMPT.md`) — no new evidence sources, no Judge/Risk Engine/
+Portfolio Construction changes, no order placement (that's Phase 6).
+
+### Deployment scope — decided before any endpoint code was written
+
+**Localhost/personal-machine only, not a public deployment.** Reasoning:
+
+- Every phase of this project (1 through 4) has been operated entirely via
+  local CLI by a single user, with credentials living in a local `.env`
+  file never intended for shared or hosted use.
+- No hosting/deployment infrastructure exists anywhere in this repo — no
+  Dockerfile, no cloud config, no reverse proxy, no domain.
+- The project's own safety posture has been consistently conservative
+  throughout (PAPER ONLY everywhere; live trading explicitly gated behind
+  a future, separate safety review in Phase 6+). Introducing a publicly-
+  reachable service now would be a materially larger security surface than
+  anything built so far, with no stated need for it.
+- Phase 5's own stated purpose — replacing manual Supabase queries and CLI-
+  log reading with a local view, for the single person operating this
+  system — does not require remote or public access at all.
+
+**Consequence for the access-control non-negotiable**: a single
+env-configured API-key header (`API_ACCESS_KEY`) is a genuinely *sufficient*
+minimum bar for this scope, not a deliberately under-scoped stand-in for a
+public deployment. **If this is ever exposed beyond localhost** (accessed
+from another device on a home network, or actually deployed to a server),
+the security posture must be revisited *before* that happens — at minimum
+TLS, a stronger auth mechanism than one static header, and rate limiting —
+not treated as already covered by this decision.
+
+### Task 1: FastAPI read/query layer (`app/api/`)
+
+20 real, read-only (`GET`-only) endpoints, every one using an existing
+Pydantic schema directly as its FastAPI response model (no parallel
+redefinitions) — plus 4 small composed/join view models
+(`app/api/schemas.py`) used only where no existing schema already fit
+(e.g. joining a portfolio position with its decision's tracked outcome).
+Adding these required several new, purely-additive read methods on
+existing repositories (`get_recent`, `get_by_id`, `get_latest_full_universe`,
+`get_cost_sum_by_table_since`, etc.) — no existing method was changed.
+
+- **Screening**: `/screening/candidates`, `/screening/universe`,
+  `/screening/regime`.
+- **Assessments**: `/assessments/latest`, `/assessments/asset/{asset_id}`,
+  `/assessments/adversarial/recent`, `/assessments/adversarial/asset/{asset_id}`.
+- **Judge**: `/judge/decisions/recent` (filterable by `is_backfilled`),
+  `/judge/decisions/{decision_id}`, `/judge/decisions/asset/{asset_id}/latest`,
+  `/judge/reasoning-audits/recent`, `/judge/reasoning-audits/decision/{decision_id}`.
+- **Portfolio**: `/portfolio/positions` (raw), `/portfolio/state` (joined
+  with each position's tracked outcome — mark-to-mid vs. net-of-costs and
+  **`assumed_fill_method` surfaced explicitly per fill**, never hidden
+  again after Phase 4 built it specifically to make this visible).
+- **Calibration**: `/calibration/runs/recent`, `/calibration/outcomes/recent`
+  (filterable by `is_backfilled`), `/calibration/evidence-value/recent`,
+  and `/calibration/summary` — a **live-computed** (never cached/hardcoded)
+  hit-rate/Brier/Sharpe/DSR summary, re-derived from real `decision_outcomes`
+  on every request using the same `app/benchmarks/statistical_validation.py`
+  functions 3g built, so it stays accurate as more decisions resolve. Both
+  the by-regime and held-out-window gaps render as explicit, worded null
+  states, not omitted fields.
+- **Signal sources**: `/signal-sources` — every source's real status/notes,
+  exactly as stored.
+- **Cost**: `/cost/summary` — `COST_TRACKED_TABLES` sums by table, for
+  today and this month, against configured caps, with an explicit note
+  that this is the app's own tracked ledger, not a live provider-billing
+  balance (the cost-reconciliation non-negotiable).
+
+Point-in-time integrity note: none of these endpoints reconstruct
+"what did the system know as of date X" from revisable evidence — they
+serve already-computed, already-persisted records (candidates, decisions,
+outcomes), so 3a's `as_of` convention doesn't directly apply to anything
+built in this pass. It remains the correct convention to reach for if a
+future endpoint ever needs genuine point-in-time evidence reconstruction.
+
+### Task 2: access control
+
+A single `API_ACCESS_KEY` (env-configured, checked via the `X-API-Key`
+header on every endpoint except `/health`) — see the deployment-scope
+decision above for why this is a sufficient bar for this project's scope.
+Every unhandled exception is caught by a global handler that returns a
+hardcoded, generic `{"detail": "Internal server error"}` body — never the
+real exception message or traceback, which could otherwise leak a
+configured secret embedded in a lower-level client's own error string.
+Verified with a test that deliberately raises an exception containing
+realistic fake Supabase/OpenRouter/database-URL secret substrings and
+confirms none of them reach the response body.
+
+### Task 3: scheduling — deferred, not built
+
+**Decided against building scheduling in this phase.** Reasoning:
+
+- This project is still under active, manual, deliberately-reviewed
+  development (3j remains gated on 3h's findings, which haven't changed;
+  Phase 6 hasn't started) — introducing autonomous scheduled runs now would
+  let cost and decisions accumulate faster than they're being manually
+  reviewed, cutting against this project's own "verify before continuing"
+  discipline that every sub-phase so far has depended on.
+- The real current bottleneck (3g's embargo/held-out-window finding, 3h's
+  insufficient sample size) is **elapsed real-world time** for existing
+  decisions to resolve (real horizons of 14–90+ days) — running the
+  pipeline more often on a timer would not accelerate this at all, only
+  add more pending decisions to the same queue.
+- Scheduling has a real, non-trivial cost of its own per this phase's
+  non-negotiables (a new job-history table and migration, wall-clock
+  timeout enforcement, CostGuard re-verification) for a benefit that isn't
+  clearly needed yet — the same "don't add complexity before a validated
+  need" reasoning already applied in Phase 4's sizing-review decision and
+  3j's own gating philosophy.
+- Revisit once either the system reaches a more stable, less-actively-
+  changing state, or a concrete cadence need emerges that manual
+  triggering genuinely can't keep up with (e.g. wanting fresh candidate
+  discovery daily without a human present to run it).
+
+### Task 4: minimal dashboard
+
+A single static HTML page (`app/api/static/dashboard.html`, served at `/`)
+with vanilla JS `fetch()` calls to the JSON endpoints above — no new
+frontend framework or build step, consistent with "pick whichever is less
+work." The page itself carries no data and needs no key to load; the
+viewer pastes their `API_ACCESS_KEY` once into a field (stored in that
+browser's `localStorage` only), and every subsequent data fetch goes
+through the same `X-API-Key`-gated endpoints as any other caller — the
+dashboard has no special, unauthenticated access path of its own. Sections:
+signal sources, cost/spend, portfolio state (with per-fill
+`assumed_fill_method`), calibration summary, and recent Judge decisions
+with full thesis text — backfilled/live and null/insufficient-data states
+rendered as distinct, visibly-labeled badges, never merged into one figure.
+
+### Real findings from live-wiring against the actual Supabase project
+
+**Verification method, disclosed honestly**: the JSON API's 20 endpoints
+were live-verified with a real running server (`uvicorn app.api.main:app`)
+against the real Supabase project. The dashboard's own inline JS was
+verified by extracting it and executing it headlessly under Node against
+that same real running server (DOM calls stubbed just enough to capture
+rendered HTML) — **not in an actual browser**: the Chrome browser tool's
+extension wasn't connected in this environment, so a real-browser
+screenshot check wasn't possible. This headless method still exercises the
+literal shipped JS unmodified against real data end-to-end, and it's what
+actually caught both bugs below — but it's a real, disclosed substitute
+for the non-negotiable's "at least one real, known value confirmed
+end-to-end," not the identical thing.
+
+**Two real bugs found and fixed via this live-verification pass:**
+
+1. `/calibration/summary` crashed on real data — `JudgeDecisionRecord.
+   macro_sensitivity` was declared as a required `str`, but every one of
+   the 109 real backfilled `judge_decisions` rows genuinely has `NULL`
+   there (the column didn't exist before migration 0010/Phase 3f). This
+   had never surfaced before because every previously-shipped code path
+   only ever read a decision's *latest* row per asset — always a real,
+   macro_sensitivity-populated, post-3f decision — never reached back into
+   older, pre-3f rows the way this phase's `get_recent`/`get_by_id`
+   endpoints legitimately do. Fixed by making `JudgeDecisionRecord.
+   macro_sensitivity` nullable (`str | None = None`, `None` meaning
+   "predates 3f," never a fabricated placeholder) — `JudgeDecisionItem`
+   (the LLM-output validation schema for brand-new decisions) correctly
+   stays required, unchanged. A regression test targets this exact case.
+2. The dashboard's inline JS had a genuine syntax error in the calibration
+   section (an unnecessarily backslash-escaped quote inside a template
+   literal, `\\"..\\"` where the literal needed none) — this would have
+   broken the **entire** script block in a real browser, not just that one
+   section, silently leaving all five panels stuck on "Loading…". Only
+   caught because the headless check actually executes the shipped JS
+   rather than eyeballing the source; fixed by using single-quoted nested
+   strings instead.
+
+After both fixes, every endpoint and every dashboard section was
+re-verified against real data, including the slow path below.
+
+**A real, measured performance finding**: `/calibration/summary` takes
+**~8.6 real seconds** to respond over HTTP against the live project — the
+N+1 query pattern already flagged below (one repository round-trip per
+resolved decision, 179 of them) is not just a theoretical concern but a
+real, measured latency, confirmed with `curl` timing against the running
+server. Usable today at this project's real scale, but the first thing to
+fix if this endpoint is ever called more frequently or the decision
+history grows materially.
+
+Real values confirmed in every section: e.g. `/calibration/summary`
+correctly reproduced the exact hit_rate=0.8333/brier=0.1949/DSR≈0.99999
+figures 3g/Phase 4 already established, now computed live rather than
+hardcoded; the dashboard's Judge-decisions panel rendered a real, current
+live UNI thesis; the signal-sources panel rendered real `CoinGecko`/`News`
+`OK` rows and a real `CoinGlass` `NOT_IMPLEMENTED` row.
+
+### Tests
+
+418 tests passing (`pytest`, no live credentials needed): `tests/
+test_api_auth.py` (5 — health check needs no key, missing/wrong key
+rejected, correct key accepted, missing configured key fails safely),
+`tests/test_api_endpoints.py` (18 — one or more per endpoint group, using
+FastAPI's `dependency_overrides` with fixture data, never a live call),
+`tests/test_api_secrets.py` (2 — the explicit secret-leak test described
+above, plus confirming a submitted wrong key is never echoed back). No
+scheduling-related test was needed since scheduling wasn't built.
+
+### Known limitations / decisions
+
+- **`/calibration/summary` does one repository call per resolved decision**
+  (a real N+1 query pattern) — measured live at **~8.6 real seconds** over
+  HTTP against the live project (179 `decision_outcomes` rows). Usable
+  today at this scale, but the first thing to fix (a proper join/batch
+  method) if this endpoint is called more frequently or history grows
+  materially.
+- **The dashboard stores its API key in browser `localStorage`**, matching
+  this project's localhost/personal-machine deployment scope — would need
+  a real secret-management approach if this were ever exposed beyond that
+  scope (see the deployment-scope decision above).
+- **The dashboard was verified headlessly (Node executing the real shipped
+  JS against the real live server), not in an actual browser** — the
+  Chrome browser tool's extension wasn't connected in this environment.
+  Real-browser visual verification (does it look right, not just does it
+  fetch/render the right HTML strings) is still outstanding and worth
+  doing whenever browser access is available.
+- **No scheduling was built** — see task 3's reasoning above; this can be
+  revisited without any of today's endpoint/dashboard code changing.
 
 ## Project layout
 

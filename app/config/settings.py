@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Only used by scripts/apply_migration.py, not by the core app.
     database_url: str | None = None
 
+    # Phase 5: the read/query API's single access-control gate (localhost/
+    # personal-machine scope only — see README's Phase 5 section).
+    api_access_key: SecretStr | None = None
+
     # Market data behavior
     min_snapshot_interval_minutes: int = 5
     vs_currency: str = "usd"
@@ -269,6 +273,20 @@ class Settings(BaseSettings):
                 "CLAUDE_MODEL, reused by default) in your .env file."
             )
         return self.openrouter_api_key.get_secret_value(), model
+
+    def require_api_access_key(self) -> str:
+        """Phase 5: the single configured API key gating every read/query
+        endpoint except the health check. Localhost/personal-machine scope
+        only (see README's Phase 5 section) — this is a genuinely
+        sufficient minimum bar for that scope, not a stand-in for
+        production auth."""
+        if not self.api_access_key:
+            raise RuntimeError(
+                "API_ACCESS_KEY must be set in your .env file to run the Phase 5 API "
+                "(app.api.main) — do not ship an unauthenticated read layer, even for "
+                "a personal/paper-only, localhost-only deployment."
+            )
+        return self.api_access_key.get_secret_value()
 
 
 @lru_cache
