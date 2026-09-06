@@ -81,6 +81,19 @@ DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE: dict[str, float] = {
     # filing/introduction, longer than an ordinary news story but shorter
     # than a multi-month macro trend.
     "regulatory_event": 336.0,
+    # 3i — entity-flow (smart-money netflow) and per-token network-usage
+    # activity both change with each new on-chain transaction, matching
+    # Nansen's own 24h-window netflow cadence — hours-scale, same standing
+    # as ordinary derivatives/on-chain readings (3c).
+    "entity_flow_intelligence": 24.0,
+    "network_fundamentals_usage": 24.0,
+    # 3i — developer activity (commit velocity, contributor count) is
+    # inherently slow-moving: a single day's commit count is nearly
+    # meaningless on its own, and a real change in trend plays out over
+    # weeks, not hours — reuses the macro/regulatory-event-scale half-life
+    # as a simple, documented convention (per this project's own precedent
+    # in 3f) rather than inventing a new decay model.
+    "developer_activity": 720.0,
 }
 
 

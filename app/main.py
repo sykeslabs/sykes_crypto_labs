@@ -41,11 +41,14 @@ from app.market_data.coinmarketcap import CoinMarketCapClient
 from app.market_data.congress_gov import CongressGovClient
 from app.market_data.defillama import DefiLlamaClient
 from app.market_data.deribit import DeribitClient
+from app.market_data.asset_intelligence_service import AssetIntelligenceService
 from app.market_data.derivatives_service import DerivativesService
 from app.market_data.etherscan import EtherscanClient
 from app.market_data.fred import FredClient
+from app.market_data.github_activity import GitHubClient
 from app.market_data.glassnode import GlassnodeClient
 from app.market_data.macro_service import MacroService
+from app.market_data.nansen import NansenClient
 from app.market_data.screening_service import ScreeningService
 from app.market_data.sec_edgar import SecEdgarClient
 from app.market_data.service import MarketDataCollectionService
@@ -90,6 +93,16 @@ def parse_args(argv=None) -> argparse.Namespace:
             "SP500/gold(PAXG)/DXY, the Upbit regional exchange premium, and "
             "the SEC EDGAR/congress.gov regulatory event calendar (zero LLM "
             "cost)."
+        ),
+    )
+    parser.add_argument(
+        "--with-asset-intelligence",
+        action="store_true",
+        help=(
+            "Also run 3i's entity-flow intelligence (Nansen smart-money "
+            "netflow, TOP_CANDIDATES only -- requires a prior --with-screening "
+            "run and NANSEN_API_KEY), and network usage + developer-activity "
+            "fundamentals (Etherscan tokentx-derived + GitHub, zero LLM cost)."
         ),
     )
     parser.add_argument(
@@ -245,6 +258,19 @@ def main() -> int:
         )
         macro_result = macro_service.run(run_id)
         logger.info("Macro collection finished: %s", macro_result.summary)
+
+    if args.with_asset_intelligence:
+        asset_intelligence_service = AssetIntelligenceService(
+            asset_repo=asset_repo,
+            screened_universe_repo=ScreenedUniverseRepository(client),
+            evidence_repo=EvidenceObservationRepository(client),
+            signal_source_repo=SignalSourceRepository(client),
+            nansen_client=NansenClient(settings),
+            etherscan_client=EtherscanClient(settings),
+            github_client=GitHubClient(settings),
+        )
+        asset_intelligence_result = asset_intelligence_service.run(run_id)
+        logger.info("Asset intelligence collection finished: %s", asset_intelligence_result.summary)
 
     assessment_failed = False
     if args.with_assessment:

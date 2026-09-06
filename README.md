@@ -221,19 +221,36 @@ because:
     assumption) — run against the real live portfolio (see findings below).
     Reporting-only throughout — neither capability altered Judge prompts,
     Risk Engine formulas, Portfolio Construction, or `signal_sources`.
-  - **3i** — A second later addendum from the same gap-analysis pass: three
-    further evidence sources closing gaps against institutional on-chain
-    research practice — **wallet-entity-clustering/"smart money" flow
-    intelligence** (Nansen/Arkham-class, resolving 3c's documented
-    unclustered-large-transfer limitation), **custody/OTC desk flow
-    tracking** (institutional accumulation that happens off public exchange
-    order books and outside the spot-ETF wrapper entirely), and **network
-    usage & developer-activity fundamentals** (active addresses, fee
-    revenue, GitHub commit velocity) as a slower-moving, more
-    fundamentals-oriented evidence type. Unlike 3h, this is new
-    evidence-collection work wired into the existing Judge, not a
-    diagnostic-only tool — the same "extend the input set" pattern 3f used.
-    Now the last **required** sub-phase of Phase 3.
+    **Headline stress-test caveat**: neither scenario flags at the current
+    ~21%-allocated portfolio, but that reflects low current *deployment*,
+    not low underlying asset risk (real per-asset drawdowns are severe,
+    -53% to -76%) — see Task 2 below for the scaled-to-full-allocation
+    figures.
+  - ✅ **3i** (complete) — A second later addendum from the same gap-analysis
+    pass. **Entity-flow intelligence**: Nansen's real smart-money/netflow API
+    (live-verified — real auth, real per-token data, EVM/Solana chains only,
+    free tier: 100 one-time credits + 10/day refill). Arkham confirmed
+    genuinely inaccessible (Cloudflare bot-challenge-gated, same standard as
+    CoinAnk in 3f). **Custody/OTC flow: `NOT_IMPLEMENTED`** — no reliable,
+    independently-verifiable source of real custody-provider addresses
+    exists; building it would mean fabricating addresses, which this
+    project does not do. **Network usage**: a per-token active-address/
+    transfer-count proxy via Etherscan's free `tokentx` (the network-wide
+    `dailytx` stat genuinely requires Etherscan's separate paid Pro tier,
+    confirmed live) — and a real bug caught during live verification: busy
+    tokens' fetched transfers covered mere **hours**, not the nominal 7-day
+    window, now disclosed via an honest `possibly_truncated` flag rather
+    than silently mislabeled. **Developer activity**: real GitHub commit/
+    contributor counts for assets with an unambiguous primary repo (10 of
+    22), everything else marked `UNAVAILABLE` per the task's own
+    instruction, never guessed. All three sources verified live to appear
+    in the Judge's actual rendered prompt with **zero Judge code changes** —
+    the existing generic per-asset evidence architecture from 3c already
+    surfaces any new `evidence_observations` source automatically. Zero new
+    LLM cost throughout. Calibration re-run, honestly persisted as a new
+    trial: still 0 resolved live decisions (real horizons haven't elapsed
+    yet), reported as such, not fabricated. Now the last **required**
+    sub-phase of Phase 3.
   - **3j** *(optional, gated backlog — not scheduled by default)* — A third
     gap-analysis addendum identifying **options gamma exposure/dealer
     positioning** (distinct from 3c's IV/skew), **exchange counterparty/
@@ -2402,19 +2419,34 @@ real computation):
    kline endpoint caps at 1000 daily candles per call counted back from
    "now," so the reachable real window is ~2.7 years (2023-12-12 to
    2026-09-06 in this project's real timeline) — it does **not** reach back
-   to the actual 2022 cycle, so real computed drawdowns come in smaller
-   than the task's own "~70%" example figure for BTC specifically (real:
-   **-53.0%**). This is disclosed, not silently patched over by fabricating
-   deeper history. Real per-asset drawdowns fetched for the full active
-   universe found two more honest findings: **`WBT` has no real data on
-   either exchange** (falls back to the documented BTC proxy) and **`XMR`'s
-   real data is genuinely stale** — its series ends 2024-02-20, not near the
-   current date (consistent with Monero's real exchange delistings around
-   that period) — used as-is (it's real, not fabricated) but flagged
-   `is_stale=true` distinctly from a proxy, so it's never silently treated
-   as equally current as a fresh reading. `HYPE`'s real window is short
-   (214 days, since 2026-02-05) — its real drawdown (-29.9%) likely
-   understates its true tail risk given limited history, noted as such.
+   to the actual 2022 cycle. **BTC's real computed -53.0% is explicitly the
+   worst drawdown within that ~2.7-year reachable window, not BTC's true
+   all-time historical worst drawdown** — the real 2022 top-to-trough move
+   (~Nov 2021 ATH to ~Nov 2022 low) was deeper than this and simply isn't
+   reachable through the existing client method without adding pagination
+   (`startTime`/`endTime`) to `BinanceClient`, which was deliberately not
+   done here (see Known limitations). This is disclosed, not silently
+   patched over by fabricating deeper history or rounding up to the task's
+   own "~70%" example figure.
+
+   Fetching per-asset drawdowns for the full active universe (a broader
+   check than the live stress-test run itself, which only fetches
+   currently-allocated assets plus BTC) found two more honest findings,
+   **neither of which currently affects the reported live-portfolio
+   numbers below, since neither asset is presently allocated**: **`WBT` has
+   no real data on either exchange** (would fall back to the documented
+   BTC proxy if ever allocated) and **`XMR`'s real data is genuinely
+   stale** — its series ends 2024-02-20, not near the current date
+   (consistent with Monero's real exchange delistings around that period).
+   If XMR were ever allocated to, its real (if outdated) -67.2% drawdown
+   would be used as-is — real data, not fabricated — but flagged
+   `is_stale=true` distinctly from a proxy, so it would never be silently
+   treated as equally current as a fresh reading; whether an 18-month-old
+   figure still represents XMR's true current tail risk is exactly what
+   that flag exists to let a reader judge for themselves, not something
+   this module resolves on its own. `HYPE`'s real window is short (214
+   days, since 2026-02-05) — its real drawdown (-29.9%) likely understates
+   its true tail risk given limited history, noted as such.
 2. **`ALTCOIN_CONTAGION_LUNA_FTX_STYLE`** — a stated scenario ASSUMPTION,
    not fitted from data (correlations move toward 1 in a contagion event):
    BTC/ETH assumed to fall 50%, every other asset assumed to fall 85% — a
@@ -2489,6 +2521,166 @@ handling, threshold flagging).
   decisions resolve. Not a gap in the mechanism (verified against fixtures);
   a real fact about this project's current age, same standing as 3g's DSR/
   PBO/held-out-window findings.
+
+## Phase 3i — Entity-flow intelligence, custody/OTC flow, network & developer fundamentals (`--with-asset-intelligence`)
+
+The last **required** sub-phase of Phase 3 (3j remains optional/gated; Phase
+4 follows). New evidence-collection work, wired into the existing Judge the
+same way 3f extended the input set — zero new LLM calls, zero Judge/Risk
+Engine/Portfolio Construction code changes.
+
+### Feasibility findings (task 1) — decided before writing any provider code
+
+**Confirmed working, built:**
+- **Nansen** (entity-flow / smart-money netflow) — real, documented, free
+  tier confirmed live: 100 one-time credits + 10/day refill, "all API
+  endpoints available." Auth (`apikey` header) verified with a real key;
+  the `smart-money/netflow` endpoint returned genuine per-token data
+  including one of this project's own real universe assets (ENA: real
+  net-flow figures, 8 tracked "smart money" traders).
+- **Etherscan, per-token network usage** — the network-*wide* `stats/
+  dailytx` endpoint genuinely requires Etherscan's separate paid Pro tier
+  (verified live: an explicit "Sorry, it looks like you are trying to
+  access an API Pro endpoint" rejection on the free key) — but a per-*token*
+  proxy built from the free `account/tokentx` endpoint (real ERC-20
+  transfer events) is free-tier-accessible and, arguably, more directly
+  relevant to a per-asset Judge input anyway.
+- **GitHub** (developer activity) — confirmed live, free, no key required
+  (60 requests/hour; an optional token raises this to 5000/hour). A small,
+  curated, explicitly-verified map of 10 assets to an unambiguous primary
+  repo (BTC, ETH, SOL, XRP, LINK, NEAR, UNI, ZEC, XMR, XTZ) — every other
+  symbol in the universe is closed-source, multi-repo, or a meme/community
+  token with no core dev team, and is marked `UNAVAILABLE` rather than
+  guessed, per this task's own explicit instruction.
+
+**Confirmed genuinely infeasible:**
+- **Arkham Intelligence** — `api.arkhamintelligence.com` is Cloudflare
+  bot-challenge-gated on every path tried (including a plausible real
+  endpoint), and `platform.arkhamintelligence.com` returns 403. No
+  legitimate API surface exists to build against without an already-
+  authenticated account. Same standard as CoinAnk in 3f.
+- **Custody/OTC desk flow** — unlike 3c's exchange hot-wallet proxy (real,
+  publicly documented addresses), no reliable, independently-verifiable
+  source of real custody-provider addresses (Coinbase Custody, Fidelity
+  Digital Assets, etc.) exists — these aren't in any official public
+  registry, only pieced together over time by on-chain sleuthing. Building
+  this would mean fabricating or presenting unverified addresses as real,
+  which this project's core discipline does not permit. Recorded
+  `NOT_IMPLEMENTED` — a genuine infeasibility, not a shortcut.
+
+### What was built
+
+1. **Entity-flow intelligence** (`app/market_data/nansen.py`,
+   `app/market_data/asset_intelligence_service.py`) — one real
+   `smart-money/netflow` call per distinct Nansen-supported chain among the
+   current `TOP_CANDIDATES` (not one call per asset — far more
+   credit-efficient given the free tier's real scarcity), matching returned
+   tokens back to candidates **by the `token_symbol` Nansen itself
+   returns**, never a self-supplied contract address (avoids the risk of a
+   wrong address silently returning data for the wrong token). Real,
+   disclosed coverage gap: Nansen's smart-money chains are EVM/Solana only
+   — **BTC and every native-chain coin (SOL, BNB, HYPE, etc.) are not
+   covered at all**, and native-token inclusion specifically wasn't
+   verified live (credit scarcity), so this project's `NANSEN_CHAIN_BY_
+   SYMBOL` map deliberately only covers confirmed ERC-20/SPL *token* assets
+   (7 on Ethereum, 2 on Solana), not native coins.
+2. **Network usage** (`app/market_data/etherscan.py`'s new
+   `fetch_token_transfers`) — real ERC-20 transfer events for 7
+   live-verified contract addresses (each individually confirmed by
+   querying real `tokentx` data and checking the returned `tokenSymbol`/
+   `tokenName` match before hardcoding — a wrong address would silently
+   return real data for the wrong token, so nothing here was taken from
+   memory alone), yielding a distinct-active-address/transfer-count proxy.
+3. **Developer activity** (`app/market_data/github_activity.py`) — real
+   commit counts (since a 30d cutoff) and contributor counts (GitHub's own
+   `stats/contributors`) for the 10 curated assets above.
+4. Both `entity_flow_intelligence` and `network_fundamentals_usage`/
+   `developer_activity` reuse 3a's shared `evidence_observations` shape —
+   no new tables needed, matching 3c/3f's own precedent. New decay
+   half-lives added, explicitly differentiated per the task's own
+   instruction: entity-flow and network-usage at 24h (on-chain-transaction-
+   scale), developer activity at 720h/30d (inherently slow-moving).
+
+### Live-verified findings
+
+- **A real bug caught during live verification, fixed before shipping**:
+  the network-usage proxy's first live run showed `transfer_count=200`
+  (exactly the fetch limit) for **every single** tested token — a red flag,
+  not a coincidence. Investigating confirmed why: for actively-traded
+  tokens, even 1000 fetched transfers (after raising the limit from 200)
+  cover mere **hours** of real activity, not the nominal 7-day window —
+  LINK's most recent 1000 transfers spanned only **~0.09 days (≈2.2
+  hours)**; UNI ~0.06 days; ENA ~0.16 days; ONDO ~0.29 days; JASMY ~1.43
+  days; STORJ ~1.50 days; ZRX ~2.57 days. Silently labeling all of these
+  "7-day activity" would have been genuinely misleading (comparing tokens
+  of very different trading volume as if on equal footing). Fixed by
+  reporting the **real, computed `actual_window_days_covered`** and a
+  `possibly_truncated` flag per observation instead of an unconditional
+  nominal window — a regression test (`test_network_usage_flags_possibly_
+  truncated_for_a_busy_token`) targets this exact case.
+- **Entity-flow intelligence: real call succeeded, zero real matches this
+  run.** Of this run's `TOP_CANDIDATES`, only LINK and UNI map to a
+  Nansen-supported chain (both Ethereum) — a single real API call
+  succeeded (`ENTITY_FLOW_INTELLIGENCE` status `OK`), but neither symbol
+  appeared in the returned page of currently-tracked smart-money-active
+  tokens. Consistent with an earlier live test this sub-phase, whose
+  general (unfiltered) query returned mostly smaller-cap/newer tokens
+  (e.g. one real universe asset, ENA, did appear with real data) —
+  Nansen's tracked "smart money" cohort attention appears to concentrate
+  away from large, established blue-chips like LINK/UNI, at least in the
+  current window. A real, honest "no data this run" result, not a
+  technical failure.
+- **Judge wiring verified with zero LLM cost**: rebuilt the real Judge
+  context for a live `TOP_CANDIDATE` (LINK) and confirmed both
+  `network_fundamentals_usage` and `developer_activity` appear in the
+  actual rendered prompt text, with **no changes to `app/judge/context.py`
+  at all** — the existing generic per-asset `evidence_by_source` rendering
+  (built in 3c) already surfaces any new `evidence_observations` source
+  automatically.
+- **Calibration re-run** (`scripts/calibration_baseline.py --source live`),
+  persisted as a new, honestly-counted trial: still **0 resolved live
+  decisions** (real horizons of 14–90+ days haven't elapsed) — reported as
+  a genuine null result, same provisional framing 3f/3g/3h established, not
+  presented as a confirmed before/after delta.
+
+### Cost sizing
+
+Confirmed: **zero new LLM cost**. Nansen's free tier is a real dollar-cost
+consideration if ever upgraded (Pro: $49–69/month, documented here per the
+task's own instruction, same treatment as 3c's Glassnode/3f's CoinGlass
+deferrals) — not committed to this round; the free tier's real
+constraint (10 credits/day, 5 credits/call) is disclosed above rather than
+treated as unlimited.
+
+### Tests
+
+369 tests passing (`pytest`, no live credentials needed): `tests/
+test_nansen.py` (4), `tests/test_github_activity.py` (6), `tests/
+test_etherscan_tokentx.py` (4, including a live-verified real-address
+sanity check), `tests/test_asset_intelligence_service.py` (11, including
+mocked `UNAVAILABLE`/not-configured cases for every source and the
+`possibly_truncated` regression).
+
+### Known limitations / decisions
+
+- **Entity-flow intelligence has no native-chain-coin coverage** — BTC,
+  SOL, BNB, HYPE, and every other native coin in this project's universe
+  are excluded from `NANSEN_CHAIN_BY_SYMBOL` deliberately, since verifying
+  native-token inclusion behavior would have cost additional scarce free-
+  tier credits. A real, disclosed gap, not an oversight.
+- **The free Nansen tier's real sustainable rate is far better than
+  initially estimated** — grouping by chain (not by asset) means a full
+  `TOP_CANDIDATES` run typically costs only 1–3 real API calls (5 credits
+  each), not one call per asset; the original "~1–2 assets/day" estimate
+  was conservative and is superseded by this finding.
+- **Network-usage figures are NOT a consistent N-day window across
+  tokens** — busier tokens' `actual_window_days_covered` is much shorter
+  than quieter tokens'; always check `possibly_truncated`/
+  `actual_window_days_covered` before comparing two assets' figures
+  directly.
+- **CUSTODY_OTC_FLOW stays `NOT_IMPLEMENTED`** by explicit user decision,
+  given no verifiable address source exists — revisit only if a real,
+  citable source of custody-provider addresses is identified.
 
 ## Project layout
 

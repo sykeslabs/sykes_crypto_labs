@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     # key, reported NOT_IMPLEMENTED, never approximated.
     etherscan_api_key: SecretStr | None = None
     etherscan_base_url: str = "https://api.etherscan.io/v2/api"
+    # Phase 3i: entity-flow intelligence (smart-money netflow). Free tier:
+    # 100 one-time credits + 10/day refill — real, but credit-constrained
+    # (see README's Phase 3i section). Without a key, ENTITY_FLOW_INTELLIGENCE
+    # is recorded NOT_IMPLEMENTED, never approximated.
+    nansen_api_key: SecretStr | None = None
+    nansen_base_url: str = "https://api.nansen.ai/api/v1"
+    # Optional. A free GitHub personal access token raises the rate limit
+    # from 60/hr to 5000/hr for developer-activity commit/contributor
+    # lookups — not required for a small TOP_CANDIDATES-sized universe.
+    github_token: SecretStr | None = None
     # Glassnode (on-chain valuation metrics: MVRV/SOPR/NUPL/cohorts, miner
     # metrics). Optional — very likely a paid tier for these specific
     # metrics; deliberately not subscribed to yet (see README). Client is
