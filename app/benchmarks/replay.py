@@ -389,6 +389,7 @@ class HistoricalReplayService:
                 key_evidence=item.key_evidence, contradictory_evidence=item.contradictory_evidence,
                 key_risks=item.key_risks, invalidation_conditions=item.invalidation_conditions,
                 requires_review=item.requires_review, thesis=item.thesis,
+                macro_sensitivity=item.macro_sensitivity,
                 regime_id=None, prompt_template_id=prompt_template_id_judge,
                 estimated_cost=per_item_cost, is_backfilled=True,
             )

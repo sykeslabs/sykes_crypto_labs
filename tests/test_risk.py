@@ -46,7 +46,8 @@ def _decision(**overrides):
         confidence=0.7, target_allocation=0.10, expected_return=0.15, expected_alpha=0.08,
         risk_score=0.4, uncertainty=0.3, model_agreement=0.9, source_agreement=0.9,
         investment_horizon_days=30, key_evidence=[], contradictory_evidence=[], key_risks=[],
-        invalidation_conditions=[], requires_review=False, thesis="t", regime_id="r1",
+        invalidation_conditions=[], requires_review=False, thesis="t",
+        macro_sensitivity="n/a", regime_id="r1",
         prompt_template_id="p1", estimated_cost=Decimal("0.01"),
     )
     defaults.update(overrides)

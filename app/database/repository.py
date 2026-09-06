@@ -5,6 +5,7 @@ from supabase import Client
 from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.judge.schemas import JudgeDecisionRecord
+from app.llm.adversarial_schemas import AdversarialResearchRecord
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.evidence_schemas import EvidenceObservation
@@ -453,6 +454,23 @@ class EvidenceObservationRepository:
         )
         return [EvidenceObservation.model_validate(row) for row in response.data]
 
+    def get_latest_global_all(self, limit: int = 100) -> list[EvidenceObservation]:
+        """Recent GLOBAL_CRYPTO/MACRO-scope observations across EVERY
+        source (asset_id is null) — used by 3f's Judge context, which needs
+        to show the shared macro/liquidity/regulatory-calendar backdrop
+        without knowing every source name in advance. Callers dedupe by
+        `source` (first/latest occurrence wins), same convention as
+        `get_latest_by_asset`."""
+        response = (
+            self._client.table("evidence_observations")
+            .select("*")
+            .is_("asset_id", "null")
+            .order("retrieval_timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [EvidenceObservation.model_validate(row) for row in response.data]
+
 
 class PromptTemplateRepository:
     """Reads/writes `prompt_templates` (3a schema, populated starting 3d)."""
@@ -647,3 +665,27 @@ class PortfolioAllocationChangeRepository:
             abs(float(row["new_allocation"]) - float(row["previous_allocation"]))
             for row in response.data
         )
+
+
+class AdversarialResearchRepository:
+    """Persists `adversarial_research` (3f) — one row per candidate per run,
+    bull + bear + scenarios from one shared research cycle."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: AdversarialResearchRecord) -> None:
+        self._client.table("adversarial_research").insert(record.to_row()).execute()
+
+    def get_latest_by_asset(self, asset_id: str) -> AdversarialResearchRecord | None:
+        response = (
+            self._client.table("adversarial_research")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return AdversarialResearchRecord.model_validate(response.data[0])

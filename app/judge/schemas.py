@@ -39,6 +39,12 @@ class JudgeDecisionItem(BaseModel):
     invalidation_conditions: list[str] = []
     requires_review: bool = False
     thesis: str
+    # Task 5 (3f): explicit per-asset reasoning about how the shared macro/
+    # liquidity backdrop affects THIS specific asset — never a blanket
+    # "liquidity up = bullish" rule applied uniformly. Required, not
+    # optional — if no macro evidence is available this run, the correct
+    # value is a real statement saying so, never an omitted field.
+    macro_sensitivity: str
 
 
 class JudgeDecisionBatch(BaseModel):
@@ -72,6 +78,7 @@ class JudgeDecisionRecord(BaseModel):
     invalidation_conditions: list[str]
     requires_review: bool
     thesis: str
+    macro_sensitivity: str
     regime_id: str | None
     prompt_template_id: str | None
     estimated_cost: Decimal
@@ -98,6 +105,7 @@ class JudgeDecisionRecord(BaseModel):
             "invalidation_conditions": self.invalidation_conditions,
             "requires_review": self.requires_review,
             "thesis": self.thesis,
+            "macro_sensitivity": self.macro_sensitivity,
             "regime_id": self.regime_id,
             "prompt_template_id": self.prompt_template_id,
             "estimated_cost": str(self.estimated_cost),

@@ -50,6 +50,21 @@ DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE: dict[str, float] = {
     "stablecoin_supply": 24.0,
     # 3c — a large-transfer-count proxy is close to real-time.
     "etherscan_large_transfer": 6.0,
+    # 3f — global liquidity proxies (M2/Fed balance sheet/reverse repo) move
+    # on a weekly-to-monthly cadence, same standing as ordinary macro prints.
+    "global_liquidity": 720.0,
+    # 3f — a known-in-advance scheduled release date (CPI/PCE/NFP) stays
+    # relevant until that date passes, not a decaying observation in the
+    # usual sense; reuses the macro half-life as a simple, documented
+    # convention rather than inventing a new decay model for a future fact.
+    "scheduled_macro_event": 720.0,
+    # 3f — regional exchange price premiums move with spot price, close to
+    # real-time, same cadence as an ordinary price feed.
+    "regional_exchange_premium": 2.0,
+    # 3f — a regulatory/policy event's relevance persists for weeks after
+    # filing/introduction, longer than an ordinary news story but shorter
+    # than a multi-month macro trend.
+    "regulatory_event": 336.0,
 }
 
 

@@ -7,6 +7,7 @@ from app.benchmarks.schemas import DecisionOutcome
 from app.benchmarks.triple_barrier import compute_target_stop_thresholds
 from app.config import Settings
 from app.database.repository import (
+    AdversarialResearchRepository,
     AssetRepository,
     AssetStatusRepository,
     DecisionOutcomeRepository,
@@ -81,6 +82,7 @@ class JudgeService:
         decision_outcome_repo: DecisionOutcomeRepository,
         cost_guard: CostGuard,
         provider: OpenRouterJudgeProvider,
+        adversarial_repo: AdversarialResearchRepository | None = None,
     ) -> None:
         self._settings = settings
         self._asset_repo = asset_repo
@@ -98,6 +100,7 @@ class JudgeService:
         self._decision_outcome_repo = decision_outcome_repo
         self._cost_guard = cost_guard
         self._provider = provider
+        self._adversarial_repo = adversarial_repo
 
     def run(self, run_id: str) -> JudgeResult:
         result = JudgeResult()
@@ -115,6 +118,7 @@ class JudgeService:
             self._regime_repo, self._evidence_repo, self._assessment_repo,
             self._llm_analysis_repo, self._news_repo, self._asset_status_repo,
             self._portfolio_position_repo, self._signal_source_repo,
+            adversarial_repo=self._adversarial_repo,
         )
         if not context.assets:
             logger.warning(
@@ -186,6 +190,7 @@ class JudgeService:
                 invalidation_conditions=item.invalidation_conditions,
                 requires_review=item.requires_review,
                 thesis=item.thesis,
+                macro_sensitivity=item.macro_sensitivity,
                 regime_id=regime_id,
                 prompt_template_id=prompt_template_id,
                 estimated_cost=per_item_cost,

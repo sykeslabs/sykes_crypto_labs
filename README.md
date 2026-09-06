@@ -146,26 +146,27 @@ because:
     below); resolved with a real `BACKFILL_BASELINE` calibration number
     (hit-rate 0.833, Brier 0.195 over 36 directional decisions) reported
     separately from the live forward-tracked baseline, never combined
-  - **3f** — Adversarial bull/bear research, scenario modeling, a macro
-    matrix extended with a **forward-looking scheduled macro-event
-    calendar** (known-in-advance FOMC/CPI/PCE/NFP release dates, distinct
-    from the after-the-fact print observations already in the matrix),
-    **global liquidity proxies** (M2, Fed balance
-    sheet, via FRED) and BTC's **rolling correlation to equities/gold/DXY**,
-    and the remaining exploratory/fragile-to-extract sources (CoinAnk,
-    CoinGlass liquidation heatmap, CryptoBubbles, PlanB/X — the latter
-    accessed via **xAI's API**, which has native X/Twitter search —
-    aggregate **social/narrative sentiment** via Santiment or LunarCrush-
-    style tracking, a **regulatory/policy event calendar** via SEC
-    EDGAR and congress.gov, official sources where the extraction of a
-    dated, asset-specific event is the unverified part, and a **regional
-    exchange price premium** — e.g. the historically-documented "Kimchi
-    premium" on Korean venues — as a proxy for regionally concentrated
-    retail speculative intensity, distinct from the ordinary cross-venue
-    aggregation noise already logged in 3b) — each gated on a real
-    access-feasibility check; re-run calibration afterward (by regime, not
-    just in aggregate) and spot-check whether the Judge's own stated
-    reasoning actually follows from its cited evidence
+  - ✅ **3f** (complete) — Adversarial bull → bear → scenario research cycle
+    (bear demonstrably attacks the specific bull thesis, live-verified —
+    see findings below), a macro matrix (CPI/PCE/claims/payrolls/yields/
+    fed funds via FRED) with a **forward-looking scheduled macro-event
+    calendar** (real CPI/PCE/NFP release dates — FOMC excluded, see
+    decisions below), **global liquidity proxies** (M2/Fed balance sheet/
+    reverse repo) and BTC's **rolling correlation to S&P 500/gold(via
+    PAXG)/DXY**, the **Upbit regional exchange premium**, and a
+    **regulatory event calendar** (SEC EDGAR + congress.gov, global/macro-
+    scope). CryptoBubbles/CoinAnk confirmed genuinely inaccessible;
+    CoinGlass/LunarCrush/PlanB(xAI) deliberately deferred (paid-tier/no-
+    relationship decisions, same treatment as Glassnode in 3c); Santiment
+    confirmed real but unusable for live reads (~30-day lag). Judge now
+    consumes all of this (a new required `macro_sensitivity` per-asset
+    reasoning field, live-verified to cite real numbers and never apply a
+    blanket rule) plus 3f's bull/bear/scenarios (live-verified: the Judge's
+    own `contradictory_evidence` directly quotes bear-case language
+    verbatim). Recalibration attempted honestly — zero resolved decisions
+    exist anywhere in the project yet (pre- or post-3f), reported as a real
+    finding, not fabricated — and a live Judge-reasoning spot-check found
+    the sampled theses genuinely follow from their own stated evidence
   - **3g** — Statistical validation: a **Deflated Sharpe Ratio /
     probability-of-backtest-overfitting** correction across every
     prompt/logic iteration made in 3d–3f (so "it got better" claims account
@@ -1717,6 +1718,280 @@ than one long unattended invocation.
   (`judge_decisions`' direction/confidence, `decision_outcomes`'
   resolution), which is 3e.1's actual payoff — only the simulated sizing
   narrative is chunk-local.
+
+## Phase 3f — Adversarial research, macro matrix, remaining fragile sources (`--with-adversarial`, `--with-macro`)
+
+The last evidence/decision-pipeline sub-phase of Phase 3 (3g, statistical
+validation, follows next). Two new zero-and-non-zero-LLM-cost collection
+stages plus a Judge extension, built and live-verified in that order.
+
+### Feasibility findings (task 1) — decided before writing any provider code
+
+**Confirmed working, built:**
+- **Upbit** (regional exchange premium) — free, public, no key; verified
+  live with real KRW-BTC ticker data.
+- **SEC EDGAR full-text search** (regulatory calendar, US side) — free,
+  official, no key (just a descriptive `User-Agent` per SEC's fair-access
+  policy); verified live with real 8-K filing hits.
+- **congress.gov** (regulatory calendar, legislative side) — free, official,
+  key-gated (a quick signup, not a paid relationship); verified live with
+  real bill data. No server-side full-text/keyword search on the bill-list
+  endpoint (verified live: date-range filtering works, keyword filtering
+  does not) — titles are keyword-matched client-side instead.
+- **FRED** (Federal Reserve Economic Data) — free, official, key-gated (a
+  quick signup); verified live against every series this project uses
+  (`M2SL`, `WALCL`, `RRPONTSYD`, `SP500`, `DTWEXBGS`, `DEXKOUS`, plus the
+  release-date endpoints for CPI/PCE/NFP). FRED's own historical gold-price
+  series (`GOLDAMGBD228NLBM`) has been discontinued (verified live: "the
+  series does not exist") — gold correlation instead uses **PAXG**
+  (tokenized gold) via the already-integrated Binance/Coinbase clients, a
+  real live-verified price (~$4432/oz, matching within cents across both
+  venues) — no new vendor dependency.
+
+**Confirmed genuinely infeasible:**
+- **CryptoBubbles** — no documented API found (a guessed data endpoint
+  returned 404); `robots.txt` explicitly disallows `ClaudeBot` site-wide.
+- **CoinAnk** — the site is behind a BytePlus WAF bot-challenge (a JS
+  challenge page, no accessible endpoint or `robots.txt`) — no legitimate
+  API surface exists to build against.
+
+**Confirmed real, deliberately deferred:**
+- **CoinGlass** (liquidation heatmap) — a real, official, documented API
+  exists, but is API-key-gated with tiered paid plans (Startup/Standard/
+  Professional); no usable free tier confirmed. Same category as
+  Glassnode in 3c — a real recurring-cost decision, deferred, not a
+  technical failure.
+- **LunarCrush** — even the "public" v4 endpoint requires an auth token; no
+  anonymous access at all. Deferred alongside CoinGlass.
+- **PlanB/X (via xAI)** — xAI's API is live and functional (verified a real
+  auth-challenge response confirming the endpoint works), but no paid API
+  relationship was established for this source — a deliberate choice, not
+  an access failure.
+- **Santiment** (social/narrative sentiment) — genuinely accessible with NO
+  key for a real anonymous free tier (verified live: real
+  `social_volume_total` time-series data returned), but restricted to data
+  at least ~30 days old — unusable for this system's actual use case
+  (current-sentiment reads for live decisions), so recorded `NOT_IMPLEMENTED`
+  rather than wired in for a purpose it can't serve.
+
+All nine of the above sources are reaffirmed live every `--with-macro` run
+with real investigation notes — the exact discipline a 3c live-verification
+incident established (a status never actually re-checked by code looks
+identical, in a clean report, to one genuinely reaffirmed).
+
+### What was built
+
+1. **Macro matrix** (`app/market_data/macro_service.py`) — CPI, PCE, initial
+   claims, payrolls, 10Y Treasury yield, and the effective fed funds rate,
+   each reporting `actual` vs. `previous` (no free source for economist-
+   **consensus** estimates was found — `surprise`/`consensus` are honestly
+   `null`, never fabricated).
+2. **Forward-looking macro-event calendar** — real, discrete CPI/PCE/NFP
+   release dates via FRED's `release/dates` endpoint. **FOMC excluded**:
+   FRED's "FOMC Press Release" release id (101) does not behave as a
+   discrete meeting calendar — verified live it returns a release date for
+   *every single day*, not ~8 meetings/year — so it's left out rather than
+   silently faked as a real calendar.
+3. **Global liquidity** (M2, Fed balance sheet, reverse repo) and **BTC's
+   rolling 30d/90d correlation** to S&P 500, gold (PAXG), and DXY — computed
+   deterministically from real stored/fetched price series, never
+   editorialized into a signal at the collector level.
+4. **Regional exchange premium** — Upbit KRW-BTC vs. the global USD price,
+   converted via FRED's real KRW/USD rate (`DEXKOUS`).
+5. **Regulatory event calendar** — SEC EDGAR (crypto-keyword full-text
+   search) + congress.gov (keyword-matched bill titles), both **global/
+   macro-scope only**: reliable per-asset attribution isn't achievable at an
+   acceptable false-positive rate from a title/filing match alone, per the
+   sub-phase's own explicit allowance for a narrower version.
+6. **Adversarial research cycle** (`app/llm/adversarial_service.py`) — one
+   model, three sequential batched calls covering every `TOP_CANDIDATE`:
+   bull case → bear case (explicitly attacks the specific bull thesis,
+   required to name which bull catalyst/evidence item each attack point
+   rebuts) → bull/base/bear scenarios. Persisted to a new `adversarial_research`
+   table (migration `0009`), registered in `COST_TRACKED_TABLES`. Uses a new,
+   genuinely generic `OpenRouterStructuredProvider` (`app/llm/structured_provider.py`)
+   parameterized by response schema — unlike Phase 2/3d/3e's provider
+   classes, this one has no existing call sites to risk regressing, so a
+   real generalization was the right call here, not a shortcut.
+7. **Judge extension** (`app/judge/context.py`, migration `0010`) — the
+   Judge now receives the shared macro/liquidity backdrop
+   (`JudgeContext.macro_evidence`, one latest reading per single-value
+   source), the forward-looking macro-event calendar and regulatory-event
+   calendar as their own distinct multi-entry lists
+   (`JudgeContext.scheduled_events`/`regulatory_events` — see the bug fixed
+   below), and each candidate's bull/bear/scenarios
+   (`AssetJudgeContext.adversarial`), and must produce a new required
+   `macro_sensitivity` field — explicit, per-asset reasoning about how the
+   shared macro backdrop affects *that specific asset*, never a blanket
+   "liquidity up = bullish" rule. Both new inputs degrade gracefully to
+   empty/`None` when unavailable (e.g. 3e.1's replay, which never collected
+   macro/adversarial evidence) rather than requiring changes to
+   already-shipped code.
+
+### Live-verified findings
+
+- **Cost, real per-stage breakdown** (not just a summed total, per explicit
+  request): bull **$0.0515**, bear **$0.0911**, scenario **$0.0940** — total
+  **$0.2366** for 10 candidates. All three came in well under the
+  pre-verification estimate (~$0.48 total, anchored to Judge/assessment's
+  real per-call costs) — and notably, the scenario call (carrying the most
+  accumulated context: bull + bear + its own reasoning) did **not** cost
+  noticeably more than bear, meaning input-token accumulation mattered less
+  here than the estimate assumed. Full pipeline (assessment + adversarial +
+  Judge) ≈ **$0.80/run**, comfortably inside `MAX_DAILY_LLM_COST` even at
+  several runs/day — no candidate-count reduction needed.
+- **Bull/bear is demonstrably adversarial, not generic**: UNI's live bear
+  case directly quotes the bull thesis's own language ("Claude's own thesis
+  states the price move has 'vastly outpaced' fundamental TVL growth...")
+  and argues the TVL figure can't justify the composite-score claim; HYPE's
+  bear case turns a data-quality flag from the bull thesis itself into an
+  attack point and raises unlock/dilution risk the bull case never
+  mentioned. `attacks_bull_point` correctly names the specific bull
+  catalysts verbatim in both cases.
+- **The Judge genuinely uses both new inputs, not just has them in
+  context**: `macro_sensitivity` reasoning is real and per-asset, citing
+  actual numbers (e.g. BNB: "...elevated 10Y yields (4.77%) and a
+  near-zero reverse repo balance suggest limited fresh liquidity impulse
+  feeding through to BNB specifically") and correctly differentiating asset
+  classes (privacy coins reasoned as "idiosyncratic regulatory/narrative
+  dynamics... limited direct read-through" vs. high-beta L1s reasoned as
+  "benefits at the margin from RISK_ON" vs. XRP explicitly noting "no
+  XRP-specific macro catalyst is present") — never one rule applied
+  uniformly. Separately, UNI's `contradictory_evidence` directly quotes the
+  bear case's exact phrasing, and both UNI's and HYPE's final confidence/
+  decision were visibly tempered by the specific bear attack points, not
+  just decoratively mentioning them.
+- **Recalibration attempted honestly, not fabricated**: extended
+  `scripts/calibration_baseline.py` with a `--source live` mode (splits real
+  live Judge decisions into pre-3f/post-3f eras via `macro_sensitivity IS
+  NOT NULL`, with a by-regime breakdown). Real result: **zero resolved
+  decisions exist anywhere in the project yet** — all 40 live Judge
+  decisions (30 pre-3f, 10 post-3f) are `UNRESOLVED` (real horizons of
+  14–90+ days haven't elapsed), and only one regime (`RISK_ON`) has ever
+  occurred in this project's real history. Persisted as two honest null
+  attempts (`LIVE_PRE_3F_BASELINE`, `LIVE_POST_3F_BASELINE`, both
+  `sample_size=0`) rather than a fabricated comparison.
+- **Judge reasoning spot-check** (task 9): sampled 6 live decisions weighted
+  toward `requires_review=true`/low-confidence/low-agreement. 5 of 6 showed
+  the thesis directly and traceably following from `key_evidence`/
+  `contradictory_evidence`, correctly reflecting genuine tension rather than
+  glossing over it (e.g. ZEC's WATCH thesis correctly weighs the bull-side
+  quant strength against negative funding, a bearish model outlier, and
+  unaddressed regulatory tail risk). One minor wording ambiguity found, not
+  a synthesis error — see decisions below. Findings logged, not used to
+  auto-correct the Judge this sub-phase, per the prompt's own instruction.
+- `pytest` green throughout (287 tests).
+
+**A real incident during this sub-phase — two FRED bugs, found and fixed
+live:**
+1. `FredClient.fetch_recent_observations` used `sort_order=asc` + `limit`,
+   which FRED interprets as "the *oldest* N observations from the series'
+   entire history" (e.g. SP500 from 2016, DTWEXBGS from 2006), not the most
+   recent N — this silently produced **zero** shared trading days between
+   BTC and SP500/DXY, so correlation for those two references was silently
+   never computed. Fixed by requesting `sort_order=desc` (genuinely the most
+   recent) then reversing to the oldest-first contract callers expect.
+2. `FredClient.fetch_release_dates` needs `include_release_dates_with_no_data=true`
+   — without it, FRED silently excludes exactly the future/not-yet-published
+   dates this method exists to find (verified live: omitting it returned
+   `count: 0` for a real, known upcoming CPI release date). Both were caught
+   by live-verifying the actual returned data against expectations, not by
+   the code merely running without error — the same discipline the 3c and
+   3e.1 incidents established.
+3. A smaller, related bug: gold-PAXG correlation was initially gated behind
+   `FRED_API_KEY` being configured, even though it needs no FRED data at
+   all (it's Binance-sourced) — caught by a test that legitimately expected
+   it to work without a FRED key.
+4. **A fourth bug, found during this task's own final self-check (task 10),
+   after the Judge extension had already been reported as working**:
+   `build_judge_context`'s macro-evidence collection used
+   `macro_evidence.setdefault(obs.source, ...)` — correct for a genuine
+   single-value "latest reading" source (e.g. `macro_cpi`), but silently
+   wrong for a source name shared by many distinct real observations. Two
+   sources hit this: `scheduled_macro_event` (22 real rows, spanning 11
+   distinct CPI/PCE/NFP dates through December 2026 — only 1 survived) and
+   `regulatory_event_sec_edgar`/`regulatory_event_congress` (45 real rows —
+   only 1 survived). The forward-looking calendar and regulatory calendar
+   both genuinely existed in the database exactly as designed, but the
+   Judge only ever saw one arbitrary entry from each — a gap invisible from
+   a passing test suite or a clean run log, only caught by directly
+   querying `EvidenceObservationRepository.get_latest_global_all()` and
+   counting real rows per source. Fixed by routing these two source
+   families into their own deduped-by-content lists
+   (`JudgeContext.scheduled_events`, `JudgeContext.regulatory_events`,
+   the latter capped at `MAX_REGULATORY_EVENTS_SHOWN=10`) instead of the
+   single-value `macro_evidence` dict, and rendering both as their own
+   labeled sections in the Judge prompt. Live re-verified with zero LLM
+   cost (pure context-building, no model call involved): rebuilding the
+   real Judge context against live Supabase data now surfaces all 11 real
+   distinct scheduled dates and 10 (of 20 real, capped) distinct regulatory
+   filings in the actual rendered prompt text, not just one of each. Three
+   regression tests added directly targeting this bug class.
+
+   **Both the task 9 reasoning spot-check and the earlier live `--with-judge`
+   run predate this fix** — their persisted decisions were built against the
+   buggy single-entry context, so a fresh live decision was pulled
+   post-fix (run `RUN-20260906-080647`, real cost **$0.2407** across 10
+   decisions) to confirm the Judge's *reasoning*, not just the prompt text,
+   genuinely engages with more than one scheduled-event entry. Confirmed:
+   SOL's and DOGE's `invalidation_conditions` both name two distinct real
+   dates from the calendar by role — "a macro risk-off shock around the
+   2026-09-11 CPI or 2026-10-02 NFP prints before horizon" (SOL) and "watch
+   macro prints: CPI 2026-09-11, NFP 2026-10-02" (DOGE) — not a single
+   generic date or a copy-pasted line, and consistent with the two distinct
+   real release dates nearest the decision horizon. This is a genuine
+   reasoning-level confirmation, not merely a prompt-rendering check.
+
+### Known limitations / decisions
+
+- **FOMC meeting dates are not in the forward-looking calendar** — FRED's
+  only plausible release id for this doesn't behave as a real meeting
+  calendar (see above); no other free, documented, official source was
+  found within reasonable effort. CPI/PCE/NFP dates are real and populated.
+- **No macro "surprise" (actual vs. consensus)** — FRED only publishes
+  actual released values, never economist-consensus estimates; no free
+  source for the latter was found. `actual`/`previous` are real; `surprise`/
+  `consensus` are honestly `null`.
+- **The regulatory event calendar is global/macro-scope only, never
+  per-asset attributed** — a title/filing keyword match can't reliably
+  distinguish "this SEC filing/bill concerns crypto broadly" from "this
+  specifically affects asset X," per the sub-phase's own explicit
+  allowance for a narrower version over an unacceptable false-positive
+  rate.
+- **congress.gov coverage is keyword-matched titles only** — the API has no
+  server-side full-text/keyword search on its bill-list endpoint (verified
+  live), so this is a naive keyword filter with the same false-positive/
+  false-negative risk explicitly called out for this kind of extraction,
+  not a claimed complete legislative feed.
+- **CoinGlass, LunarCrush, and PlanB(xAI) deliberately deferred** — real,
+  working access paths exist for all three, but each requires a new paid
+  relationship (a subscription tier, or an xAI API account) that wasn't
+  committed to this round. Binance funding rates (3c) and Santiment's
+  lagged data already cover a meaningful slice of the underlying signal
+  types.
+- **The bull-rebuts-bear second pass was not built** — task 3's own
+  language framed it as optional ("where practical"); kept to 3 calls to
+  control cost, the same trade-off logic 3d used to defer Grok.
+- **A minor prompt-clarity item, not a synthesis error**: one spot-checked
+  decision (XRP, a live run on 2026-09-06) had `key_evidence` say "claude
+  and openai cite strong medium-term momentum as the core bullish anchor"
+  while `contradictory_evidence` said "all three models rate XRP NEUTRAL,
+  not bullish" — these aren't strictly contradictory (a model can cite a
+  bullish factor while still landing NEUTRAL overall) but read confusingly
+  side-by-side. Didn't change the well-justified WATCH conclusion or invent
+  anything; noted for future prompt wording, not acted on this sub-phase.
+- **Recalibration (task 8) could not produce a real before/after number**
+  — not a gap in the mechanism, a real fact about this project's age: zero
+  live Judge decisions (pre- or post-3f) have had enough real time pass to
+  resolve, and only one market regime has ever occurred. The `--source
+  live` mode is built and ready to report a genuine comparison the moment
+  real resolved data exists.
+- **A third parallel provider-style class rationale, but genuinely
+  different this time**: `OpenRouterStructuredProvider` generalizes over
+  response schema rather than duplicating per-schema, unlike Phase 2/3d/3e's
+  deliberately-separate provider classes — because it has no existing
+  shipped call sites to risk regressing. Both trade-offs (duplicate vs.
+  generalize) are deliberate, evaluated case-by-case, not a fixed rule.
 
 ## Project layout
 

@@ -12,7 +12,16 @@ combined into one number (per 3e.1's non-negotiable):
   richer BUY/HOLD/SELL/WATCH/NO_TRADE vocabulary and already-resolved
   `realized_return`/`outcome_label`.
 
-Both report two distinct things, not one:
+--source live (3f task 8): the most relevant before/after comparison —
+  genuine real-time Judge decisions (is_backfilled=false), split into
+  pre-3f vs. post-3f eras using `macro_sensitivity` (a 3f-only required
+  field; NULL on a row means it predates 3f), each reported with a by-regime
+  breakdown. If an era has zero resolved decisions, this is reported and
+  persisted honestly as a null attempt (sample_size=0) rather than a
+  fabricated comparison — real decision horizons (14-90+ days) mean this
+  needs real calendar time to produce anything, not more code.
+
+All three report two distinct things, not one:
   - Directional hit-rate (was the call right).
   - Calibration: a Brier score between stated confidence and realized
     outcome, plus a reliability breakdown by confidence bucket. A system can
@@ -36,6 +45,7 @@ already-resolved outcome instead.
 Usage:
     python scripts/calibration_baseline.py --source phase2 [--horizon-days 7]
     python scripts/calibration_baseline.py --source backfill
+    python scripts/calibration_baseline.py --source live
 """
 
 import argparse
@@ -210,16 +220,101 @@ def run_backfill_baseline(client) -> int:
     return 0
 
 
+def run_live_baseline(client) -> int:
+    decisions = (
+        client.table("judge_decisions").select("id,decision,confidence,regime_id,macro_sensitivity")
+        .eq("is_backfilled", False).execute().data
+    )
+    print(f"Found {len(decisions)} live (non-backfilled) judge_decisions rows.")
+    if not decisions:
+        print("Nothing to calibrate against yet — run --with-judge at least once.")
+        return 0
+
+    decision_ids = [d["id"] for d in decisions]
+    outcomes = (
+        client.table("decision_outcomes").select("decision_id,realized_return,outcome_label")
+        .in_("decision_id", decision_ids).neq("outcome_label", "UNRESOLVED").execute().data
+    )
+    outcome_by_decision = {o["decision_id"]: o for o in outcomes}
+    print(f"Resolved (non-UNRESOLVED) live outcomes: {len(outcomes)} of {len(decisions)}")
+
+    regime_ids = {d["regime_id"] for d in decisions if d["regime_id"]}
+    regime_names = {}
+    if regime_ids:
+        regime_rows = client.table("market_regime_snapshots").select("id,regime").in_("id", list(regime_ids)).execute().data
+        regime_names = {r["id"]: r["regime"] for r in regime_rows}
+
+    eras = [
+        ("pre-3f", lambda d: not d["macro_sensitivity"]),
+        ("post-3f", lambda d: bool(d["macro_sensitivity"])),
+    ]
+    for era_label, era_filter in eras:
+        era_decisions = [d for d in decisions if era_filter(d)]
+        resolved = []
+        for d in era_decisions:
+            outcome = outcome_by_decision.get(d["id"])
+            if outcome is None or outcome["realized_return"] is None:
+                continue
+            resolved.append({
+                "action": d["decision"], "confidence": float(d["confidence"]),
+                "realized_return": float(outcome["realized_return"]),
+                "regime": regime_names.get(d["regime_id"], "UNKNOWN"),
+            })
+        directional = [r for r in resolved if r["action"] in ("BUY", "SELL")]
+        method = f"LIVE_{era_label.upper().replace('-', '_')}_BASELINE"
+
+        print(f"\n=== {era_label}: {len(era_decisions)} decisions, {len(resolved)} resolved, {len(directional)} directional ===")
+        if not directional:
+            print("  No resolved directional decisions yet for this era.")
+            record = CalibrationRunRecord(
+                run_at=datetime.now(UTC), method=method, sample_size=0, prompt_template_ids=[],
+                hit_rate=None, brier_score=None,
+                notes=(
+                    f"{len(era_decisions)} live {era_label} judge_decisions exist but none have "
+                    f"resolved outcomes yet (real horizons of 14-90+ days need real calendar time "
+                    f"to pass). Persisted as a real, honest null attempt, not a fabricated comparison."
+                ),
+            )
+            CalibrationRunRepository(client).insert(record)
+            print(f"  Persisted null attempt to calibration_runs (method={method}).")
+            continue
+
+        directional, hit_rate, brier_score, buckets = _score_directional(directional)
+        _print_report(directional, hit_rate, brier_score, buckets, len(resolved))
+
+        by_regime: dict[str, list[dict]] = defaultdict(list)
+        for r in directional:
+            by_regime[r["regime"]].append(r)
+        regime_summary = {}
+        print("  By regime:")
+        for regime, rows in by_regime.items():
+            _, r_hit, r_brier, _ = _score_directional(rows)
+            regime_summary[regime] = {"n": len(rows), "hit_rate": r_hit, "brier_score": r_brier}
+            print(f"    {regime}: n={len(rows)} hit_rate={r_hit} brier_score={r_brier}")
+
+        record = CalibrationRunRecord(
+            run_at=datetime.now(UTC), method=method, sample_size=len(directional), prompt_template_ids=[],
+            hit_rate=hit_rate, brier_score=brier_score,
+            notes=f"By-regime breakdown: {regime_summary}",
+        )
+        CalibrationRunRepository(client).insert(record)
+        print(f"  Persisted to calibration_runs (method={method}).")
+
+    return 0
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="3e/3e.1 baseline calibration script")
-    parser.add_argument("--source", choices=["phase2", "backfill"], default="phase2")
+    parser = argparse.ArgumentParser(description="3e/3e.1/3f baseline calibration script")
+    parser.add_argument("--source", choices=["phase2", "backfill", "live"], default="phase2")
     parser.add_argument("--horizon-days", type=int, default=HORIZON_DAYS_DEFAULT, help="Only used for --source phase2.")
     args = parser.parse_args()
 
     client = get_supabase_client()
     if args.source == "phase2":
         return run_phase2_baseline(client, args.horizon_days)
-    return run_backfill_baseline(client)
+    if args.source == "backfill":
+        return run_backfill_baseline(client)
+    return run_live_baseline(client)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from app.judge.schemas import JudgeDecisionBatch, JudgeDecisionItem, JudgeDecisi
 from app.judge.service import JudgeService
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.cost import CostGuard, CostLedgerRepository
+from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 
 VALID_DECISION = dict(
@@ -32,6 +33,7 @@ VALID_DECISION = dict(
     invalidation_conditions=["BTC closes below $70k"],
     requires_review=False,
     thesis="Consolidating within an uptrend.",
+    macro_sensitivity="No macro evidence available this run.",
 )
 
 
@@ -72,7 +74,7 @@ def test_judge_decision_record_to_row_serializes_decimal_and_datetime():
         expected_alpha=0.05, risk_score=0.4, uncertainty=0.3, model_agreement=0.8,
         source_agreement=0.7, investment_horizon_days=30, key_evidence=[], contradictory_evidence=[],
         key_risks=[], invalidation_conditions=[], requires_review=False, thesis="t",
-        regime_id="r1", prompt_template_id="p1", estimated_cost=Decimal("0.01"),
+        macro_sensitivity="n/a", regime_id="r1", prompt_template_id="p1", estimated_cost=Decimal("0.01"),
     )
     row = record.to_row()
     assert row["estimated_cost"] == "0.01"
@@ -213,6 +215,168 @@ def test_render_prompt_includes_regime_agreement_and_unavailable_sources():
     assert "Glassnode" in user_prompt and "CoinAnk" in user_prompt
     assert "0.667" in user_prompt
     assert "NO_TRADE" in system_prompt
+    assert "macro_sensitivity" in system_prompt
+
+
+def test_render_prompt_includes_shared_macro_evidence():
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0,
+        )],
+        macro_evidence={
+            "macro_cpi": {"payload": {"actual": "311.5"}, "freshness": "RECENT", "decay_half_life_hours": 720, "status": "OK"},
+        },
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "macro_cpi" in user_prompt
+    assert "311.5" in user_prompt
+
+
+def test_render_prompt_discloses_no_macro_evidence_when_absent():
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0,
+        )],
+        macro_evidence={},
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "none available this run" in user_prompt
+
+
+def test_render_prompt_includes_adversarial_research_when_present():
+    from app.llm.adversarial_schemas import AdversarialResearchRecord
+
+    adversarial = AdversarialResearchRecord(
+        run_id="RUN-1", asset_id="a1", prompt_template_id="pt1",
+        bull_case={"asset": "BTC", "thesis": "Strong ETF inflows", "catalysts": ["ETF demand"], "evidence": ["flow data"]},
+        bear_case={"asset": "BTC", "attack_points": ["Crowded positioning"], "evidence": ["funding elevated"], "attacks_bull_point": ["ETF demand"]},
+        scenarios={"asset": "BTC", "bull": {}, "base": {}, "bear": {}},
+        estimated_cost=Decimal("0.01"), created_at=datetime.now(UTC),
+    )
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0, adversarial=adversarial,
+        )],
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "Strong ETF inflows" in user_prompt
+    assert "Crowded positioning" in user_prompt
+
+
+class FakeGlobalEvidenceRepoForContext:
+    """Real bug regression: a source name shared by many distinct observations
+    (scheduled_macro_event, regulatory_event_sec_edgar) must NOT be deduped
+    down to one row the way a true single-value source (macro_cpi) is."""
+
+    def __init__(self, observations):
+        self._observations = observations
+
+    def get_latest_by_asset(self, asset_id):
+        return []
+
+    def get_latest_global_all(self, limit=100):
+        return self._observations
+
+
+def _macro_obs(source, payload, scope="MACRO"):
+    return EvidenceObservation(
+        source=source, asset_id=None, scope=scope,
+        observation_timestamp=datetime.now(UTC), retrieval_timestamp=datetime.now(UTC),
+        freshness="RECENT", decay_half_life_hours=720, status="OK", payload=payload,
+    )
+
+
+def test_build_judge_context_keeps_all_scheduled_macro_events_not_just_one():
+    observations = [
+        _macro_obs("scheduled_macro_event", {"event": "CPI", "scheduled_date": "2026-10-13"}),
+        _macro_obs("scheduled_macro_event", {"event": "PCE", "scheduled_date": "2026-10-28"}),
+        _macro_obs("scheduled_macro_event", {"event": "NFP", "scheduled_date": "2026-11-06"}),
+        _macro_obs("macro_cpi", {"actual": "311.5"}),
+    ]
+    btc = _asset("BTC", "a1")
+    context = build_judge_context(
+        "RUN-1", Settings(_env_file=None), [_screened("BTC", "a1")], {"a1": btc},
+        FakeRegimeRepoForContext(), FakeGlobalEvidenceRepoForContext(observations),
+        FakeAssessmentRepoForContext([_assessment("a1")]), FakeLLMAnalysisRepoForContext(),
+        FakeNewsRepoForContext(), FakeAssetStatusRepoForContext(),
+        FakePortfolioPositionRepoForContext(), FakeSignalSourceRepoForContext(),
+    )
+    assert len(context.scheduled_events) == 3
+    assert {e["event"] for e in context.scheduled_events} == {"CPI", "PCE", "NFP"}
+    # single-value source still collapses to one entry, untouched by the fix
+    assert "macro_cpi" in context.macro_evidence
+    assert len(context.macro_evidence) == 1
+
+
+def test_build_judge_context_keeps_all_regulatory_events_up_to_cap():
+    observations = [
+        _macro_obs("regulatory_event_sec_edgar", {"accession_number": f"000{i}", "title": f"Filing {i}"})
+        for i in range(15)
+    ]
+    btc = _asset("BTC", "a1")
+    context = build_judge_context(
+        "RUN-1", Settings(_env_file=None), [_screened("BTC", "a1")], {"a1": btc},
+        FakeRegimeRepoForContext(), FakeGlobalEvidenceRepoForContext(observations),
+        FakeAssessmentRepoForContext([_assessment("a1")]), FakeLLMAnalysisRepoForContext(),
+        FakeNewsRepoForContext(), FakeAssetStatusRepoForContext(),
+        FakePortfolioPositionRepoForContext(), FakeSignalSourceRepoForContext(),
+    )
+    # 15 distinct filings collected but capped to MAX_REGULATORY_EVENTS_SHOWN
+    assert len(context.regulatory_events) == 10
+
+
+def test_render_prompt_includes_multiple_scheduled_and_regulatory_events_distinctly():
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0,
+        )],
+        scheduled_events=[
+            {"event": "CPI", "scheduled_date": "2026-10-13"},
+            {"event": "PCE", "scheduled_date": "2026-10-28"},
+        ],
+        regulatory_events=[
+            {"source": "regulatory_event_sec_edgar", "title": "Filing A"},
+            {"source": "regulatory_event_congress", "title": "Bill B"},
+        ],
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "CPI" in user_prompt and "2026-10-13" in user_prompt
+    assert "PCE" in user_prompt and "2026-10-28" in user_prompt
+    assert "Filing A" in user_prompt
+    assert "Bill B" in user_prompt
+
+
+def test_build_judge_context_degrades_gracefully_without_macro_or_adversarial_repos():
+    # 3e.1's replay passes an evidence repo with no get_latest_global_all
+    # method and no adversarial_repo at all — must not raise, must produce
+    # empty macro_evidence and adversarial=None rather than crashing.
+    class EvidenceRepoWithoutGlobalMethod:
+        def get_latest_by_asset(self, asset_id):
+            return []
+
+    btc = _asset("BTC", "a1")
+    candidates = [_screened("BTC", "a1")]
+    context = build_judge_context(
+        "RUN-1", Settings(_env_file=None), candidates, {"a1": btc},
+        FakeRegimeRepoForContext(), EvidenceRepoWithoutGlobalMethod(),
+        FakeAssessmentRepoForContext([_assessment("a1")]), FakeLLMAnalysisRepoForContext(),
+        FakeNewsRepoForContext(), FakeAssetStatusRepoForContext(),
+        FakePortfolioPositionRepoForContext(), FakeSignalSourceRepoForContext(),
+    )
+    assert context.macro_evidence == {}
+    assert context.assets[0].adversarial is None
 
 
 # --- CostGuard registration ---------------------------------------------------

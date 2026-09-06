@@ -119,6 +119,28 @@ class Settings(BaseSettings):
     # "concentrated" by the correlation-awareness flag (task 2).
     correlation_flag_threshold: float = 0.7
 
+    # Adversarial research, macro matrix, remaining fragile sources (Phase 3f,
+    # used only with --with-adversarial / --with-macro)
+    # A single model does the whole bull -> bear -> scenario research cycle
+    # (unlike 3d's independent ensemble) — defaults to reusing CLAUDE_MODEL.
+    adversarial_model: str | None = None
+    adversarial_prompt_version: str = "v1"
+    # FRED (Federal Reserve Economic Data). Optional — free signup. Without a
+    # key, GLOBAL_LIQUIDITY_MACRO is reported NOT_IMPLEMENTED, never approximated.
+    fred_api_key: SecretStr | None = None
+    fred_base_url: str = "https://api.stlouisfed.org/fred"
+    # congress.gov (legislative tracking, one half of the regulatory/policy
+    # event calendar). Optional — free signup. SEC EDGAR's full-text search
+    # (the other half) needs no key at all.
+    congress_gov_api_key: SecretStr | None = None
+    congress_gov_base_url: str = "https://api.congress.gov/v3"
+    sec_edgar_base_url: str = "https://efts.sec.gov/LATEST"
+    # A descriptive User-Agent is required by SEC's fair-access policy — not
+    # a secret, just identifies the requester.
+    sec_edgar_user_agent: str = "crypto-ai-portfolio research contact@example.com"
+    upbit_base_url: str = "https://api.upbit.com/v1"
+    santiment_base_url: str = "https://api.santiment.net/graphql"
+
     # Logging
     log_level: str = "INFO"
 
@@ -199,6 +221,21 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "No Judge model configured. Set JUDGE_MODEL (or CLAUDE_MODEL, reused by default) "
                 "in your .env file."
+            )
+        return self.openrouter_api_key.get_secret_value(), model
+
+    def require_adversarial(self) -> tuple[str, str]:
+        """Returns (api_key, model) for 3f's bull/bear/scenario research
+        cycle, or raises if missing."""
+        if not self.openrouter_api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY must be set in your .env file to run --with-adversarial."
+            )
+        model = self.adversarial_model or self.claude_model
+        if not model:
+            raise RuntimeError(
+                "No adversarial-research model configured. Set ADVERSARIAL_MODEL (or "
+                "CLAUDE_MODEL, reused by default) in your .env file."
             )
         return self.openrouter_api_key.get_secret_value(), model
 

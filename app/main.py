@@ -6,6 +6,7 @@ from app.benchmarks.evaluation_service import OutcomeEvaluationService
 from app.config import get_settings
 from app.database.client import get_supabase_client
 from app.database.repository import (
+    AdversarialResearchRepository,
     AssetRepository,
     AssetStatusRepository,
     DecisionOutcomeRepository,
@@ -24,24 +25,31 @@ from app.database.repository import (
 )
 from app.judge.provider import OpenRouterJudgeProvider
 from app.judge.service import JudgeService
+from app.llm.adversarial_service import AdversarialService
 from app.llm.assessment_provider import OpenRouterAssessmentProvider
 from app.llm.assessment_service import AssessmentService
 from app.llm.cost import CostGuard, CostLedgerRepository
 from app.llm.openrouter_client import OpenRouterProvider
 from app.llm.service import LLMResearchService
+from app.llm.structured_provider import OpenRouterStructuredProvider
 from app.logging_config import new_run_id, setup_logging
 from app.market_data.binance import BinanceClient
 from app.market_data.cftc import CftcClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.coingecko import CoinGeckoClient
 from app.market_data.coinmarketcap import CoinMarketCapClient
+from app.market_data.congress_gov import CongressGovClient
 from app.market_data.defillama import DefiLlamaClient
 from app.market_data.deribit import DeribitClient
 from app.market_data.derivatives_service import DerivativesService
 from app.market_data.etherscan import EtherscanClient
+from app.market_data.fred import FredClient
 from app.market_data.glassnode import GlassnodeClient
+from app.market_data.macro_service import MacroService
 from app.market_data.screening_service import ScreeningService
+from app.market_data.sec_edgar import SecEdgarClient
 from app.market_data.service import MarketDataCollectionService
+from app.market_data.upbit import UpbitClient
 from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
 from app.portfolio.construction import PortfolioConstructionService
@@ -73,12 +81,33 @@ def parse_args(argv=None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--with-macro",
+        action="store_true",
+        help=(
+            "Also run 3f's macro matrix (CPI/PCE/claims/payrolls/yields/fed "
+            "funds), forward-looking macro-event calendar, global liquidity "
+            "(FRED M2/balance sheet/reverse repo) + BTC correlation to "
+            "SP500/gold(PAXG)/DXY, the Upbit regional exchange premium, and "
+            "the SEC EDGAR/congress.gov regulatory event calendar (zero LLM "
+            "cost)."
+        ),
+    )
+    parser.add_argument(
         "--with-assessment",
         action="store_true",
         help=(
             "Also run 3d's multi-model current market assessment over 3b's "
             "latest TOP_CANDIDATES (requires OPENROUTER_API_KEY; a new, "
             "parallel evidence type distinct from --with-llm's llm_analyses)."
+        ),
+    )
+    parser.add_argument(
+        "--with-adversarial",
+        action="store_true",
+        help=(
+            "Also run 3f's bull -> bear -> scenario adversarial research "
+            "cycle over 3b's latest TOP_CANDIDATES (requires "
+            "OPENROUTER_API_KEY and a prior --with-assessment run)."
         ),
     )
     parser.add_argument(
@@ -112,9 +141,10 @@ def main() -> int:
 
     logger.info(
         "Starting run (with_llm=%s, with_screening=%s, with_derivatives=%s, "
-        "with_assessment=%s, with_judge=%s, evaluate_outcomes=%s)",
-        args.with_llm, args.with_screening, args.with_derivatives,
-        args.with_assessment, args.with_judge, args.evaluate_outcomes,
+        "with_macro=%s, with_assessment=%s, with_adversarial=%s, with_judge=%s, "
+        "evaluate_outcomes=%s)",
+        args.with_llm, args.with_screening, args.with_derivatives, args.with_macro,
+        args.with_assessment, args.with_adversarial, args.with_judge, args.evaluate_outcomes,
     )
 
     try:
@@ -133,6 +163,13 @@ def main() -> int:
     if args.with_assessment:
         try:
             settings.require_assessment()
+        except RuntimeError as exc:
+            logger.error(str(exc))
+            return 1
+
+    if args.with_adversarial:
+        try:
+            settings.require_adversarial()
         except RuntimeError as exc:
             logger.error(str(exc))
             return 1
@@ -195,6 +232,20 @@ def main() -> int:
         derivatives_result = derivatives_service.run(run_id)
         logger.info("Derivatives/on-chain collection finished: %s", derivatives_result.summary)
 
+    if args.with_macro:
+        macro_service = MacroService(
+            asset_repo=asset_repo,
+            evidence_repo=EvidenceObservationRepository(client),
+            signal_source_repo=SignalSourceRepository(client),
+            fred_client=FredClient(settings),
+            upbit_client=UpbitClient(settings),
+            sec_edgar_client=SecEdgarClient(settings),
+            congress_gov_client=CongressGovClient(settings),
+            binance_client=BinanceClient(settings),
+        )
+        macro_result = macro_service.run(run_id)
+        logger.info("Macro collection finished: %s", macro_result.summary)
+
     assessment_failed = False
     if args.with_assessment:
         api_key, assessment_models = settings.require_assessment()
@@ -225,6 +276,28 @@ def main() -> int:
         logger.info("Assessment finished: %s", assessment_result.summary)
         assessment_failed = bool(assessment_result.failed) and not assessment_result.stored_by_provider
 
+    adversarial_failed = False
+    if args.with_adversarial:
+        adversarial_api_key, adversarial_model = settings.require_adversarial()
+        adversarial_service = AdversarialService(
+            settings=settings,
+            asset_repo=asset_repo,
+            screened_universe_repo=ScreenedUniverseRepository(client),
+            regime_repo=MarketRegimeRepository(client),
+            evidence_repo=EvidenceObservationRepository(client),
+            assessment_repo=ModelMarketAssessmentRepository(client),
+            prompt_template_repo=PromptTemplateRepository(client),
+            adversarial_repo=AdversarialResearchRepository(client),
+            cost_guard=CostGuard(settings, CostLedgerRepository(client)),
+            provider=OpenRouterStructuredProvider(
+                name="adversarial", model=adversarial_model, api_key=adversarial_api_key,
+                base_url=settings.openrouter_base_url, timeout_seconds=settings.llm_request_timeout_seconds,
+            ),
+        )
+        adversarial_result = adversarial_service.run(run_id)
+        logger.info("Adversarial research finished: %s", adversarial_result.summary)
+        adversarial_failed = bool(adversarial_result.failed) and adversarial_result.stored == 0
+
     judge_failed = False
     if args.with_judge:
         judge_api_key, judge_model = settings.require_judge()
@@ -247,6 +320,7 @@ def main() -> int:
             prompt_template_repo=PromptTemplateRepository(client),
             judge_decision_repo=JudgeDecisionRepository(client),
             decision_outcome_repo=DecisionOutcomeRepository(client),
+            adversarial_repo=AdversarialResearchRepository(client),
             cost_guard=CostGuard(settings, CostLedgerRepository(client)),
             provider=OpenRouterJudgeProvider(
                 name="judge",
@@ -328,7 +402,9 @@ def main() -> int:
         evaluation_result = evaluation_service.run()
         logger.info("Outcome evaluation finished: %s", evaluation_result.summary)
 
-    exit_code = 1 if (market_result.failed or screening_failed or assessment_failed or judge_failed) else 0
+    exit_code = 1 if (
+        market_result.failed or screening_failed or assessment_failed or adversarial_failed or judge_failed
+    ) else 0
 
     if not args.with_llm:
         if market_result.failed:
@@ -381,12 +457,15 @@ def main() -> int:
     llm_result = llm_service.run(run_id)
     logger.info("LLM research finished: %s", llm_result.summary)
 
-    if market_result.failed or llm_result.failed or screening_failed or assessment_failed or judge_failed:
+    if (
+        market_result.failed or llm_result.failed or screening_failed or assessment_failed
+        or adversarial_failed or judge_failed
+    ):
         logger.warning(
             "Market failures: %s | LLM failures: %s | Screening failed: %s | "
-            "Assessment failed: %s | Judge failed: %s",
+            "Assessment failed: %s | Adversarial failed: %s | Judge failed: %s",
             market_result.failed, llm_result.failed, screening_failed,
-            assessment_failed, judge_failed,
+            assessment_failed, adversarial_failed, judge_failed,
         )
         return 1
 

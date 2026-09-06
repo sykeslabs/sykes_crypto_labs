@@ -244,6 +244,7 @@ def _valid_decision_payload(symbol):
         model_agreement=1.0, source_agreement=0.6, investment_horizon_days=14,
         key_evidence=[], contradictory_evidence=[], key_risks=[],
         invalidation_conditions=[], requires_review=False, thesis="t",
+        macro_sensitivity="n/a",
     )
 
 

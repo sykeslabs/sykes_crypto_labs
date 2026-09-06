@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from app.config import Settings
 from app.database.models import Asset
 from app.database.repository import (
+    AdversarialResearchRepository,
     AssetStatusRepository,
     EvidenceObservationRepository,
     LLMAnalysisRepository,
@@ -15,6 +16,7 @@ from app.database.repository import (
     PortfolioPositionRepository,
     SignalSourceRepository,
 )
+from app.llm.adversarial_schemas import AdversarialResearchRecord
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.schemas import LLMAnalysisRecord
 from app.market_data.schemas import MarketSnapshot
@@ -33,6 +35,19 @@ class AssetJudgeContext:
     news_summaries: list[str] = field(default_factory=list)
     status: str | None = None
     current_allocation: float = 0.0
+    adversarial: AdversarialResearchRecord | None = None
+
+
+# 3f: sources that are genuinely MULTIPLE distinct observations sharing one
+# source name (many future dates, many filings) — a real bug lived here
+# once: naive dedup-by-source-name (correct for a single-value "latest
+# reading" source like macro_cpi) silently kept only ONE of 22 real
+# scheduled_macro_event rows and one of 45 regulatory_event_sec_edgar rows,
+# discarding the rest. These are collected into their own lists instead.
+MULTI_ENTRY_MACRO_SOURCES = {
+    "scheduled_macro_event", "regulatory_event_sec_edgar", "regulatory_event_congress",
+}
+MAX_REGULATORY_EVENTS_SHOWN = 10
 
 
 @dataclass
@@ -43,6 +58,17 @@ class JudgeContext:
     regime_id: str | None
     unavailable_sources: list[str]
     assets: list[AssetJudgeContext]
+    # 3f: shared GLOBAL_CRYPTO/MACRO-scope evidence (macro prints, global
+    # liquidity, BTC correlations, regional premium) — one latest reading
+    # per source, same "shared, not per-asset" treatment as regime.
+    macro_evidence: dict[str, dict] = field(default_factory=dict)
+    # 3f: the forward-looking macro-event calendar — genuinely multiple
+    # future dates, never deduped down to one.
+    scheduled_events: list[dict] = field(default_factory=list)
+    # 3f: regulatory/policy events (SEC EDGAR + congress.gov) — genuinely
+    # multiple filings/bills, capped to the most recent
+    # MAX_REGULATORY_EVENTS_SHOWN rather than dumping all of them.
+    regulatory_events: list[dict] = field(default_factory=list)
 
 
 def build_judge_context(
@@ -59,6 +85,7 @@ def build_judge_context(
     portfolio_position_repo: PortfolioPositionRepository,
     signal_source_repo: SignalSourceRepository,
     as_of: datetime | None = None,
+    adversarial_repo: AdversarialResearchRepository | None = None,
 ) -> JudgeContext:
     # Optional override for 3e.1's replay, which needs the historical
     # cutoff date, not "now" — purely additive; every existing call site
@@ -94,6 +121,37 @@ def build_judge_context(
         s.name for s in signal_source_repo.get_all() if s.status != "OK"
     ]
 
+    # 3f: shared macro/liquidity/regulatory backdrop. Defensive getattr —
+    # 3e.1's replay passes a fake evidence repo that only implements
+    # get_latest_by_asset (it never collected macro evidence at all), so
+    # this degrades to empty there rather than requiring a matching change
+    # to already-shipped replay code.
+    macro_evidence: dict[str, dict] = {}
+    scheduled_events_seen: dict[tuple, dict] = {}
+    regulatory_events_seen: dict[tuple, dict] = {}
+    get_global = getattr(evidence_repo, "get_latest_global_all", None)
+    if get_global is not None:
+        for obs in get_global():
+            if obs.source == "scheduled_macro_event":
+                key = (obs.payload.get("event"), obs.payload.get("scheduled_date"))
+                scheduled_events_seen.setdefault(key, obs.payload)
+            elif obs.source in MULTI_ENTRY_MACRO_SOURCES:
+                key = (obs.source, obs.payload.get("accession_number") or obs.payload.get("title") or obs.observation_timestamp.isoformat())
+                regulatory_events_seen.setdefault(key, {"source": obs.source, **obs.payload})
+            else:
+                macro_evidence.setdefault(
+                    obs.source,
+                    {
+                        "payload": obs.payload,
+                        "freshness": obs.freshness,
+                        "decay_half_life_hours": obs.decay_half_life_hours,
+                        "status": obs.status,
+                    },
+                )
+
+    scheduled_events = sorted(scheduled_events_seen.values(), key=lambda e: e.get("scheduled_date") or "")
+    regulatory_events = list(regulatory_events_seen.values())[:MAX_REGULATORY_EVENTS_SHOWN]
+
     asset_contexts = []
     for candidate in candidates:
         asset = assets_by_id.get(candidate.asset_id)
@@ -123,6 +181,8 @@ def build_judge_context(
             for a in news_by_symbol.get(candidate.symbol, [])
         ]
 
+        adversarial = adversarial_repo.get_latest_by_asset(asset.id) if adversarial_repo else None
+
         asset_contexts.append(AssetJudgeContext(
             asset=asset,
             screened=candidate,
@@ -132,6 +192,7 @@ def build_judge_context(
             model_agreement=assessments[0].model_agreement,
             phase2_analyses=llm_analysis_repo.get_latest_by_asset(asset.id),
             news_summaries=news_summaries,
+            adversarial=adversarial,
             status=status_entry.status if status_entry else None,
             current_allocation=position.current_allocation if position else 0.0,
         ))
@@ -143,6 +204,9 @@ def build_judge_context(
         regime_id=regime.id if regime else None,
         unavailable_sources=unavailable_sources,
         assets=asset_contexts,
+        macro_evidence=macro_evidence,
+        scheduled_events=scheduled_events,
+        regulatory_events=regulatory_events,
     )
 
 
@@ -153,9 +217,11 @@ asset. You are given, for each asset: 3b's deterministic screening factors \
 and composite_factor_score, 3c's derivatives/on-chain evidence (with \
 freshness and decay-half-life so you can weigh how stale each reading is), \
 3d's independent multi-model assessments (already computed model_agreement \
-across those models), Phase 2's own prior LLM analyses, recent news, and \
-current portfolio status/allocation. Every asset shares the SAME market \
-regime this run.
+across those models), 3f's adversarial bull/bear research and bull/base/bear \
+scenarios (when available), Phase 2's own prior LLM analyses, recent news, \
+and current portfolio status/allocation. Every asset shares the SAME market \
+regime AND the same macro/global-liquidity/regulatory-calendar backdrop \
+(3f) this run.
 
 Non-negotiables:
 - `confidence` must be YOUR OWN judgment, never an average of model \
@@ -188,6 +254,19 @@ horizon"), not buried in `key_risks`.
 - Set `requires_review = true` whenever confidence is low, model_agreement \
 or source_agreement is weak, or the recommended change is unusually large \
 relative current exposure.
+- `macro_sensitivity` is REQUIRED and must be YOUR OWN per-asset reasoning \
+about how the shared macro/global-liquidity backdrop affects THIS SPECIFIC \
+asset — never a blanket rule like "liquidity up = bullish for everything." \
+A rising BTC-equity correlation can mean crypto trades as a macro risk \
+asset (reducing diversification value) just as easily as it can mean \
+anything directional about crypto itself — reason about which, for this \
+asset, rather than assuming. If no macro evidence is available this run, \
+say so explicitly here rather than omitting the field.
+- If 3f's bull/bear research disagrees with the model assessments or the \
+composite_factor_score, surface that tension explicitly in \
+`key_evidence`/`contradictory_evidence` — do not silently prefer one.
+- A dated regulatory/policy event near this asset's decision horizon \
+belongs in `invalidation_conditions`, same treatment as a token unlock.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
@@ -210,7 +289,8 @@ Respond with ONLY a single JSON object (no markdown fences, no commentary):
       "key_risks": ["..."],
       "invalidation_conditions": ["..."],
       "requires_review": true|false,
-      "thesis": "..."
+      "thesis": "...",
+      "macro_sensitivity": "..."
     }}
   ]
 }}
@@ -230,6 +310,35 @@ def render_prompt(context: JudgeContext, prompt_version: str) -> tuple[str, str]
         "System-wide unavailable/not-yet-implemented sources (do not assume "
         f"these exist for any asset): {', '.join(context.unavailable_sources)}"
     )
+    if context.macro_evidence:
+        lines.append("Shared macro/global-liquidity/regulatory backdrop (3f), same for every asset:")
+        for source, entry in context.macro_evidence.items():
+            lines.append(
+                f"  - {source}: status={entry['status']} freshness={entry['freshness']} "
+                f"decay_half_life_hours={entry['decay_half_life_hours']} payload={entry['payload']}"
+            )
+    else:
+        lines.append("Macro/global-liquidity/regulatory backdrop (3f): none available this run.")
+
+    if context.scheduled_events:
+        lines.append(f"Forward-looking macro-event calendar (3f), {len(context.scheduled_events)} scheduled events:")
+        for event in context.scheduled_events:
+            lines.append(
+                f"  - {event.get('event')}: scheduled_date={event.get('scheduled_date')} "
+                f"payload={event}"
+            )
+    else:
+        lines.append("Forward-looking macro-event calendar (3f): none available this run.")
+
+    if context.regulatory_events:
+        lines.append(
+            f"Regulatory/policy event calendar (3f), {len(context.regulatory_events)} events shown "
+            f"(most recent {MAX_REGULATORY_EVENTS_SHOWN}):"
+        )
+        for event in context.regulatory_events:
+            lines.append(f"  - {event}")
+    else:
+        lines.append("Regulatory/policy event calendar (3f): none available this run.")
     lines.append("")
 
     for ac in context.assets:
@@ -265,6 +374,16 @@ def render_prompt(context: JudgeContext, prompt_version: str) -> tuple[str, str]
                     f"expected_return(7/30/90d)={a.expected_return_7d}/{a.expected_return_30d}/{a.expected_return_90d} "
                     f"risk={a.risk_level}({a.risk_score}) thesis=\"{a.thesis}\""
                 )
+
+        if ac.adversarial is not None:
+            bull = ac.adversarial.bull_case
+            bear = ac.adversarial.bear_case
+            lines.append("3f adversarial research:")
+            lines.append(f"  - Bull thesis: {bull.get('thesis')}")
+            lines.append(f"    Bull catalysts/evidence: {bull.get('catalysts')} / {bull.get('evidence')}")
+            lines.append(f"  - Bear attack points (vs. this specific bull thesis): {bear.get('attack_points')}")
+            lines.append(f"    Attacks: {bear.get('attacks_bull_point')}")
+            lines.append(f"  - Scenarios (bull/base/bear): {ac.adversarial.scenarios}")
 
         if ac.phase2_analyses:
             lines.append("Phase 2 prior LLM analyses:")
