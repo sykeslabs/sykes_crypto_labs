@@ -136,6 +136,16 @@ because:
     this sub-phase's first live run (2026-09-05T17:07:49Z) onward, and a
     baseline calibration script against real Phase 1/2 data reporting **both
     hit-rate and calibration (Brier score)**, not directional accuracy alone
+  - ✅ **3e.1** (complete, closed at 13/28 days) — Retroactive historical
+    replay: re-runs 3e's pipeline against a past date range using only
+    genuinely point-in-time-reconstructable evidence, so real calibration
+    signal accumulates faster than waiting on live decisions to age. Closed
+    at **13 of the intended 28 days** (2026-08-09 through 08-19, plus 2
+    validation days) — cut short by the OpenRouter account's real balance
+    running out mid-run, not a technical or design failure (see section
+    below); resolved with a real `BACKFILL_BASELINE` calibration number
+    (hit-rate 0.833, Brier 0.195 over 36 directional decisions) reported
+    separately from the live forward-tracked baseline, never combined
   - **3f** — Adversarial bull/bear research, scenario modeling, a macro
     matrix extended with a **forward-looking scheduled macro-event
     calendar** (known-in-advance FOMC/CPI/PCE/NFP release dates, distinct
@@ -1559,6 +1569,154 @@ per the standing lesson from 3c):
   duplicate-over-shared-abstraction-risk trade-off as 3d's, applied again
   rather than generalizing either of the two already-shipped, live-verified
   provider classes.
+
+## Phase 3e.1 — Retroactive historical replay (`scripts/run_replay.py`)
+
+Re-runs 3e's exact model-assessment → Judge → Risk Engine → Portfolio
+Construction pipeline, unmodified, against a past date range — so real
+calibration signal starts accumulating immediately instead of waiting weeks
+for live decisions to age into resolution. A diagnostic supplement, never a
+substitute for the live, continuously-accumulating baseline: reported as a
+completely separate number, never blended into one figure.
+
+**Evidence-feasibility classification** (task 1, `app/benchmarks/replay.py`'s
+`EVIDENCE_UNAVAILABLE_FOR_REPLAY`) — decided before writing the replay
+runner, not worked out after the fact:
+- **Backfillable, and used:** price/volume/OHLCV (Binance primary, Coinbase
+  fallback — same source order as 3b's live screening, new
+  `fetch_daily_ohlcv_with_timestamps` methods added to both clients since the
+  existing live methods discard the date), and **Binance's genuinely
+  historical funding-rate series** (`/fapi/v1/fundingRate` — verified live to
+  return real past observations timestamped by `fundingTime`, not today's
+  rate backdated). News (Phase 2's real stored articles, filtered by their
+  own real `published_at` against the replay's `until` cutoff — already
+  point-in-time-safe with no changes needed) and portfolio/LLM-analysis
+  history (via two new as-of-safe repository methods,
+  `get_latest_status_as_of`/`get_latest_by_asset_as_of`).
+- **Not reliably backfillable, marked UNAVAILABLE, disclosed every replayed
+  day, never fabricated:** everything else 3c supplies — dated-futures term
+  structure/carry, aggregate open interest, Deribit options/VRP, CME COT,
+  DefiLlama TVL, stablecoin supply/velocity, Etherscan transfers, on-chain
+  valuation/miner metrics, spot ETF flows, prediction markets, token unlocks
+  — plus regime-level BTC dominance and the altcoin-season index (both need
+  either universe-wide historical market cap or CoinMarketCap's 90d field,
+  neither a fixed reconstructable value for a past date with this system's
+  sources).
+- The screening/regime universe itself is scoped to the 21 **currently
+  active tracked assets**, not 3b's wider 30-asset CoinGecko-discovered
+  universe — CoinGecko's top-markets endpoint only exposes today's ranking,
+  not a historical one, so re-deriving which assets would have ranked as
+  `TOP_CANDIDATES` on a past date isn't reconstructable. A documented scoping
+  decision, not an oversight.
+
+**Safety design:** Risk Engine and Portfolio Construction run completely
+unmodified, but against a fully isolated, in-memory-only simulated portfolio
+state (`app/benchmarks/replay_fakes.py`) — a backfill run never reads or
+writes the live `portfolio_positions`/`portfolio_allocation_changes` tables.
+`judge_decisions`/`decision_outcomes` rows ARE persisted for real (migration
+`0008` adds `is_backfilled`), always tagged `is_backfilled = true` and
+`in_holdout_window = false` — backfilled rows are never forward-tracked
+evidence, per the sub-phase's own non-negotiable.
+
+**Live-verified, closed at 13 of the intended 28 days** (2026-08-09 through
+08-19, plus the 2 validation days 09-04/09-05 run first to confirm
+correctness on a short window before scaling up, per the sub-phase's own
+guidance) — cut short by the OpenRouter account's real balance running out
+mid-run (confirmed directly via OpenRouter's `/api/v1/credits` and `/api/v1/key`
+endpoints: the account had ~$0.36 of its $105 total left, and the API key in
+use had its own separate $20 sub-limit with ~$7 remaining — a real-money
+constraint, not a bug in this system), not any technical or design failure:
+- 129 `judge_decisions` rows and 129 matching `decision_outcomes` rows
+  persisted across the 13 days, all confirmed `is_backfilled = true` and
+  `in_holdout_window = false` by direct query — zero mistagging in either
+  direction (no backfilled row missing the tag, no live row incorrectly
+  tagged), checked against all 159 `judge_decisions` rows in the database.
+- Every reachable decision value genuinely occurred: `WATCH`=47, `BUY`=42,
+  `NO_TRADE`=21, `HOLD`=14, `SELL`=5 — including real `SELL` and far more
+  `NO_TRADE` than any live run has produced, consistent with replay's
+  genuinely thinner reconstructed evidence set surfacing more low-conviction
+  cases. `requires_review = true` on 85 of 129 (66%).
+- **The triple-barrier outcome resolution genuinely works on real
+  backfilled data**, not just synthetic unit fixtures: 109 of 129 outcomes
+  already resolved (103 `HIT_TARGET`, 6 `HIT_STOP`), immediately upon
+  creation, by walking forward through the same fetched historical series
+  used for reconstruction (not the live `market_snapshots` table, which only
+  has ~2 days of real history and would have silently under-resolved almost
+  everything — a deliberate scoping choice, see decisions below). Only the
+  20 most recent decisions (from 09-04/09-05) remain genuinely `UNRESOLVED`,
+  correctly, since not enough real time has passed for their horizons yet.
+- `scripts/calibration_baseline.py --source backfill` produced a real,
+  separate baseline: **hit-rate 0.833, Brier score 0.195** over 36 scored
+  BUY/SELL decisions (93 HOLD/WATCH/NO_TRADE rows correctly excluded — no
+  directional claim to score), persisted to `calibration_runs` with
+  `method=BACKFILL_BASELINE`, distinct from and never combined with the
+  live/Phase-2 forward-tracked baseline.
+- `pytest` green throughout (242 tests, including a dedicated combined
+  regression test for the incident below).
+
+**A real incident during this sub-phase, not glossed over — the CostGuard
+blind spot:** live-verifying the first larger continuation chunk revealed
+that `CostGuard`'s daily/monthly cap check never actually saw the replay's
+own spend for any date not coinciding with the real calendar day. Root
+cause: `judge_decisions.created_at` was set to the *simulated historical
+date* being replayed rather than the row's real insertion time, and since
+`CostGuard` sums cost by `created_at >= today's midnight`, every
+August-dated backfilled row was permanently invisible to the cap check — it
+could have run indefinitely without ever tripping the daily/monthly cap.
+A second, related gap compounded it: the assessment stage's cost is never
+persisted to any table at all (by design, to avoid writing backfilled rows
+into the live `model_market_assessments` table), so even a corrected ledger
+could only ever see the Judge-stage third of the replay's true spend.
+Fixed with two changes, not one: (1) `created_at` is now always
+`datetime.now(UTC)` — the row's real insertion time; the simulated date
+remains fully recoverable from `run_id` (e.g. `BACKFILL-2026-08-09`); (2)
+`HistoricalReplayService` now snapshots the real remaining budget once via
+a new `CostGuard.remaining_budget()` method, then tracks its own spend
+in-process against that snapshot for the rest of the run — so it self-gates
+correctly regardless of what does or doesn't get persisted to any table.
+Verified with a combined regression test (`test_regression_incident_both_
+bugs_covered_together`) that reproduces both mechanisms together — a
+realistic ledger reading only `judge_decisions` (mirroring production
+exactly) is shown to structurally under-count true spend, and the run is
+confirmed to still be correctly bounded by the true total via local
+tracking regardless. A related, lower-confidence finding from the same
+incident: every HTTP client in this codebase set an explicit timeout except
+the Supabase client (silently defaulting to supabase-py's 120s) — hardened
+to 30s defensively, though this couldn't be conclusively proven as the
+cause of the specific multi-minute hangs observed (no crash logs survive a
+killed process); those hangs turned out to be intermittent, not
+reproducible on demand, and are the reason later chunks were run as
+small, background-launched, explicitly-verified-killable windows rather
+than one long unattended invocation.
+
+**Known limitations / decisions:**
+- **Closed at 13/28 days by a real budget constraint, not a technical
+  ceiling.** The remaining 15 days (2026-08-20 through 09-03) were not
+  replayed. This is a deliberate, explicit stopping point — resuming later
+  requires only re-running `scripts/run_replay.py --start 2026-08-20 --end
+  2026-09-03` once the OpenRouter account has real balance again; nothing
+  about the 13-day result needs redoing.
+- **Outcome resolution reuses `evaluate_triple_barrier` directly but reads
+  from the replay's own fetched historical series, not the live
+  `OutcomeEvaluationService`/`market_snapshots` table** — deliberately, since
+  this project's real snapshot history is only ~2 days deep and would have
+  left nearly every backfilled decision perpetually `UNRESOLVED` for no
+  genuine reason.
+- **The `Bash` tool's `timeout` parameter does not kill a hung process** —
+  discovered empirically (not assumed) with a deliberate `time.sleep(999)`
+  test: the process was still verifiably alive after its timeout elapsed.
+  `timeout` only bounds how long the tool waits synchronously before handing
+  back a background task id; an actual kill requires an explicit stop call,
+  confirmed to work via the same empirical test.
+- **Each real invocation of the replay's simulated portfolio state starts
+  fresh at zero allocations** — splitting the window across multiple
+  process invocations (unavoidable given the real per-day/per-month cost
+  caps) means Portfolio Construction's replacement/turnover dynamics are
+  continuous only *within* one invocation's chunk, not across the whole
+  13-day result. This doesn't affect the core calibration signal
+  (`judge_decisions`' direction/confidence, `decision_outcomes`'
+  resolution), which is 3e.1's actual payoff — only the simulated sizing
+  narrative is chunk-local.
 
 ## Project layout
 

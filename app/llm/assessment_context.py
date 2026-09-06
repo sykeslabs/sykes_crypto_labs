@@ -45,8 +45,12 @@ def build_assessment_context(
     evidence_repo: EvidenceObservationRepository,
     news_repo: NewsRepository,
     asset_status_repo: AssetStatusRepository,
+    as_of: datetime | None = None,
 ) -> AssessmentContext:
-    as_of = datetime.now(UTC)
+    # Optional override for 3e.1's replay, which needs the historical
+    # cutoff date, not "now" — purely additive; every existing call site
+    # (unchanged) still gets exactly today's behavior.
+    as_of = as_of or datetime.now(UTC)
     regime = regime_repo.get_latest()
 
     since = as_of - timedelta(hours=settings.news_lookback_hours)

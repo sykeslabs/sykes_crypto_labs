@@ -58,8 +58,12 @@ def build_judge_context(
     asset_status_repo: AssetStatusRepository,
     portfolio_position_repo: PortfolioPositionRepository,
     signal_source_repo: SignalSourceRepository,
+    as_of: datetime | None = None,
 ) -> JudgeContext:
-    as_of = datetime.now(UTC)
+    # Optional override for 3e.1's replay, which needs the historical
+    # cutoff date, not "now" — purely additive; every existing call site
+    # (unchanged) still gets exactly today's behavior.
+    as_of = as_of or datetime.now(UTC)
     regime = regime_repo.get_latest()
 
     # 3d's assessments are the Judge's core input (non-negotiable) — reuse

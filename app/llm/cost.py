@@ -112,3 +112,24 @@ class CostGuard:
             )
 
         return True, None
+
+    def remaining_budget(self) -> tuple[Decimal, Decimal]:
+        """Returns (daily_remaining, monthly_remaining) — never negative.
+        Added for 3e.1's replay: a long-running single invocation can incur
+        real cost that's never persisted to any COST_TRACKED_TABLES entry
+        (its assessment stage keeps records in-memory only, by design), so
+        `check()` alone can't see that spend accumulating call-to-call
+        within one run. Callers needing to track their OWN in-process spend
+        against the cap read this once and decrement locally — see
+        `HistoricalReplayService`."""
+        now = datetime.now(UTC)
+
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        daily_spend = self._cost_ledger.get_cost_sum_since(day_start)
+        daily_remaining = max(Decimal("0"), self._settings.max_daily_llm_cost - daily_spend)
+
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        monthly_spend = self._cost_ledger.get_cost_sum_since(month_start)
+        monthly_remaining = max(Decimal("0"), self._settings.max_monthly_llm_cost - monthly_spend)
+
+        return daily_remaining, monthly_remaining

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import httpx
 
 from app.config import Settings
@@ -62,6 +64,51 @@ class BinanceClient:
         if not rows:
             return None
         return [(float(row[4]), float(row[5])) for row in rows]
+
+    def fetch_daily_ohlcv_with_timestamps(self, symbol: str, days: int) -> list[tuple[datetime, float, float]] | None:
+        """Same as `fetch_daily_ohlcv` but keeps each candle's date — added
+        for 3e.1's replay (needs to know which close/volume value was known
+        as of a specific past date, not just the values themselves). A new,
+        additive method so the existing live-used `fetch_daily_ohlcv` is
+        untouched."""
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._base_url}/api/v3/klines",
+                params={"symbol": f"{symbol}USDT", "interval": "1d", "limit": days},
+            )
+            if response.status_code == 400:
+                return None
+            response.raise_for_status()
+            rows = response.json()
+
+        if not rows:
+            return None
+        return [
+            (datetime.fromtimestamp(row[0] / 1000, tz=UTC), float(row[4]), float(row[5]))
+            for row in rows
+        ]
+
+    def fetch_historical_funding_rates(self, symbol: str, limit: int = 1000) -> list[dict]:
+        """Real historical funding-rate observations (not today's rate
+        backdated) for 3e.1's replay — genuinely point-in-time reconstructable,
+        unlike most of 3c's other evidence. Returns
+        [{funding_time, funding_rate}], oldest first, empty if no perpetual."""
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{self._futures_base_url}/fapi/v1/fundingRate",
+                params={"symbol": f"{symbol}USDT", "limit": limit},
+            )
+            if response.status_code == 400:
+                return []
+            response.raise_for_status()
+            rows = response.json()
+        return [
+            {
+                "funding_time": datetime.fromtimestamp(row["fundingTime"] / 1000, tz=UTC),
+                "funding_rate": float(row["fundingRate"]),
+            }
+            for row in rows
+        ]
 
     # --- Futures (3c): funding rate, open interest, dated-futures term structure ---
     # Verified live: premiumIndex/openInterest/fundingRate/exchangeInfo all

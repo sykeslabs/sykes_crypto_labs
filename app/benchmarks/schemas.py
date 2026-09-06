@@ -26,6 +26,7 @@ class DecisionOutcome(BaseModel):
     regime_at_decision: str | None = None
     judge_confidence: float
     in_holdout_window: bool = False
+    is_backfilled: bool = False
 
     def to_row(self) -> dict:
         return {
@@ -41,6 +42,7 @@ class DecisionOutcome(BaseModel):
             "regime_at_decision": self.regime_at_decision,
             "judge_confidence": self.judge_confidence,
             "in_holdout_window": self.in_holdout_window,
+            "is_backfilled": self.is_backfilled,
         }
 
 

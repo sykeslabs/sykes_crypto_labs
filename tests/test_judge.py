@@ -400,6 +400,10 @@ def test_service_stores_decision_and_creates_outcome_row():
     assert len(outcome_repo.inserted) == 1
     assert outcome_repo.inserted[0].in_holdout_window is True
     assert outcome_repo.inserted[0].outcome_label == "UNRESOLVED"
+    # Live (non-replay) decisions/outcomes must never be tagged
+    # is_backfilled — only 3e.1's replay ever sets this.
+    assert decision_repo.inserted[0].is_backfilled is False
+    assert outcome_repo.inserted[0].is_backfilled is False
 
 
 def test_service_produces_reachable_no_trade():

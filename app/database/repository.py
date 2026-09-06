@@ -210,6 +210,21 @@ class LLMAnalysisRepository:
         )
         return [LLMAnalysisRecord.model_validate(row) for row in response.data]
 
+    def get_latest_by_asset_as_of(self, asset_id: str, as_of: datetime, limit: int = 3) -> list[LLMAnalysisRecord]:
+        """Point-in-time-safe version of `get_latest_by_asset` — used by
+        3e.1's replay so a backfilled decision only sees Phase 2 analyses
+        that genuinely existed by that historical date, never today's."""
+        response = (
+            self._client.table("llm_analyses")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .lte("timestamp", as_of.isoformat())
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [LLMAnalysisRecord.model_validate(row) for row in response.data]
+
 
 class AssetStatusRepository:
     """Reads/writes `asset_status_history` — an append-only record of
@@ -224,6 +239,23 @@ class AssetStatusRepository:
             self._client.table("asset_status_history")
             .select("*")
             .eq("asset_id", asset_id)
+            .order("changed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return AssetStatusHistory.model_validate(response.data[0])
+
+    def get_latest_status_as_of(self, asset_id: str, as_of: datetime) -> AssetStatusHistory | None:
+        """Point-in-time-safe version of `get_latest_status` — used by 3e.1's
+        replay so a backfilled decision only sees status changes that had
+        genuinely happened by that historical date."""
+        response = (
+            self._client.table("asset_status_history")
+            .select("*")
+            .eq("asset_id", asset_id)
+            .lte("changed_at", as_of.isoformat())
             .order("changed_at", desc=True)
             .limit(1)
             .execute()

@@ -75,6 +75,7 @@ class JudgeDecisionRecord(BaseModel):
     regime_id: str | None
     prompt_template_id: str | None
     estimated_cost: Decimal
+    is_backfilled: bool = False
 
     def to_row(self) -> dict:
         return {
@@ -100,4 +101,5 @@ class JudgeDecisionRecord(BaseModel):
             "regime_id": self.regime_id,
             "prompt_template_id": self.prompt_template_id,
             "estimated_cost": str(self.estimated_cost),
+            "is_backfilled": self.is_backfilled,
         }

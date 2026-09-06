@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import httpx
 
 from app.config import Settings
@@ -62,3 +64,26 @@ class CoinbaseClient:
         recent = rows[:days]
         recent.reverse()
         return [(float(row[4]), float(row[5])) for row in recent]
+
+    def fetch_daily_ohlcv_with_timestamps(self, symbol: str, days: int) -> list[tuple[datetime, float, float]] | None:
+        """Same as `fetch_daily_ohlcv` but keeps each candle's date — added
+        for 3e.1's replay. A new, additive method; the existing
+        live-used `fetch_daily_ohlcv` is untouched."""
+        with httpx.Client(timeout=15.0, headers=_HEADERS) as client:
+            response = client.get(
+                f"{self._base_url}/products/{symbol}-USD/candles",
+                params={"granularity": 86400},
+            )
+            if response.status_code in (400, 404):
+                return None
+            response.raise_for_status()
+            rows = response.json()
+
+        if not rows:
+            return None
+        recent = rows[:days]
+        recent.reverse()
+        return [
+            (datetime.fromtimestamp(row[0], tz=UTC), float(row[4]), float(row[5]))
+            for row in recent
+        ]
