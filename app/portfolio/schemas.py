@@ -37,3 +37,25 @@ class PortfolioAllocationChange(BaseModel):
             "new_allocation": self.new_allocation,
             "changed_at": self.changed_at.isoformat(),
         }
+
+
+class HoldingsLedgerEntry(BaseModel):
+    """One row of `holdings_ledger` (Phase 5a) — the ground-truth "what do
+    I actually own" input, append-only. `asset_id=None` is the reserved
+    cash line (`quantity` is then a stated USD amount directly, not asset
+    units). Never a decision/target_allocation field of any kind — this is
+    factual data entry only, see the non-negotiable in PHASE5A_PROMPT.md."""
+
+    id: str | None = None
+    asset_id: str | None = None
+    quantity: float
+    cost_basis_usd: float | None = None
+    recorded_at: datetime
+
+    def to_row(self) -> dict:
+        return {
+            "asset_id": self.asset_id,
+            "quantity": self.quantity,
+            "cost_basis_usd": self.cost_basis_usd,
+            "recorded_at": self.recorded_at.isoformat(),
+        }

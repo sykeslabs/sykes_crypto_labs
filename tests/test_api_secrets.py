@@ -42,6 +42,32 @@ def test_unhandled_exception_never_leaks_a_secret_embedded_in_its_own_message():
         app.dependency_overrides.clear()
 
 
+def test_holdings_unhandled_exception_never_leaks_a_secret_embedded_in_its_own_message():
+    from app.api.dependencies import get_asset_repo, get_holdings_ledger_repo
+
+    class LeakySecretAssetRepo:
+        def get_by_id(self, asset_id):
+            raise RuntimeError(
+                f"Connection failed using key={FAKE_SUPABASE_KEY} "
+                f"openrouter={FAKE_OPENROUTER_KEY} url={FAKE_DATABASE_URL}"
+            )
+
+    app.dependency_overrides[verify_api_key] = lambda: None
+    app.dependency_overrides[get_asset_repo] = lambda: LeakySecretAssetRepo()
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: type("R", (), {"insert": lambda self, e: None})()
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.post("/holdings", json={"asset_id": "a1", "quantity": 1.0})
+        assert response.status_code == 500
+        body_text = response.text
+        assert FAKE_SUPABASE_KEY not in body_text
+        assert FAKE_OPENROUTER_KEY not in body_text
+        assert FAKE_DATABASE_URL not in body_text
+        assert response.json() == {"detail": "Internal server error"}
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_401_error_body_never_echoes_the_submitted_key():
     # A wrong API key submitted by a caller must never be reflected back
     # in the error body (defense against a caller accidentally pasting a

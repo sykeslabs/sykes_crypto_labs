@@ -15,6 +15,7 @@ from app.database.repository import (
     CalibrationRunRepository,
     DecisionOutcomeRepository,
     EvidenceValueReportRepository,
+    HoldingsLedgerRepository,
     JudgeDecisionRepository,
     JudgeReasoningAuditRepository,
     MarketRegimeRepository,
@@ -76,6 +77,10 @@ def get_evidence_value_report_repo() -> EvidenceValueReportRepository:
 
 def get_portfolio_position_repo() -> PortfolioPositionRepository:
     return PortfolioPositionRepository(get_client())
+
+
+def get_holdings_ledger_repo() -> HoldingsLedgerRepository:
+    return HoldingsLedgerRepository(get_client())
 
 
 def get_signal_source_repo() -> SignalSourceRepository:

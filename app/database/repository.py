@@ -17,7 +17,7 @@ from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.schemas import MarketSnapshot
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
-from app.portfolio.schemas import PortfolioAllocationChange, PortfolioPosition
+from app.portfolio.schemas import HoldingsLedgerEntry, PortfolioAllocationChange, PortfolioPosition
 
 
 class AssetRepository:
@@ -43,6 +43,15 @@ class AssetRepository:
             .limit(1)
             .execute()
         )
+        if not response.data:
+            return None
+        return Asset.model_validate(response.data[0])
+
+    def get_by_id(self, asset_id: str) -> Asset | None:
+        """Phase 5a: existence check for a holdings-ledger entry — an
+        asset need only be tracked (any status), not `active`, per that
+        sub-phase's own validation rule."""
+        response = self._client.table("assets").select("*").eq("id", asset_id).limit(1).execute()
         if not response.data:
             return None
         return Asset.model_validate(response.data[0])
@@ -769,6 +778,60 @@ class PortfolioAllocationChangeRepository:
             abs(float(row["new_allocation"]) - float(row["previous_allocation"]))
             for row in response.data
         )
+
+
+class HoldingsLedgerRepository:
+    """Persists/reads `holdings_ledger` (Phase 5a) — the ground-truth
+    "what do I actually own" input, append-only. The SOLE input to
+    `current_allocation` going forward; `portfolio_positions` is retired
+    as an input (see README's Phase 5a section)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, entry: HoldingsLedgerEntry) -> None:
+        self._client.table("holdings_ledger").insert(entry.to_row()).execute()
+
+    def get_latest_holdings(self) -> list[HoldingsLedgerEntry]:
+        """The latest row per `asset_id` (including at most one cash row,
+        `asset_id=None`) by `recorded_at` — never the full append-only
+        history. Client-side dedup-by-first-seen-in-desc-order, same
+        pattern already used for 3f's multi-entry macro evidence."""
+        response = (
+            self._client.table("holdings_ledger")
+            .select("*")
+            .order("recorded_at", desc=True)
+            .execute()
+        )
+        seen: set[str | None] = set()
+        latest: list[HoldingsLedgerEntry] = []
+        for row in response.data:
+            key = row["asset_id"]
+            if key in seen:
+                continue
+            seen.add(key)
+            latest.append(HoldingsLedgerEntry.model_validate(row))
+        return latest
+
+    def get_history(self, asset_id: str | None) -> list[HoldingsLedgerEntry]:
+        """Every entry ever recorded for one asset (or the cash line, if
+        `asset_id=None`), newest first — "what did I hold as of date T"
+        stays answerable from this."""
+        query = self._client.table("holdings_ledger").select("*")
+        query = query.is_("asset_id", "null") if asset_id is None else query.eq("asset_id", asset_id)
+        response = query.order("recorded_at", desc=True).execute()
+        return [HoldingsLedgerEntry.model_validate(row) for row in response.data]
+
+    def get_all_history(self) -> list[HoldingsLedgerEntry]:
+        """Every entry ever recorded, across every asset and the cash
+        line, newest first."""
+        response = (
+            self._client.table("holdings_ledger")
+            .select("*")
+            .order("recorded_at", desc=True)
+            .execute()
+        )
+        return [HoldingsLedgerEntry.model_validate(row) for row in response.data]
 
 
 class AdversarialResearchRepository:

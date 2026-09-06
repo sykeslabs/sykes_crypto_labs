@@ -3093,14 +3093,198 @@ scheduling-related test was needed since scheduling wasn't built.
   this project's localhost/personal-machine deployment scope — would need
   a real secret-management approach if this were ever exposed beyond that
   scope (see the deployment-scope decision above).
-- **The dashboard was verified headlessly (Node executing the real shipped
-  JS against the real live server), not in an actual browser** — the
-  Chrome browser tool's extension wasn't connected in this environment.
-  Real-browser visual verification (does it look right, not just does it
-  fetch/render the right HTML strings) is still outstanding and worth
-  doing whenever browser access is available.
+- **OUTSTANDING: real-browser visual verification.** The dashboard was
+  verified headlessly (Node executing the real shipped JS against the real
+  live server — confirmed correct on the happy path AND, specifically, on
+  the zero-resolved-decisions/null-state rendering branch that had
+  contained a real bug) and via `node --check` for syntax, but never in an
+  actual browser — the Chrome browser tool's extension would not connect
+  in this environment across repeated attempts. This is a genuine,
+  tracked open item, not resolved by the headless substitute — explicitly
+  deferred by the user (who will do a manual look in the meantime) rather
+  than blocking Phase 5's closure on an environment issue outside this
+  session's control. Do the real check as soon as browser access works;
+  don't let "headless substitute" become the permanent verification method
+  for this dashboard.
 - **No scheduling was built** — see task 3's reasoning above; this can be
   revisited without any of today's endpoint/dashboard code changing.
+
+## Phase 5a — Real current-holdings ground truth
+
+Before this sub-phase, nothing in the system tracked what was actually held.
+`current_allocation` — the fraction Portfolio Construction and the Risk
+Engine size every decision against — has to come from somewhere; this
+sub-phase found where it actually came from, showed why that wasn't a real
+ground-truth input, and replaced it with one.
+
+### Task 1 finding: the existing mechanism was self-derived, not ground truth
+
+`portfolio_positions` (`PortfolioPositionRepository`) was the sole prior
+source of `current_allocation`, read in `app/main.py` and fed through the
+Risk Engine into Portfolio Construction. On inspection it turned out to be:
+
+- **Entirely self-derived.** The only writer of this table was
+  `PortfolioConstructionService.apply()`'s own `.upsert()` call
+  (`app/portfolio/construction.py`) — the system was sizing every new
+  decision against the *output of its own prior sizing decision*, never
+  against anything entered from outside. There was no real ground truth
+  anywhere in the loop.
+- **Mutation-based, not append-only**, breaking this project's own
+  point-in-time-integrity convention (used everywhere else since 3a) — a
+  historical "what did the system believe it held on date T" query wasn't
+  answerable.
+- **A stored fraction, never a real quantity or cost basis** — no way to
+  represent "I hold 0.3 BTC" as such, only "the system currently treats BTC
+  as 24% of a hypothetical whole."
+
+### New table: `holdings_ledger`
+
+```sql
+create table holdings_ledger (
+    id              uuid primary key default gen_random_uuid(),
+    asset_id        uuid references assets(id) on delete restrict,
+    quantity        numeric not null check (quantity >= 0),
+    cost_basis_usd  numeric,
+    recorded_at     timestamptz not null default now(),
+    created_at      timestamptz not null default now()
+);
+```
+
+(migration `0014_phase5a_holdings_ledger.sql`, applied via the Supabase SQL
+Editor — `scripts/apply_migration.py` continues to fail on the same
+long-stale `DATABASE_URL` password noted for migrations 0011–0013.)
+
+- **Append-only.** Editing a holding is a new row with a newer
+  `recorded_at`; removing one is a new row with `quantity=0`. Nothing is
+  ever updated or deleted in place — "what did I hold as of date T" stays
+  answerable via `GET /holdings/history`, consistent with every other
+  revisable-state table in this project since 3a.
+- **`asset_id=NULL` is the reserved cash line.** `quantity` on that row is a
+  stated USD amount directly, not asset units. This convention exists
+  specifically because the real portfolio runs at ~21% allocated (Phase 4's
+  stress-test finding) — most of it is cash, and Portfolio Construction is
+  explicitly designed to allow that ("never forces full capital
+  deployment"). If total portfolio value were derived purely from summed
+  real-asset holdings, entered holdings would always equal 100% of that
+  total by construction, with no way to represent uninvested cash at all.
+  Requiring an explicit cash line closes that gap without introducing any
+  new separately-tracked total-value state — confirmed with the user before
+  implementing, per their explicit correction to the original design.
+- **`compute_current_allocations`** (`app/portfolio/holdings.py`) is a pure
+  function: latest holdings (one row per asset plus the cash line) × real
+  current prices (via `MarketSnapshotRepository.get_latest_snapshot`) → a
+  `{asset_id: fraction}` dict, cash included in the denominator only.
+  Explicitly handles, rather than crashing or silently falling back:
+  - **Cold start** (empty ledger, before any real holdings are ever
+    entered) → every asset's fraction is `0.0`. This is a legitimate
+    existing state (an all-cash portfolio that hasn't recorded its cash
+    line yet), not an error.
+  - **Zero or negative total value** → every fraction is `0.0` rather than
+    a division error.
+  - An asset with a recorded holding but no available price snapshot is
+    skipped from the total rather than crashing the whole computation.
+  - 8 tests in `tests/test_holdings.py` cover all of the above plus
+    multi-asset-plus-cash, no-cash-line, removed-holding-as-zero, and
+    no-entered-holding-defaults-to-zero.
+
+### `portfolio_positions`: retired as an input, kept as derived output
+
+`app/main.py`'s judge pipeline now sources `current_allocation` solely from
+`holdings_ledger_repo.get_latest_holdings()` + real price lookups, never
+from `portfolio_positions`. `PortfolioConstructionService` itself is
+**unchanged** — it still writes `portfolio_positions` via its own
+`.upsert()` after every run, and that continues going forward. Stated
+plainly, as asked: `portfolio_positions` is fully retired as an input to
+`current_allocation` computation, and kept only as Portfolio Construction's
+own derived bookkeeping/audit record of "what the system's last sizing
+decision produced" — it is no longer read by anything upstream of that
+service.
+
+### New endpoints (`app/api/routers/holdings.py`)
+
+The one narrow, intentional exception to Phase 5's otherwise strictly
+read-only API — ground truth only, never a decision override. The request
+schema has no `decision`/`target_allocation`/or any other Judge/Risk
+Engine/Portfolio Construction output field, by construction, not just by
+convention.
+
+- `POST /holdings` — validates `asset_id` against a real, currently-tracked
+  asset (422 if unknown) unless `null` (the cash line); always **inserts**
+  a new row, never updates. Returns 201.
+- `GET /holdings` — latest row per asset (including cash) — the actual
+  ground-truth state Portfolio Construction reasons against right now.
+- `GET /holdings/history` — full append-only history, optionally filtered
+  by `asset_id` or `cash=true`; omitting both returns everything ever
+  recorded.
+- Dashboard: a new "Real holdings (ground truth)" form (asset symbol/id or
+  blank/"CASH" for the cash line, quantity, optional cost basis) plus a
+  render of current holdings — verified with `node --check` for syntax
+  (confirmed clean) but, like the rest of the dashboard, not yet checked in
+  an actual browser (see Phase 5's still-outstanding real-browser item
+  above, which now also covers this new form).
+- **Minor known limitation, not a non-negotiable violation**: `POST
+  /holdings`'s response echoes back the submitted fields with `id: null`
+  rather than the database-assigned id, since the handler returns the
+  locally-constructed record rather than re-querying after insert. `GET
+  /holdings`/`/holdings/history` correctly return the real database id.
+  Cosmetic only — the insert itself, and everything read afterward, is
+  correct.
+
+### Live verification (non-negotiable, not skipped)
+
+Performed against the live Supabase project and a live local API server
+(`uvicorn app.api.main:app`), then a real `python -m app.main --with-judge`
+run against live OpenRouter — not fixture tests alone:
+
+1. Confirmed cold start first: before any row existed, `select * from
+   holdings_ledger` returned `[]` — the intended pre-entry state.
+2. `POST /holdings` (via `curl` against the real running server, real
+   `X-API-Key`) three times: a cash line (`$2000`), a real BTC holding
+   (`0.01 BTC`, asset not this run's `TOP_CANDIDATE` — included to confirm
+   holdings outside this run's candidate set are still priced and included
+   in the total), and a real SOL holding (`5 SOL`, SOL *was* one of this
+   run's real `TOP_CANDIDATE`s). `GET /holdings` immediately reflected all
+   three with real database ids and timestamps.
+3. Ran `python -m app.main --with-judge` for real (run
+   `RUN-20260906-114219`, real cost **$0.2133**, well inside the
+   $10.55/$25.88 real remaining daily/monthly `CostGuard` budget checked
+   beforehand). The run re-fetched live prices for BTC ($79,910) and SOL
+   ($106.41), producing a real Judge decision set including SOL.
+4. Added a permanent audit-log line
+   (`app/main.py`, right after `compute_current_allocations`) logging the
+   full computed allocations dict for every run going forward. Its output
+   for this run showed **SOL: 0.15971961634870838** and
+   **BTC: 0.23988712606757426**. Hand-computed independently from the same
+   real prices and quantities: SOL = `5 × 106.41 / (2000 + 0.01×79910 +
+   5×106.41)` = 0.159720; BTC = `0.01×79910 / (same total)` = 0.239887 —
+   **exact match to 6 decimal places**.
+5. Portfolio Construction's real output for this run included `('SOL',
+   'REDUCE', 0.1542)` — a REDUCE action starting from the real
+   0.159720 current allocation, turnover-capped down to 0.1542 (SOL
+   appeared in this run's real turnover-capped list). This is direct
+   confirmation that Portfolio Construction reasoned against the entered
+   ground-truth holdings, not a stale or fixture value.
+6. Confirmed `portfolio_positions` was updated afterward with SOL's
+   `current_allocation = 0.15417854094437008` — the same 0.1542 figure,
+   full precision, written by `PortfolioConstructionService`'s own
+   `.upsert()` exactly as expected of its now-derived-output-only role.
+7. Confirmed `holdings_ledger`'s history after the run still contained
+   exactly the 3 rows entered — append-only, nothing mutated by the
+   pipeline run itself.
+
+Both the cash-handling design and the `portfolio_positions`-retirement/
+cold-start behavior were confirmed explicitly with the user before
+implementation began, per their own request, and both are borne out by the
+live run above.
+
+### Tests
+
+436 tests passing total (`pytest`, no live credentials needed) — 18 new
+since Phase 5's close: `tests/test_holdings.py` (8, the pure-function edge
+cases above), `tests/test_api_holdings.py` (9, endpoint validation +
+append-only-history behavior via `dependency_overrides`, no live calls),
+plus one addition to `tests/test_api_secrets.py` confirming the same
+secret-leak protection covers the new `/holdings` write path.
 
 ## Project layout
 

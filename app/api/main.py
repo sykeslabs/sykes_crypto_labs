@@ -13,7 +13,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.api.routers import assessments, calibration, cost, judge, portfolio, screening, signal_sources
+from app.api.routers import assessments, calibration, cost, holdings, judge, portfolio, screening, signal_sources
 
 logger = logging.getLogger("crypto_ai_portfolio.api")
 
@@ -28,6 +28,7 @@ app.include_router(portfolio.router)
 app.include_router(calibration.router)
 app.include_router(signal_sources.router)
 app.include_router(cost.router)
+app.include_router(holdings.router)
 
 
 @app.get("/health")

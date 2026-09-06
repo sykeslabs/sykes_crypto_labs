@@ -53,6 +53,25 @@
 </section>
 
 <section>
+  <h2>Real holdings (ground truth)</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    What you actually hold, entered by hand — the only input Portfolio
+    Construction uses for current_allocation. Append-only: editing or
+    removing a position adds a new dated entry, it never overwrites the
+    prior one. Use asset id <code>CASH</code> for uninvested cash (a
+    stated USD amount).
+  </p>
+  <div id="holdings-current">Loading…</div>
+  <form id="holdings-form" style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+    <input id="holdings-asset-id" placeholder="asset id (or CASH)" style="flex:1;">
+    <input id="holdings-quantity" type="number" step="any" placeholder="quantity / USD amount" style="flex:1;">
+    <input id="holdings-cost-basis" type="number" step="any" placeholder="cost basis USD (optional)" style="flex:1;">
+    <button type="submit">Record</button>
+  </form>
+  <div id="holdings-form-status" style="font-size:0.85rem;"></div>
+</section>
+
+<section>
   <h2>Calibration summary</h2>
   <div id="calibration-summary">Loading…</div>
 </section>
@@ -80,6 +99,18 @@ async function apiGet(path) {
     throw new Error(`${res.status}: ${body.detail || "request failed"}`);
   }
   return res.json();
+}
+
+async function apiPost(path, body) {
+  const key = getKey();
+  const headers = { "Content-Type": "application/json" };
+  if (key) headers["X-API-Key"] = key;
+  const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+  const parsed = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`${res.status}: ${parsed.detail || "request failed"}`);
+  }
+  return parsed;
 }
 
 function statusBadgeClass(status) {
@@ -199,12 +230,54 @@ async function loadJudgeDecisions() {
   }
 }
 
+async function loadHoldings() {
+  const target = document.getElementById("holdings-current");
+  try {
+    const holdings = await apiGet("/holdings");
+    if (holdings.length === 0) {
+      target.innerHTML = "<p>No holdings recorded yet — treated as 100% cash by omission.</p>";
+      return;
+    }
+    const rows = holdings.map(h => `
+      <tr>
+        <td>${h.asset_id === null ? "CASH" : h.asset_id}</td>
+        <td>${h.quantity}</td>
+        <td>${h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—"}</td>
+        <td>${h.recorded_at}</td>
+      </tr>`).join("");
+    target.innerHTML = `<table><tr><th>Asset</th><th>Quantity</th><th>Cost basis</th><th>Recorded at</th></tr>${rows}</table>`;
+  } catch (e) {
+    target.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+}
+
+document.getElementById("holdings-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const statusEl = document.getElementById("holdings-form-status");
+  const rawAssetId = document.getElementById("holdings-asset-id").value.trim();
+  const assetId = rawAssetId.toUpperCase() === "CASH" || rawAssetId === "" ? null : rawAssetId;
+  const quantity = parseFloat(document.getElementById("holdings-quantity").value);
+  const costBasisRaw = document.getElementById("holdings-cost-basis").value.trim();
+  const costBasis = costBasisRaw === "" ? null : parseFloat(costBasisRaw);
+
+  try {
+    await apiPost("/holdings", { asset_id: assetId, quantity, cost_basis_usd: costBasis });
+    statusEl.textContent = "Recorded.";
+    document.getElementById("holdings-quantity").value = "";
+    document.getElementById("holdings-cost-basis").value = "";
+    loadHoldings();
+  } catch (e) {
+    statusEl.innerHTML = `<span class="error">${e.message}</span>`;
+  }
+});
+
 function loadAll() {
   loadSignalSources();
   loadCostSummary();
   loadPortfolioState();
   loadCalibrationSummary();
   loadJudgeDecisions();
+  loadHoldings();
 }
 
 document.getElementById("api-key-input").value = getKey();

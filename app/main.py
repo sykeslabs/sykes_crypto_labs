@@ -11,6 +11,7 @@ from app.database.repository import (
     AssetStatusRepository,
     DecisionOutcomeRepository,
     EvidenceObservationRepository,
+    HoldingsLedgerRepository,
     JudgeDecisionRepository,
     LLMAnalysisRepository,
     MarketRegimeRepository,
@@ -56,6 +57,7 @@ from app.market_data.upbit import UpbitClient
 from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
 from app.portfolio.construction import PortfolioConstructionService
+from app.portfolio.holdings import compute_current_allocations
 from app.risk.correlation import compute_daily_returns
 from app.risk.engine import RiskEngine
 
@@ -330,6 +332,7 @@ def main() -> int:
         screened_universe_repo = ScreenedUniverseRepository(client)
         portfolio_position_repo = PortfolioPositionRepository(client)
         allocation_change_repo = PortfolioAllocationChangeRepository(client)
+        holdings_ledger_repo = HoldingsLedgerRepository(client)
 
         judge_service = JudgeService(
             settings=settings,
@@ -362,8 +365,30 @@ def main() -> int:
 
         if judge_result.decisions:
             risk_engine = RiskEngine(settings)
-            current_positions = portfolio_position_repo.get_all()
             assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
+
+            # Phase 5a: current_allocation now comes SOLELY from real,
+            # ground-truth holdings_ledger entries (quantity * real current
+            # price, plus an explicit cash line) -- never from
+            # portfolio_positions, which is retired as an input and only
+            # written going forward as Portfolio Construction's own derived
+            # bookkeeping (see README's Phase 5a section). Real prices are
+            # looked up for every asset with a real holdings entry, not
+            # just this run's candidates, so the total portfolio value used
+            # to compute fractions is correct even for a long-term hold
+            # that isn't a TOP_CANDIDATE this run.
+            latest_holdings = holdings_ledger_repo.get_latest_holdings()
+            price_lookup_ids = {a.id for a in assets_by_id.values()} | {
+                h.asset_id for h in latest_holdings if h.asset_id is not None
+            }
+            price_by_asset_id: dict[str, float] = {}
+            for aid in price_lookup_ids:
+                snapshot = snapshot_repo.get_latest_snapshot(aid)
+                if snapshot is not None:
+                    price_by_asset_id[aid] = float(snapshot.price)
+            current_allocations = compute_current_allocations(latest_holdings, price_by_asset_id)
+            logger.info("Current allocations (from real holdings_ledger, ground truth): %s", current_allocations)
+
             sized_decisions = []
             decisions_by_asset = {}
             decision_ids_by_asset = {}
@@ -374,10 +399,7 @@ def main() -> int:
                 asset = assets_by_id.get(decision.asset_id)
                 symbol = asset.symbol if asset else decision.asset_id
                 screened = screened_universe_repo.get_latest_for_symbol(symbol) if asset else None
-                current_allocation = (
-                    current_positions[decision.asset_id].current_allocation
-                    if decision.asset_id in current_positions else 0.0
-                )
+                current_allocation = current_allocations.get(decision.asset_id, 0.0)
                 sized = risk_engine.size_one(
                     decision, symbol,
                     screened.volatility_30d if screened else None,
