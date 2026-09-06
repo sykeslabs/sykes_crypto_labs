@@ -167,26 +167,38 @@ because:
     exist anywhere in the project yet (pre- or post-3f), reported as a real
     finding, not fabricated — and a live Judge-reasoning spot-check found
     the sampled theses genuinely follow from their own stated evidence
-  - **3g** — Statistical validation: a **Deflated Sharpe Ratio /
-    probability-of-backtest-overfitting** correction across every
-    prompt/logic iteration made in 3d–3f (so "it got better" claims account
-    for how many times the system was tried, not just the final number), a
-    full calibration/reliability report broken down by regime **and by
-    model/source-agreement bucket** (so disagreement functions as a genuine,
-    checked uncertainty signal rather than an unverified assumption), a
-    report on the held-out window in isolation, a **point-in-time/
-    look-ahead-bias audit** re-deriving revisable evidence (on-chain
-    valuation metrics, ETF flow figures, regulatory-event extraction) as it
-    would have appeared at decision time and confirming no since-revised
-    value leaked into training/calibration, a **purged/embargoed
-    walk-forward check** — a distinct leakage risk from point-in-time
-    correctness, since autocorrelated evidence (on-chain metrics, funding
-    rates, open interest) can leak across a held-out boundary even when
-    every individual value is correctly dated, so this task quantifies
-    whether the held-out window has an adequate embargo gap and flags it as
-    a finding if not — and a Judge-reasoning audit — the gate this project
-    treats as the actual determinant of whether Phase 3 improved prediction
-    accuracy, rather than a raw before/after delta
+  - ✅ **3g** (complete) — Statistical validation of the Judge/Risk/Portfolio
+    configuration's real track record. Honest trial count reconstructed
+    (**1** real calibrated configuration — `judge_decision` v2, backfill-only;
+    v1 was superseded before any resolved data ever used it). Deflated Sharpe
+    Ratio computed on the 36 directional resolved backfilled decisions
+    (Sharpe 1.82, DSR≈0.9998 at n_trials=1 — no multiple-comparisons
+    deflation applies, correctly, since there was no genuine selection among
+    alternatives); PBO **not computable** (needs ≥2 tried configurations).
+    Full Brier/reliability report by confidence bucket and by model/source-
+    agreement bucket; **by-regime breakdown blocked by a real persistence
+    gap** (3e.1's replay computes a regime per simulated day but never
+    persists it as a queryable row, so `regime_at_decision` is NULL for
+    every one of the 109 resolved backfilled outcomes — same root cause
+    later found to also block task 6's `composite_factor_score` comparison).
+    Point-in-time audit: **CLEAN**, verified at the code level across every
+    evidence pathway replay actually uses. Purged/embargo check: **gap
+    absent** — the training/holdout boundary has zero (slightly negative)
+    separation against a 45-day longest horizon, so 100% of the holdout
+    sample sits within one resolution-horizon of the boundary; this is the
+    primary reason no go/no-go claim can be made yet (see below), not merely
+    small sample size. Held-out window: 50 live decisions, all
+    `in_holdout_window=true`, **zero resolved** — insufficient data.
+    Formalized Judge-reasoning audit (new `judge_reasoning_audits` table,
+    8 real audited decisions, real cost **$0.026838** total): 1 of 8 showed
+    a genuine unsupported claim (a SELL thesis that never addressed its own
+    cited contradicting evidence). Source-disabling recommendations: **no
+    source can currently be evaluated** — every 3c/3f source named in the
+    task is either `NOT_IMPLEMENTED`, was deliberately excluded from replay
+    (zero resolved-decision exposure), or was only ever used post-3f in
+    still-unresolved live decisions. **Go/no-go for Phase 4: not yet** — see
+    findings below for the full reasoning, led by the embargo/generalization
+    problem, not sample size alone.
   - **3h** — A later addendum, added after a gap-analysis against
     professional crypto-advisory practice: a **learned evidence-value
     ranking** (a simple, inspectable supervised model checked against
@@ -1992,6 +2004,301 @@ live:**
   deliberately-separate provider classes — because it has no existing
   shipped call sites to risk regressing. Both trade-offs (duplicate vs.
   generalize) are deliberate, evaluated case-by-case, not a fixed rule.
+
+## Phase 3g — Statistical validation & robustness
+
+The last sub-phase before 3h (adaptive weighting/stress testing) and 3i
+(a further evidence-collection addendum), and the gate this project treats as
+the actual determinant of whether Phase 3's pipeline improved decision
+quality, rather than a raw before/after delta. Changes no evidence
+collection and no decision logic — produces findings and recommendations
+only, per its own non-negotiable, even where a finding clearly warrants a
+follow-up change.
+
+### Task 1: trial-count reconstruction
+
+Walked `prompt_templates` (4 rows: `market_assessment` v1, `judge_decision`
+v1 and v2, `adversarial_research` v1) and `calibration_runs` (5 rows) to
+reconstruct an honest count of real calibration attempts. Finding:
+**`judge_decision` v1 was never calibrated at all** — the 10 decision_outcomes
+rows referencing it are all from one early live run
+(`RUN-20260905-165829`), all still `UNRESOLVED`; v2 superseded it before any
+resolved data ever existed to score it against. Of the 5 `calibration_runs`
+rows, 2 (`phase2_llm_analyses_directional_baseline`) used an entirely
+different mechanism (Phase 2's `llm_analyses` table directly, not
+`judge_decisions`/`decision_outcomes` at all) and aren't comparable Judge
+"trials"; 2 (`LIVE_PRE_3F_BASELINE`/`LIVE_POST_3F_BASELINE`) are honest null
+attempts (sample_size=0); only 1 (`BACKFILL_BASELINE`) reflects a real
+calibration against resolved outcomes, and it used only `judge_decision` v2.
+**Honest trial count: 1** real configuration ever calibrated against
+resolved data. `signal_sources.enabled` was checked as a possible second
+counting dimension per the task's own wording — found to be a static value
+seeded once in migrations and never toggled by any app code (`update_status`
+only ever writes `status`, never `enabled`), so there is no real toggle
+history to reconstruct; this dimension contributes nothing to the trial
+count, reported as such rather than fabricated.
+
+### Task 2: Deflated Sharpe Ratio / PBO
+
+Implemented in `app/benchmarks/statistical_validation.py`: Probabilistic
+Sharpe Ratio (Bailey & Lopez de Prado, 2012) built on Lo (2002)'s closed-form
+Sharpe-ratio standard error, and Deflated Sharpe Ratio (Bailey & Lopez de
+Prado, 2014) on top of that. Verified against known-correct outputs, not
+just "plausible-looking code": PSR at `sharpe_ratio == benchmark_sharpe`
+must equal exactly 0.5 for any n/skew/kurtosis (an exact mathematical
+identity — tested); PSR independently cross-checked against Lo (2002)'s
+formula recomputed a second, separate way in the test itself (not calling
+the module's own helper) — matches to 1e-12; DSR at `n_trials=1` (this
+project's real trial count) must reduce exactly to `PSR(0)`, since with only
+one configuration ever tried there is no selection bias to correct for —
+`n_trials=1` returning `expected_max_sharpe_under_null=0.0` is a genuine
+degenerate case, not an approximation (the formula's own
+`Φ⁻¹(1 - 1/1) = Φ⁻¹(0) = -∞` is undefined at n=1).
+
+On the 36 directional (BUY/SELL) resolved backfilled decisions: **Sharpe
+1.82** (skew −0.25, kurtosis 7.26 — noticeably fat-tailed), n=36. **DSR ≈
+0.9998** at the real trial count of 1. **Caveat, load-bearing**: this is the
+backfilled/simulated return series (11 replayed historical days), not live
+paper-trading results, and applies zero multiple-comparisons correction
+(correctly, for n_trials=1) — it says "distinguishable from zero on this
+backfilled sample," not "expect this Sharpe going forward."
+
+**PBO: not computable.** Requires ≥2 independently-tried configurations to
+compare in-sample vs. out-of-sample rank (Bailey, Borwein, Lopez de Prado,
+Zhu, 2014); this project has only ever calibrated 1. The CSCV method is
+implemented and tested against the one case provable by hand construction
+(two configurations, one a constant-shift-up of the other in every period —
+proven by hand to always win in-sample AND out-of-sample, so PBO must be
+exactly 0.0) plus a second hand-provable case (two literally identical
+configurations tie on every split, so by the tie convention PBO must be
+exactly 0.5) — **not** cross-checked against a published numeric worked
+example, disclosed honestly rather than overclaimed, per the sub-phase's own
+non-negotiable.
+
+### Task 3: full calibration reporting
+
+Brier score **0.195** (reliability 0.073, resolution 0.015, uncertainty
+0.139). The classical 3-term Murphy (1973) decomposition
+(`BS = Reliability - Resolution + Uncertainty`) is only an *exact* identity
+when every point's forecast equals its bucket's mean — true for discrete
+forecast values, false for continuous confidence values grouped into
+ranges. Found this the hard way: an initial test asserting exact
+reconstruction failed at the 3rd decimal (0.067 vs. 0.068) on real
+continuous test data. Fixed by adding and reporting a fourth term,
+`within_bucket_dispersion` — the information lost by substituting each
+point's forecast with its bucket mean — making
+`reliability - resolution + uncertainty + within_bucket_dispersion` an exact
+identity for any bucketing, verified across several synthetic datasets. A
+second real bug found the same way: `int(f / bucket_size)` misclassifies
+exact bucket boundaries under float error (`0.3 / 0.1 == 2.9999999999999996`
+truncates into the wrong bucket) — fixed with a small epsilon before
+truncation, with a regression test targeting this exact float-boundary case.
+
+Reliability by confidence bucket (all n small): 0.4–0.5 (n=4, 50% hit-rate),
+0.5–0.6 (n=16, 87.5%), 0.6–0.7 (n=13, 84.6%), 0.7–0.8 (n=3, 100%) — hit-rates
+run *above* stated confidence at every bucket (underconfidence, not
+overconfidence), though n is small everywhere. By `model_agreement`: MED
+n=19 (84.2%) vs. HIGH n=17 (82.4%) — **no evidence high agreement resolves
+better than medium** at this sample size. By `source_agreement`: MED n=28
+(78.6%) vs. HIGH n=7 (100%) vs. LOW n=1 — directionally consistent with
+`source_agreement` earning its keep as a sizing input, but n=7/n=1 are too
+small to call real.
+
+**By-regime breakdown: not computable — a real persistence gap, not a
+sample-size problem.** Every one of the 109 resolved backfilled outcomes has
+`regime_at_decision = NULL`. 3e.1's replay computes a real
+`MarketRegimeSnapshot` per simulated day and uses it live in the Judge's
+prompt, but that snapshot is constructed with `id=None` and never persisted
+to `market_regime_snapshots` — so `decision_outcomes.regime_at_decision`
+(a real FK) has nothing to link to, for any backfilled row. The regime
+string itself is not recoverable from the database for any backfilled
+decision. Reported as a finding, not fixed — changing `replay.py` is outside
+3g's scope (no new evidence collection or decision logic).
+
+### Task 3a: point-in-time / look-ahead audit — CLEAN
+
+Verified at the code level, not by re-trusting the design intent:
+`HistoricalSeries.as_of` correctly slices to `date <= cutoff`; the funding-
+rate evidence builder filters `funding_time <= cutoff` before selecting the
+latest; Phase 2 LLM analyses and asset-status both route through genuine
+`get_latest_by_asset_as_of`/`get_latest_status_as_of` point-in-time methods;
+news correctly bounds `published_at <= until`. Every other revisable 3c/3f
+source (on-chain valuation metrics, ETF flow figures, regulatory-event
+extraction, ETF/CFTC positioning) was deliberately marked
+`EVIDENCE_UNAVAILABLE_FOR_REPLAY` rather than reconstructed — exactly
+avoiding the lookahead risk those sources pose. No contamination found in
+any pathway replay actually uses.
+
+### Task 3b: purged/embargoed walk-forward check — gap absent, primary blocker for task 7
+
+**No embargo exists between the training (backfilled, `in_holdout_window=
+false`) and holdout (live, `in_holdout_window=true`) samples.** The
+backfilled decisions run 2026-08-09 through 2026-09-05; the live decisions
+start 2026-09-05 — **the gap is negative** (≈ −1d23h; they overlap slightly
+in wall-clock terms) against a **45-day** longest resolution horizon.
+**100% of the 50 holdout decisions sit within one resolution-horizon's
+distance of the training boundary.** Mitigating factor: the specific
+slow-moving/sticky evidence types that pose the worst autocorrelation risk
+(derivatives, on-chain) were excluded from replay entirely (see 3a above) —
+but price-momentum/regime persistence (used in both sets) remains a real,
+unaddressed leakage channel. This is not a defect in tasks 2–3's numbers
+themselves (which are honest in-sample descriptions of the backfilled data);
+it means a *future* "the holdout period confirms it" claim, once holdout
+decisions resolve, would not constitute a clean, independent test without
+first adding an embargo — the reason task 7 cannot issue a go/no-go on
+sample-size grounds alone, even once more time passes.
+
+### Task 4: held-out window — insufficient data
+
+50 live decisions, all `in_holdout_window=true`, **zero resolved**. Horizons
+present: 14/21/30/45 days; only ~1 day of real calendar time has elapsed
+since the first live decision. Nothing to report yet beyond "wait" — and per
+task 3b, even the eventual result will need the embargo caveat attached.
+
+### Task 5: Judge reasoning audit
+
+Formalized 3f's manual spot-check into a persisted, repeatable check — new
+`judge_reasoning_audits` table (migration `0011`), registered in
+`COST_TRACKED_TABLES` (tested). A single structured LLM call per sampled
+decision, given ONLY that decision's own stored `thesis`/`key_evidence`/
+`contradictory_evidence` (never live evidence, which may have since decayed
+or resolved differently) — a pure internal-consistency check: does the
+thesis actually follow from its own cited evidence.
+
+Sampling (`app/benchmarks/reasoning_audit.py::select_audit_sample`) is
+weighted, in priority order: outcome-contradicted-decision (rarest, most
+diagnostic — all 6 real cases in this project's history), `requires_review=
+true` (70 of 109 resolved), then low model/source agreement (<0.6, 59 of
+109). Real cost, exact: a single test call **$0.002268** (confirmed real,
+below even the low end of the pre-run estimate — this call's input is much
+smaller than assessment/adversarial calls, just one decision's evidence text
+plus a short instruction), then the remaining sample for **$0.024570**;
+**$0.026838 total** across 9 calls (8 distinct decisions — one duplicate
+occurred, see below).
+
+**Real finding: 1 of 8 audited decisions (12.5%) shows a genuine
+unsupported claim.** A SELL decision (`requires_review=true`,
+model_agreement=1.0 but source_agreement=0.65, outcome contradicted the
+call) recommended trimming exposure but never addressed its own cited
+contradicting evidence (a slightly positive funding rate, flat-to-positive
+90-day returns) and only nominally acknowledged a "still-decent composite
+score" without reconciling it with the bearish conclusion. The other 7
+(including 5 of the 6 contradicted-outcome cases) showed internally
+consistent reasoning — e.g. one decision's thesis was confirmed to
+genuinely weigh cited bullish evidence against cited bearish signals rather
+than ignoring either side. n=8 is small — a real, useful signal, not a
+generalizable rate.
+
+**A real script gap, disclosed rather than hidden**: `select_audit_sample`
+has no memory of prior audit runs, so re-running the script reselected an
+already-audited decision, producing 2 audit rows for it (both agreeing
+`supported=true`, so no impact on the finding above, but wasted real spend).
+Noted as a known limitation below, not silently fixed after the fact.
+
+### Task 6: source-disabling recommendations
+
+**No source named in the task can currently be evaluated for measurable
+value** — every one is blocked by a different reason, not a weak effect
+size: `SPOT_ETF_FLOWS`, `PREDICTION_MARKETS`, and `ON_CHAIN_MINER_METRICS`
+are `NOT_IMPLEMENTED` (nothing to evaluate). `STABLECOIN_SUPPLY_VELOCITY_
+AND_EXCHANGE_RESERVES` and `CME_COT_POSITIONING` are genuinely operational
+(`status=OK`) but were deliberately excluded from 3e.1's replay
+(`EVIDENCE_UNAVAILABLE_FOR_REPLAY`, per 3a's audit above) — zero resolved
+decisions have ever used them. `GLOBAL_LIQUIDITY_MACRO` and
+`REGULATORY_EVENT_CALENDAR` (3f) are operational but postdate replay
+entirely — only used in the 50 still-unresolved live decisions. For
+`composite_factor_score`: the intended "agreed vs. diverged" hit-rate
+comparison hit the **same persistence gap as task 3's regime finding** —
+`screened_universe` (which holds the real, joinable score) only has rows
+for live `RUN-*` run_ids, never replay's `BACKFILL-*` run_ids, so no
+backfilled decision has a joinable composite_factor_score on record. The
+score IS narratively embedded in `key_evidence` free text (e.g. "Composite
+score 0.637..."), but a regex extraction from inconsistently-phrased
+narrative text was deliberately rejected as too misparse-prone for a
+statistical comparison — reported as not computable rather than risking a
+silently-wrong number. **No `signal_sources` row is recommended for
+disabling; none can be, on real evidence, yet.**
+
+### Task 7: go/no-go statement for Phase 4
+
+**Not yet — and the primary reason is the missing embargo (task 3b), not
+sample size alone.** Even once the 50 live holdout decisions resolve (the
+earliest possible in ~13 more days, at the 14-day horizon), that result
+would not constitute a clean, independent out-of-sample test without an
+embargo gap first: 100% of those decisions sit within one resolution-horizon
+of the training boundary, and price-momentum/regime persistence — present
+in both the training and holdout data — is a real, unaddressed
+autocorrelation channel. Sample size compounds this (zero holdout
+resolutions exist right now at all) but is not the deeper problem; a larger
+unembargoed holdout sample would still not license a go/no-go claim on its
+own. Getting to a real answer needs, in order: (1) let holdout decisions
+resolve to have *any* out-of-sample number, then (2) either introduce a
+genuine embargo gap for the *next* holdout cohort, or treat any earlier
+non-embargoed holdout result as directionally suggestive only, never
+confirmatory. This is a statement about what's missing, not a negative
+verdict on the system — the backfilled Sharpe/Brier numbers (tasks 2–3) are
+a positive signal, just not yet one that has cleared the bar this sub-phase
+exists to apply.
+
+### Tests
+
+327 tests passing (`pytest`, no live credentials needed):
+`tests/test_statistical_validation.py` (20 tests — PSR/DSR against known-
+correct degenerate cases and an independent cross-check, PBO against the two
+hand-provable constructions, Brier decomposition's exact-reconstruction
+identity including the float-boundary regression), `tests/
+test_reasoning_audit.py` (13 tests — sampling priority/dedup/cap, prompt
+rendering, schema validation, `CostGuard` registration, a mocked-LLM call).
+
+### Known limitations / decisions
+
+- **By-regime and composite-factor-score breakdowns are blocked by the same
+  underlying gap**: 3e.1's replay computes real regime/score values
+  in-memory for context-building but never persists them as clean,
+  joinable rows for backfilled decisions — only their narrative embedding
+  in free text survives. A real, reportable structural gap in replay's
+  bookkeeping, not fixed here (out of 3g's scope).
+- **DSR/PBO's honest ceiling is this project's youth, not a flaw in the
+  method**: with only 1 real calibrated configuration and 0 resolved live
+  decisions, there's genuinely little for deflation/overfitting-correction
+  machinery to correct yet — both are built, tested, and ready the moment
+  there's more than one trial or a resolved holdout to check.
+- **PBO's implementation is verified only against 2 hand-provable
+  degenerate cases**, not a published numeric worked example — disclosed
+  plainly rather than overclaimed, consistent with the sub-phase's own
+  non-negotiable on unverified formula implementations.
+- **The reasoning-audit script has no run-to-run memory** — a repeat
+  invocation can reselect and re-audit an already-audited decision (real,
+  wasted spend observed this run). Not fixed here; a natural task-5
+  follow-up if the audit becomes a recurring, repeated process.
+- **`DATABASE_URL` (used only by `scripts/apply_migration.py`) had a stale
+  password this sub-phase** — migration `0011` was applied manually via the
+  Supabase SQL Editor instead (the script's own documented fallback).
+  `SUPABASE_URL`/`SUPABASE_SERVICE_ROLE_KEY` (used by the real app/tests)
+  were unaffected.
+- **A fourth evidence-pipeline bug of the same class as 3f's macro-evidence
+  dedup was found and fixed this sub-phase, before 3g's own tasks began**:
+  `binance_futures_term_structure`/`deribit_futures_term_structure` are
+  collected per dated-futures instrument (up to 12 distinct BTC instruments
+  per run on Deribit alone), but all three per-asset evidence-context
+  builders (Judge, 3d assessment, 3f adversarial research) deduped by
+  source name, silently collapsing the whole term-structure curve to one
+  arbitrary point — worse than 3f's bug, since ties in `retrieval_timestamp`
+  make "which point survives" non-deterministic, not even reliably
+  "nearest expiry." Fixed via one shared, tested helper
+  (`group_observations_by_multi_entry_source` in
+  `app/database/evidence_provenance.py`) reused by all three consumers
+  rather than tripling the fix; also bumped
+  `EvidenceObservationRepository.get_latest_by_asset`'s default query limit
+  50→150, since multi-entry sources alone were nearing that ceiling and
+  risked crowding out single-value sources' latest readings. Live-verified
+  using BTC's real evidence data through all three real `render_prompt`
+  functions: all 12 real Deribit instruments and 2 real Binance instruments
+  now render as the full curve. **3 real, still-`UNRESOLVED` live
+  `judge_decisions` (all BTC) reasoned from the pre-fix single collapsed
+  point** — flagged here as a caveat on those specific decisions rather than
+  rerun; none of the 109 resolved backfilled outcomes ever cited term
+  structure, so no calibration number is affected.
 
 ## Project layout
 

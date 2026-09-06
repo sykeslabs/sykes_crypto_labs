@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     # A single model does the whole bull -> bear -> scenario research cycle
     # (unlike 3d's independent ensemble) — defaults to reusing CLAUDE_MODEL.
     adversarial_model: str | None = None
+    reasoning_audit_model: str | None = None
     adversarial_prompt_version: str = "v1"
     # FRED (Federal Reserve Economic Data). Optional — free signup. Without a
     # key, GLOBAL_LIQUIDITY_MACRO is reported NOT_IMPLEMENTED, never approximated.
@@ -235,6 +236,21 @@ class Settings(BaseSettings):
         if not model:
             raise RuntimeError(
                 "No adversarial-research model configured. Set ADVERSARIAL_MODEL (or "
+                "CLAUDE_MODEL, reused by default) in your .env file."
+            )
+        return self.openrouter_api_key.get_secret_value(), model
+
+    def require_reasoning_audit(self) -> tuple[str, str]:
+        """Returns (api_key, model) for 3g's Judge reasoning audit, or
+        raises if missing."""
+        if not self.openrouter_api_key:
+            raise RuntimeError(
+                "OPENROUTER_API_KEY must be set in your .env file to run scripts/run_reasoning_audit.py."
+            )
+        model = self.reasoning_audit_model or self.claude_model
+        if not model:
+            raise RuntimeError(
+                "No reasoning-audit model configured. Set REASONING_AUDIT_MODEL (or "
                 "CLAUDE_MODEL, reused by default) in your .env file."
             )
         return self.openrouter_api_key.get_secret_value(), model

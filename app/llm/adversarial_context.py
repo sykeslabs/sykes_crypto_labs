@@ -2,6 +2,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from app.database.evidence_provenance import group_observations_by_multi_entry_source
 from app.database.models import Asset
 from app.llm.adversarial_schemas import BearBatch, BullBatch
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
@@ -13,6 +14,9 @@ class AssetResearchContext:
     asset: Asset
     screened: ScreenedAsset
     evidence_by_source: dict[str, dict] = field(default_factory=dict)
+    # 3g fix: multi-entry per-asset sources (dated-futures term structure)
+    # keep every distinct instrument, not one collapsed row.
+    term_structure_by_source: dict[str, list] = field(default_factory=dict)
     assessments: list[ModelMarketAssessmentRecord] = field(default_factory=list)
 
 
@@ -44,12 +48,20 @@ def build_research_context(
         asset = assets_by_id.get(candidate.asset_id)
         if asset is None:
             continue
+        single_obs, term_structure_obs = group_observations_by_multi_entry_source(
+            evidence_repo.get_latest_by_asset(asset.id)
+        )
         evidence_by_source: dict[str, dict] = {}
-        for obs in evidence_repo.get_latest_by_asset(asset.id):
+        for obs in single_obs:
             evidence_by_source.setdefault(obs.source, obs.payload)
+        term_structure_by_source = {
+            source: [obs.payload for obs in obs_list]
+            for source, obs_list in term_structure_obs.items()
+        }
 
         asset_contexts.append(AssetResearchContext(
             asset=asset, screened=candidate, evidence_by_source=evidence_by_source,
+            term_structure_by_source=term_structure_by_source,
             assessments=assessments_by_asset.get(asset.id, []),
         ))
 
@@ -68,6 +80,14 @@ def _render_shared_asset_lines(context: ResearchContext) -> list[str]:
             lines.append("Derivatives/on-chain evidence (3c):")
             for source, payload in ac.evidence_by_source.items():
                 lines.append(f"  - {source}: {payload}")
+        if ac.term_structure_by_source:
+            for source, payloads in ac.term_structure_by_source.items():
+                lines.append(
+                    f"Futures term structure (3c), {source}, {len(payloads)} distinct "
+                    f"dated instruments (the full curve, not one point):"
+                )
+                for payload in payloads:
+                    lines.append(f"  - {payload}")
         if ac.assessments:
             lines.append("3d model assessments:")
             for a in ac.assessments:

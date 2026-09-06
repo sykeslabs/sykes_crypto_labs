@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.config import Settings
+from app.database.evidence_provenance import group_observations_by_multi_entry_source
 from app.database.models import Asset
 from app.database.repository import (
     AdversarialResearchRepository,
@@ -29,6 +30,10 @@ class AssetJudgeContext:
     screened: ScreenedAsset
     snapshot: MarketSnapshot | None
     evidence_by_source: dict[str, dict] = field(default_factory=dict)
+    # 3g fix: multi-entry per-asset sources (dated-futures term structure)
+    # keep every distinct instrument, not one collapsed row — see
+    # MULTI_ENTRY_ASSET_SOURCES in app/database/evidence_provenance.py.
+    term_structure_by_source: dict[str, list[dict]] = field(default_factory=dict)
     assessments: list[ModelMarketAssessmentRecord] = field(default_factory=list)
     model_agreement: float = 1.0
     phase2_analyses: list[LLMAnalysisRecord] = field(default_factory=list)
@@ -162,8 +167,11 @@ def build_judge_context(
         if not assessments:
             continue  # no silent fallback — Judge needs 3d's assessments to reason at all
 
+        single_obs, term_structure_obs = group_observations_by_multi_entry_source(
+            evidence_repo.get_latest_by_asset(asset.id)
+        )
         evidence_by_source: dict[str, dict] = {}
-        for obs in evidence_repo.get_latest_by_asset(asset.id):
+        for obs in single_obs:
             evidence_by_source.setdefault(
                 obs.source,
                 {
@@ -173,6 +181,18 @@ def build_judge_context(
                     "status": obs.status,
                 },
             )
+        term_structure_by_source: dict[str, list[dict]] = {
+            source: [
+                {
+                    "payload": obs.payload,
+                    "freshness": obs.freshness,
+                    "decay_half_life_hours": obs.decay_half_life_hours,
+                    "status": obs.status,
+                }
+                for obs in obs_list
+            ]
+            for source, obs_list in term_structure_obs.items()
+        }
 
         status_entry = asset_status_repo.get_latest_status(asset.id)
         position = positions.get(asset.id)
@@ -188,6 +208,7 @@ def build_judge_context(
             screened=candidate,
             snapshot=None,
             evidence_by_source=evidence_by_source,
+            term_structure_by_source=term_structure_by_source,
             assessments=assessments,
             model_agreement=assessments[0].model_agreement,
             phase2_analyses=llm_analysis_repo.get_latest_by_asset(asset.id),
@@ -362,6 +383,15 @@ def render_prompt(context: JudgeContext, prompt_version: str) -> tuple[str, str]
                     f"decay_half_life_hours={entry['decay_half_life_hours']} "
                     f"payload={entry['payload']}"
                 )
+
+        if ac.term_structure_by_source:
+            for source, entries in ac.term_structure_by_source.items():
+                lines.append(
+                    f"Futures term structure (3c), {source}, {len(entries)} distinct "
+                    f"dated instruments (the full curve, not one point):"
+                )
+                for entry in entries:
+                    lines.append(f"  - {entry['payload']}")
 
         if ac.assessments:
             model_agreement = ac.assessments[0].model_agreement

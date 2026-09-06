@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from supabase import Client
 
-from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome
+from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome, JudgeReasoningAuditRecord
 from app.database.models import Asset, AssetStatusHistory, AssetStatusValue, SignalSource
 from app.judge.schemas import JudgeDecisionRecord
 from app.llm.adversarial_schemas import AdversarialResearchRecord
@@ -426,10 +426,17 @@ class EvidenceObservationRepository:
             return None
         return EvidenceObservation.model_validate(response.data[0])
 
-    def get_latest_by_asset(self, asset_id: str, limit: int = 50) -> list[EvidenceObservation]:
-        """Recent observations for one asset across every 3c/3f source —
-        callers dedupe by `source` (first/latest occurrence wins) when
-        building a per-asset context."""
+    def get_latest_by_asset(self, asset_id: str, limit: int = 150) -> list[EvidenceObservation]:
+        """Recent observations for one asset across every 3c/3f source.
+        Callers dedupe single-value sources by `source` name (first/latest
+        occurrence wins); a `MULTI_ENTRY_ASSET_SOURCES` source (e.g. dated-
+        futures term structure) is instead grouped by `(source, timeframe)`
+        via `group_observations_by_multi_entry_source` — see
+        app/database/evidence_provenance.py. limit=150, not 50: a single
+        multi-entry source can emit >12 rows per asset per run
+        (deribit_futures_term_structure's dated instruments), and 50 risked
+        silently truncating older single-value readings once multi-entry
+        rows accumulated across a few runs (verified live)."""
         response = (
             self._client.table("evidence_observations")
             .select("*")
@@ -689,3 +696,13 @@ class AdversarialResearchRepository:
         if not response.data:
             return None
         return AdversarialResearchRecord.model_validate(response.data[0])
+
+
+class JudgeReasoningAuditRepository:
+    """Persists `judge_reasoning_audits` (3g task 5)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, record: JudgeReasoningAuditRecord) -> None:
+        self._client.table("judge_reasoning_audits").insert(record.to_row()).execute()

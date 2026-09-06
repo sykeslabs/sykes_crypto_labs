@@ -8,6 +8,8 @@ from pydantic import ValidationError
 from app.config.settings import Settings
 from app.database.evidence_provenance import (
     DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE,
+    MULTI_ENTRY_ASSET_SOURCES,
+    group_observations_by_multi_entry_source,
     latest_value_as_of,
 )
 from app.database.models import AssetStatusHistory, SignalSource
@@ -52,6 +54,65 @@ def test_latest_value_as_of_after_all_revisions_returns_newest():
 def test_decay_half_life_reference_has_known_source_types():
     assert DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE["coingecko_price"] < DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE["news"]
     assert DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE["news"] < DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE["macro"]
+
+
+# --- group_observations_by_multi_entry_source (3g regression) ---------------
+# Real bug found during 3g's point-in-time audit: naive dedup-by-source-name
+# (setdefault(obs.source, ...)) silently kept only ONE of many dated-futures
+# term-structure instruments sharing one source name, discarding the rest of
+# the curve. These tests target that exact bug class directly.
+
+class _FakeObs:
+    def __init__(self, source, timeframe):
+        self.source = source
+        self.timeframe = timeframe
+
+
+def test_group_observations_keeps_every_distinct_multi_entry_instrument():
+    observations = [
+        _FakeObs("deribit_futures_term_structure", "BTC-6SEP26"),
+        _FakeObs("deribit_futures_term_structure", "BTC-25SEP26"),
+        _FakeObs("deribit_futures_term_structure", "BTC-25DEC26"),
+        _FakeObs("binance_funding_rate", None),  # single-value source, untouched
+    ]
+    single, multi = group_observations_by_multi_entry_source(observations)
+    assert len(single) == 1
+    assert single[0].source == "binance_funding_rate"
+    assert len(multi["deribit_futures_term_structure"]) == 3
+    assert {o.timeframe for o in multi["deribit_futures_term_structure"]} == {
+        "BTC-6SEP26", "BTC-25SEP26", "BTC-25DEC26",
+    }
+
+
+def test_group_observations_dedupes_multi_entry_by_source_and_timeframe():
+    # Two collection runs, each producing the same 2 instruments — newest
+    # first (as get_latest_by_asset returns), duplicate (source, timeframe)
+    # pairs across runs must collapse to one (the first/newest seen), not
+    # accumulate duplicates.
+    observations = [
+        _FakeObs("deribit_futures_term_structure", "BTC-25SEP26"),  # run 2 (newest)
+        _FakeObs("deribit_futures_term_structure", "BTC-25DEC26"),
+        _FakeObs("deribit_futures_term_structure", "BTC-25SEP26"),  # run 1 (older duplicate)
+        _FakeObs("deribit_futures_term_structure", "BTC-25DEC26"),
+    ]
+    _, multi = group_observations_by_multi_entry_source(observations)
+    assert len(multi["deribit_futures_term_structure"]) == 2
+
+
+def test_group_observations_single_value_sources_pass_through_unmodified():
+    observations = [
+        _FakeObs("binance_funding_rate", None),
+        _FakeObs("volatility_risk_premium", None),
+    ]
+    single, multi = group_observations_by_multi_entry_source(observations)
+    assert len(single) == 2
+    assert multi == {}
+
+
+def test_multi_entry_asset_sources_covers_both_venues():
+    assert MULTI_ENTRY_ASSET_SOURCES == {
+        "binance_futures_term_structure", "deribit_futures_term_structure",
+    }
 
 
 # --- AssetStatusHistory / SignalSource schemas ------------------------------

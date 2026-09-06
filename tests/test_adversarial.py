@@ -92,6 +92,27 @@ def test_render_bull_prompt_includes_asset_and_evidence():
     assert "strongest" in system_prompt.lower() or "bull" in system_prompt.lower()
 
 
+def test_render_bull_prompt_includes_full_term_structure_curve_not_one_point():
+    context = ResearchContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None,
+        assets=[AssetResearchContext(
+            asset=_asset(), screened=_screened(),
+            term_structure_by_source={
+                "deribit_futures_term_structure": [
+                    {"instrument": "BTC-25SEP26", "annualized_carry_yield": 0.04},
+                    {"instrument": "BTC-25DEC26", "annualized_carry_yield": 0.05},
+                    {"instrument": "BTC-26MAR27", "annualized_carry_yield": 0.06},
+                ],
+            },
+        )],
+    )
+    _, user_prompt = render_bull_prompt(context, "v1")
+    assert "BTC-25SEP26" in user_prompt
+    assert "BTC-25DEC26" in user_prompt
+    assert "BTC-26MAR27" in user_prompt
+    assert "3 distinct" in user_prompt
+
+
 def test_render_bear_prompt_includes_bull_thesis_to_attack():
     context = _research_context()
     bull_batch = BullBatch(cases=[BullCase(asset="BTC", thesis="ETF demand is durable", catalysts=["ETF inflows"], evidence=["flow data"])])

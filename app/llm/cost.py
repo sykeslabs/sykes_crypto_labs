@@ -27,6 +27,7 @@ COST_TRACKED_TABLES: dict[str, str] = {
     "model_market_assessments": "assessment_timestamp",
     "judge_decisions": "created_at",
     "adversarial_research": "created_at",
+    "judge_reasoning_audits": "created_at",
 }
 
 # $ per 1K tokens (input, output). Pulled from https://openrouter.ai/api/v1/models

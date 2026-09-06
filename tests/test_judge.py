@@ -218,6 +218,29 @@ def test_render_prompt_includes_regime_agreement_and_unavailable_sources():
     assert "macro_sensitivity" in system_prompt
 
 
+def test_render_prompt_includes_full_term_structure_curve_not_one_point():
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0,
+            term_structure_by_source={
+                "deribit_futures_term_structure": [
+                    {"payload": {"instrument": "BTC-25SEP26", "annualized_carry_yield": 0.04}, "freshness": "RECENT", "decay_half_life_hours": 24, "status": "OK"},
+                    {"payload": {"instrument": "BTC-25DEC26", "annualized_carry_yield": 0.05}, "freshness": "RECENT", "decay_half_life_hours": 24, "status": "OK"},
+                    {"payload": {"instrument": "BTC-26MAR27", "annualized_carry_yield": 0.06}, "freshness": "RECENT", "decay_half_life_hours": 24, "status": "OK"},
+                ],
+            },
+        )],
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "BTC-25SEP26" in user_prompt
+    assert "BTC-25DEC26" in user_prompt
+    assert "BTC-26MAR27" in user_prompt
+    assert "3 distinct" in user_prompt
+
+
 def test_render_prompt_includes_shared_macro_evidence():
     context = JudgeContext(
         run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,

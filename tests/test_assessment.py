@@ -164,6 +164,27 @@ def test_render_prompt_includes_shared_regime_and_sanity_warning():
     assert "asset" in system_prompt.lower()
 
 
+def test_render_prompt_includes_full_term_structure_curve_not_one_point():
+    context = AssessmentContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None,
+        assets=[AssetContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            term_structure_by_source={
+                "deribit_futures_term_structure": [
+                    {"instrument": "BTC-25SEP26", "annualized_carry_yield": 0.04},
+                    {"instrument": "BTC-25DEC26", "annualized_carry_yield": 0.05},
+                    {"instrument": "BTC-26MAR27", "annualized_carry_yield": 0.06},
+                ],
+            },
+        )],
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "BTC-25SEP26" in user_prompt
+    assert "BTC-25DEC26" in user_prompt
+    assert "BTC-26MAR27" in user_prompt
+    assert "3 distinct" in user_prompt
+
+
 def test_render_prompt_deterministic_for_same_context():
     regime = MarketRegimeSnapshot(run_id="RUN-1", computed_at=datetime(2026, 1, 1, tzinfo=UTC), regime="NEUTRAL", inputs={})
     context = AssessmentContext(

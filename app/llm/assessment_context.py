@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.config import Settings
+from app.database.evidence_provenance import group_observations_by_multi_entry_source
 from app.database.models import Asset
 from app.database.repository import (
     AssetStatusRepository,
@@ -21,6 +22,9 @@ class AssetContext:
     screened: ScreenedAsset
     snapshot: object | None  # MarketSnapshot, left loosely typed to avoid an import cycle risk
     evidence_by_source: dict[str, dict] = field(default_factory=dict)
+    # 3g fix: multi-entry per-asset sources (dated-futures term structure)
+    # keep every distinct instrument, not one collapsed row.
+    term_structure_by_source: dict[str, list] = field(default_factory=dict)
     news_summaries: list[str] = field(default_factory=list)
     status: str | None = None
     sanity_flagged: bool = False
@@ -70,9 +74,16 @@ def build_assessment_context(
         snapshot = snapshot_repo.get_latest_snapshot(asset.id)
         sanity_flagged, sanity_reason = _run_sanity_check(asset.id, snapshot_repo)
 
+        single_obs, term_structure_obs = group_observations_by_multi_entry_source(
+            evidence_repo.get_latest_by_asset(asset.id)
+        )
         evidence_by_source: dict[str, dict] = {}
-        for obs in evidence_repo.get_latest_by_asset(asset.id):
+        for obs in single_obs:
             evidence_by_source.setdefault(obs.source, obs.payload)
+        term_structure_by_source = {
+            source: [obs.payload for obs in obs_list]
+            for source, obs_list in term_structure_obs.items()
+        }
 
         status_entry = asset_status_repo.get_latest_status(asset.id)
         news_summaries = [
@@ -85,6 +96,7 @@ def build_assessment_context(
             screened=candidate,
             snapshot=snapshot,
             evidence_by_source=evidence_by_source,
+            term_structure_by_source=term_structure_by_source,
             news_summaries=news_summaries,
             status=status_entry.status if status_entry else None,
             sanity_flagged=sanity_flagged,
@@ -195,6 +207,15 @@ def render_prompt(context: AssessmentContext, prompt_version: str) -> tuple[str,
             lines.append("Derivatives/on-chain evidence (3c):")
             for source, payload in ac.evidence_by_source.items():
                 lines.append(f"  - {source}: {payload}")
+
+        if ac.term_structure_by_source:
+            for source, payloads in ac.term_structure_by_source.items():
+                lines.append(
+                    f"Futures term structure (3c), {source}, {len(payloads)} distinct "
+                    f"dated instruments (the full curve, not one point):"
+                )
+                for payload in payloads:
+                    lines.append(f"  - {payload}")
 
         if ac.news_summaries:
             lines.append("Recent news:")

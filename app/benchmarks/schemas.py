@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel
@@ -69,4 +70,41 @@ class CalibrationRunRecord(BaseModel):
             "hit_rate": self.hit_rate,
             "brier_score": self.brier_score,
             "notes": self.notes,
+        }
+
+
+class ReasoningAuditResult(BaseModel):
+    """The LLM's structured output for one audited decision (3g task 5) —
+    given only the decision's stored `thesis`/`key_evidence`/
+    `contradictory_evidence`, is the thesis genuinely supported or does it
+    contain an unsupported leap."""
+
+    supported: bool
+    unsupported_claims: list[str] = []
+    notes: str
+
+
+class JudgeReasoningAuditRecord(BaseModel):
+    """One row of `judge_reasoning_audits` (3g task 5)."""
+
+    id: str | None = None
+    run_at: datetime
+    decision_id: str
+    audit_model: str
+    supported: bool
+    unsupported_claims: list[str] = []
+    notes: str | None = None
+    estimated_cost: Decimal
+    created_at: datetime
+
+    def to_row(self) -> dict:
+        return {
+            "run_at": self.run_at.isoformat(),
+            "decision_id": self.decision_id,
+            "audit_model": self.audit_model,
+            "supported": self.supported,
+            "unsupported_claims": self.unsupported_claims,
+            "notes": self.notes,
+            "estimated_cost": str(self.estimated_cost),
+            "created_at": self.created_at.isoformat(),
         }

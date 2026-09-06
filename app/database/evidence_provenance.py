@@ -6,13 +6,29 @@ authoritative column list and the matching SQL comment block).
 """
 
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Iterable, Literal, Protocol, TypedDict
 
 from pydantic import BaseModel
 
 Scope = Literal["ASSET", "GLOBAL_CRYPTO", "MACRO"]
 Freshness = Literal["REALTIME", "RECENT", "STALE", "UNKNOWN"]
 EvidenceStatus = Literal["OK", "UNAVAILABLE", "UNKNOWN"]
+
+# Asset-scoped sources that genuinely emit MULTIPLE distinct observations
+# sharing one source name within a single collection run (one row per dated
+# futures instrument) — a real bug lived here once (found during 3g's
+# point-in-time audit): naive dedup-by-source-name
+# (`evidence_by_source.setdefault(obs.source, ...)`, correct for genuinely
+# single-valued sources like `binance_funding_rate`) silently kept only one
+# arbitrary dated-futures instrument per asset per run, discarding the rest
+# of the term-structure curve — the entire analytical point of "term
+# structure" is its shape across expiries, not one point on it. Verified
+# live: `deribit_futures_term_structure` alone had up to 12 distinct BTC
+# instruments collapsed to 1. See README's Phase 3g section.
+MULTI_ENTRY_ASSET_SOURCES: set[str] = {
+    "binance_futures_term_structure",
+    "deribit_futures_term_structure",
+}
 
 # Starting freshness-decay half-lives per source *type* (hours) — not per
 # observation. Approximate, meant to be refined as each source is actually
@@ -116,3 +132,40 @@ def latest_value_as_of[T: _RowWithRetrieval](rows: list[T], as_of: datetime) -> 
     if not candidates:
         return None
     return max(candidates, key=lambda r: r["retrieval_timestamp"])
+
+
+class _SourceTimeframeObservation(Protocol):
+    source: str
+    timeframe: str | None
+
+
+def group_observations_by_multi_entry_source[T: _SourceTimeframeObservation](
+    observations: Iterable[T],
+) -> tuple[list[T], dict[str, list[T]]]:
+    """Splits one asset's evidence_observations rows (already ordered
+    newest-first by `retrieval_timestamp`, as `get_latest_by_asset` returns)
+    into `(single_value_observations, multi_value_observations_by_source)`.
+
+    `single_value_observations` is every row from a source NOT in
+    `MULTI_ENTRY_ASSET_SOURCES` — callers still dedupe these by source name
+    (first/latest occurrence wins), which is correct because such a source
+    only ever has one current reading.
+
+    `multi_value_observations_by_source` groups a `MULTI_ENTRY_ASSET_SOURCE`'s
+    rows by source name, deduped by `(source, timeframe)` (the dated-futures
+    instrument identifier) rather than collapsed to one row — this is the
+    actual fix: every distinct instrument survives, not just whichever one
+    a naive `setdefault(obs.source, ...)` happened to see first.
+    """
+    single_value_observations: list[T] = []
+    multi_value_seen: dict[tuple[str, str | None], T] = {}
+    for obs in observations:
+        if obs.source in MULTI_ENTRY_ASSET_SOURCES:
+            multi_value_seen.setdefault((obs.source, obs.timeframe), obs)
+        else:
+            single_value_observations.append(obs)
+
+    multi_value_by_source: dict[str, list[T]] = {}
+    for (source, _timeframe), obs in multi_value_seen.items():
+        multi_value_by_source.setdefault(source, []).append(obs)
+    return single_value_observations, multi_value_by_source
