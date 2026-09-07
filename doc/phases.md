@@ -1857,7 +1857,7 @@ Portfolio Construction changes, no order placement (that's Phase 6).
   system — does not require remote or public access at all.
 
 **Consequence for the access-control non-negotiable**: a single
-env-configured API-key header (`API_ACCESS_KEY`) is a genuinely *sufficient*
+env-configured API-key header (`X_API_KEY`) is a genuinely *sufficient*
 minimum bar for this scope, not a deliberately under-scoped stand-in for a
 public deployment. **If this is ever exposed beyond localhost** (accessed
 from another device on a home network, or actually deployed to a server),
@@ -1911,7 +1911,7 @@ future endpoint ever needs genuine point-in-time evidence reconstruction.
 
 ### Task 2: access control
 
-A single `API_ACCESS_KEY` (env-configured, checked via the `X-API-Key`
+A single `X_API_KEY` (env-configured, checked via the `X-API-Key`
 header on every endpoint except `/health`) — see the deployment-scope
 decision above for why this is a sufficient bar for this project's scope.
 Every unhandled exception is caught by a global handler that returns a
@@ -1954,7 +1954,7 @@ A single static HTML page (`app/api/static/dashboard.html`, served at `/`)
 with vanilla JS `fetch()` calls to the JSON endpoints above — no new
 frontend framework or build step, consistent with "pick whichever is less
 work." The page itself carries no data and needs no key to load; the
-viewer pastes their `API_ACCESS_KEY` once into a field (stored in that
+viewer pastes their `X_API_KEY` once into a field (stored in that
 browser's `localStorage` only), and every subsequent data fetch goes
 through the same `X-API-Key`-gated endpoints as any other caller — the
 dashboard has no special, unauthenticated access path of its own. Sections:
@@ -2236,4 +2236,316 @@ cases above), `tests/test_api_holdings.py` (9, endpoint validation +
 append-only-history behavior via `dependency_overrides`, no live calls),
 plus one addition to `tests/test_api_secrets.py` confirming the same
 secret-leak protection covers the new `/holdings` write path.
+
+## Phase 5b — Dashboard live pricing, transactional holdings, symbol entry, P&L
+
+Driven entirely by real user feedback while using the Phase 5a dashboard
+day-to-day, not a pre-planned sub-phase: a genuine Windows concurrency bug
+was hit first, then three separate feature requests arrived incrementally
+(current price display, a Judge-decisions token column, and finally a
+substantial holdings-model change), each investigated and implemented in
+turn.
+
+### Fix: real WinError 10035 concurrency bug under the dashboard's load
+
+The user reported real request failures on dashboard load. Root cause: a
+single cached (`@lru_cache`) `Client`'s shared `httpx.Client`, hit
+concurrently by FastAPI's sync-endpoint threadpool — a genuine Windows-
+specific httpx/httpcore rough edge (`httpx.ReadError`, `WinError 10035`,
+"a non-blocking socket operation could not be completed immediately"),
+not a Supabase- or app-logic problem. A stress-test script
+(`concurrent.futures.ThreadPoolExecutor`, 8 endpoints × 15 rounds = 120
+calls against the live local server) measured a real **40% failure rate**
+before any fix. Passing a custom `httpx.Client` with a retrying transport
+(`httpx.HTTPTransport(retries=3)`) into `create_client(...,
+options=ClientOptions(httpx_client=...))` (`app/database/client.py`)
+brought that to **0/120 failures, confirmed on two independent runs** —
+proven empirically, not just reasoned about.
+
+### Stored (collected) price vs. genuinely live spot price
+
+The user first asked for a "current price" display; once shown, they
+caught for themselves that it was really just the last *collected* price
+(`python -m app.main` is a manual, periodic batch step, not a live
+stream) — a real, user-caught gap, not a self-caught one. Resolved by
+adding a second, entirely separate live price rather than replacing the
+first, so the real pipeline (Risk Engine, Portfolio Construction) and the
+dashboard's stored-value numbers can never silently disagree with a
+display-only figure:
+
+- `app/market_data/live_price.py`'s `fetch_live_price()` tries Binance's
+  `/ticker/24hr` first, falls back to Coinbase's `/products/{sym}-
+  USD/ticker` for symbols with no Binance USDT pair (confirmed live for
+  HYPE, STORJ) — the same Binance-primary/Coinbase-fallback convention
+  Phase 3b established for volatility/drawdown.
+- `price_usd`/`price_as_of` (stored, from `market_snapshots`) feed
+  `value_usd`/`allocation`/`unrealized_pnl_*` everywhere; `live_price_usd`/
+  `live_price_as_of`/`live_price_source` are display-only on `GET
+  /holdings` and `GET /portfolio/state`, never read by any real
+  computation.
+- Dashboard renders both with visually distinct labels/timestamps
+  (`renderStoredPrice`/`renderLivePrice`) so freshness is never
+  overstated, consistent with this project's "Last decided"/"Last
+  updated" timestamp convention elsewhere.
+
+### Recent Judge decisions: token column
+
+Same class of gap as Phase 5a's original `portfolio_positions`/regime
+fixes — `JudgeDecisionRecord` only stored `asset_id` (a raw UUID). Added
+`JudgeDecisionView` (`app/api/schemas.py`) wrapping the existing record
+whole (`decision: JudgeDecisionRecord`) plus a joined `symbol: str`,
+resolved in `get_recent_decisions()` via the same active-assets lookup
+dict pattern used elsewhere.
+
+### Holdings: from snapshot-per-asset to genuinely transactional
+
+The user asked to see per-unit cost and unrealized P&L against real
+holdings; walking through the implementation surfaced that
+`cost_basis_usd` was a *total*, not a per-unit price, and had no
+enforced or documented semantic anywhere in the code. Resolving that,
+the user asked for three things at once, each confirmed explicitly
+before implementation: (1) P&L computed against the stored price only,
+never the live spot price — for the same reasons `price_usd` stays
+separate from `live_price_usd` above; (2) a real `purchased_at`
+timestamp distinct from `recorded_at`, explicitly reframing
+`holdings_ledger` as a transactional ledger rather than a snapshot-per-
+asset table; (3) symbol-based entry (`"SOL"`, not a raw asset UUID)
+with server-side lookup/validation.
+
+Requirement (2) had a real, non-obvious implication for the live
+pipeline the user was asked to confirm before it was touched: did
+multiple BUY rows for the same asset now need to **sum** (a genuinely
+transactional position), replacing Phase 5a's "latest row wins" semantic
+that `get_latest_holdings()` implemented? The user confirmed yes.
+
+- **Migration `0015_phase5b_holdings_transactions.sql`** (applied via the
+  Supabase SQL Editor, same stale-`DATABASE_URL` pattern as every
+  migration since 0011) adds `purchased_at timestamptz` (nullable — no
+  fabricated backfill onto pre-existing rows) and `transaction_type text
+  not null default 'BUY' check (in ('BUY','SELL'))` to `holdings_ledger`.
+- **`aggregate_current_holdings()`** (`app/portfolio/holdings.py`, new,
+  pure) replaces `get_latest_holdings()` as the input to
+  `compute_current_allocations()` (itself left completely unchanged — it
+  already assumed "one row per asset," now true by construction rather
+  than by "latest wins"). Per asset: BUYs add to quantity and cost basis;
+  a SELL reduces quantity and reduces cost basis *proportionally*
+  (weighted-average-cost method, an explicit, stated policy choice — not
+  FIFO/LIFO), and defensively clamps quantity at zero rather than going
+  negative or crashing. The cash line (`asset_id=None`) is explicitly
+  **unchanged** by this — it stays the single latest absolute stated USD
+  total, never summed across multiple cash rows, a deliberately narrow,
+  explicitly-scoped choice (not a deposit/withdrawal ledger).
+- **SELL validation** happens at two layers: the pure aggregation function
+  defensively clamps at zero (never crashes/goes negative) but isn't the
+  real gate; `POST /holdings` itself rejects (422) a SELL that would
+  exceed the real current aggregated position, checked live —
+  `{"asset_symbol":"SOL","quantity":9999,"transaction_type":"SELL"}`
+  against a real 5-SOL position returned `422 "Cannot sell 9999.0 SOL —
+  only 5.0 currently held."`
+- **Symbol-based entry**: `AssetRepository.get_by_symbol()` (case-
+  insensitive `ilike`, same "any tracked status, not just active" rule as
+  `get_by_id`) resolves `HoldingsEntryRequest.asset_symbol`; an unknown
+  symbol is rejected 422 rather than silently creating a row — checked
+  live, `{"asset_symbol":"NOTAREALTOKEN","quantity":1}` returned `422
+  "'NOTAREALTOKEN' is not a tracked asset symbol..."`. A new `GET
+  /holdings/valid-symbols` endpoint (active assets only — a deliberately
+  narrower, real UX choice than what `POST /holdings` itself accepts, not
+  a validation-rule change) backs the dashboard form's `<datalist>`
+  autocomplete, confirmed live to return the real 22-symbol active list.
+- **`GET /holdings`** now also returns `cost_per_unit` (`cost_basis_usd /
+  quantity`) and `unrealized_pnl_usd`/`unrealized_pnl_pct` (against
+  `value_usd`, i.e. the stored price — never the live spot price),
+  `None` whenever no cost basis was ever entered. Confirmed live against
+  the real portfolio: SOL (5 units, $500 total cost basis) → cost/unit
+  $100, value $531.10 at the real $106.22 collected price →
+  **+$31.10 (+6.22%)**; BTC (0.01 units, $600 cost basis) → cost/unit
+  $60,000, value $798.16 at $79,816 → **+$198.16 (+33.03%)** — both
+  hand-verified against the real API response.
+- Dashboard form rebuilt: symbol input with `<datalist>` autocomplete
+  (confirmed live to populate with the real active-symbol list), a
+  Buy/Sell selector, and a purchased-date input, posting `asset_symbol`/
+  `transaction_type`/`purchased_at` per the new schema. The holdings
+  table gained Cost/unit and color-coded Unrealized P&L columns
+  (`renderPnl`, green/red by sign, consistent with the existing
+  `renderDivergingBar` convention). A new collapsed "Show full
+  transaction history" panel (`GET /holdings/history`, unchanged
+  endpoint) makes the transactional model visible in the UI, not just
+  correct server-side — confirmed live to render real BUY rows with
+  their type badge, per-transaction cost basis, and purchased-at date.
+
+### Live verification (non-negotiable, not skipped)
+
+Performed against the live Supabase project (post-migration) and a
+restarted local API server: `GET /holdings/valid-symbols` returned the
+real 22-symbol active list; `GET /holdings` returned the real aggregated
+SOL/BTC/CASH position with correct `cost_per_unit`/`unrealized_pnl_usd`/
+`unrealized_pnl_pct` (hand-verified above); the oversell and invalid-
+symbol rejections were both confirmed live (422s, exact messages above,
+no rows written on rejection); the dashboard was reloaded in an actual
+browser — screenshot-confirmed rendering of the new price columns, P&L
+column, symbol datalist (verified via direct DOM inspection that it
+contains the real live symbol list), and expanded transaction-history
+table, with zero console errors on page load. A real successful BUY/SELL
+submission through the form itself was deliberately left to the user
+rather than performed automatically, since it permanently writes a real
+row to the user's own ground-truth ledger — not run without asking.
+
+### Tests
+
+461 tests passing total (`pytest`, no live credentials needed) — 25 new
+since Phase 5a's close: 6 in `tests/test_holdings.py` for
+`aggregate_current_holdings` (multi-buy summing, proportional-cost-
+reduction on partial sell, full-sell removal, oversell clamping, cash-
+never-summed, integration with `compute_current_allocations`);
+`tests/test_api_holdings.py` fully rewritten (26 tests, replacing the
+prior 9) covering symbol lookup/validation, SELL validation, transactional
+summing through the real API, cost/PnL computation, the new
+`/holdings/valid-symbols` endpoint, and `purchased_at`/`transaction_type`
+round-tripping; plus a portfolio-state stored/live-price test in
+`tests/test_api_endpoints.py` and a fix to `tests/test_api_secrets.py` for
+the `asset_id`→`asset_symbol` rename.
+
+### Addendum: decision horizon/resolution date, and a first-ever news endpoint
+
+Two more real gaps, found by the user directly reading the dashboard and
+asking "is X shown?" rather than a planned addition:
+
+- **`investment_horizon_days`/"resolves by"** — the Judge already stores a
+  real per-decision `investment_horizon_days`, returned by `GET
+  /judge/decisions/recent` since Phase 5a, but the dashboard's "Recent
+  Judge decisions" table never rendered it. Added as two columns:
+  `Horizon` (the raw stored value, e.g. `45d`) and `Resolves by` — computed
+  **client-side** in `dashboard.html` as `created_at + horizon_days`,
+  deliberately the exact same formula
+  `app/benchmarks/evaluation_service.py`'s real resolution logic uses
+  (`horizon_end = outcome.decision_timestamp + timedelta(days=outcome.horizon_days)`,
+  and `decision_timestamp` is set from the same `now` as the decision
+  record's own `created_at` in `app/judge/service.py`) — not a new,
+  separately-invented "next update" concept. No backend or schema change
+  needed; both source fields were already in the API response.
+- **`GET /news/recent`** (new — `app/api/routers/news.py`) — the first-ever
+  API exposure of `app/news/`'s collected articles. That data has existed
+  since the news-ingestion pipeline was built (feeding the Judge's
+  research context internally via `NewsRepository.get_recent_relevant_news`),
+  but was never reachable outside the pipeline itself until now.
+  `NewsRepository` has no "all news, unfiltered" read method — only a
+  per-symbol one — so the endpoint calls it once per currently-active
+  asset symbol, merges, de-dupes (an article relevant to multiple assets
+  would otherwise appear once per symbol), and sorts by `published_at`
+  (`days` window default 7; see the addendum below for `limit`'s later
+  change to "unlimited by default"). Returns
+  `NewsArticle` directly (no join/view wrapper needed — `relevant_assets`
+  already stores real symbols, per `app/news/relevance.py`'s keyword
+  matcher, never raw asset ids). A new "Recent news" dashboard panel
+  renders it — confirmed live to show real CoinTelegraph/CoinDesk/Decrypt
+  articles matched to real held/tracked assets (BTC, ETH, XRP). Article
+  title/source/summary are genuinely untrusted third-party RSS content
+  (unlike the LLM-authored thesis text elsewhere on this page) — escaped
+  via a new `escapeHtml()` helper before going into `innerHTML`, and a
+  title is only rendered as a clickable link when its URL scheme is
+  `http(s)://`, closing an XSS gap this feature would otherwise have
+  introduced.
+
+461 → **466 tests** (5 new in `tests/test_api_news.py`: empty-result
+cold start, newest-first sorting, cross-asset dedup, `limit` truncation,
+and confirming `relevant_assets` carries real symbols). Live-verified
+against the real Supabase `news` table and a restarted local server —
+real articles returned, real symbols joined correctly, dashboard
+screenshot-confirmed with zero console errors.
+
+### Addendum 2: deterministic decision ordering, unlimited news, a "Screened tokens" section
+
+Three more requests from the same read-the-dashboard-and-ask-questions
+pattern:
+
+- **"Recent Judge decisions" column order, not a row re-sort** — the
+  request ("sort the columns: date desc, then token name, then source and
+  then decision, and then confidence") was initially misread as a
+  multi-key ROW sort (by `created_at`, then `symbol`, then source, then
+  `decision`, then `confidence`) and implemented client-side in
+  `loadJudgeDecisions()`. That was wrong: the user flagged it as
+  incorrectly sorted. Corrected to what was actually asked — a COLUMN
+  reorder (Date, Token, Source, Decision, Confidence, ...; Token now
+  comes before Source), with rows left in the API's own order (already
+  newest-first — `JudgeDecisionRepository.get_recent` orders by
+  `created_at desc`), no client-side row sort at all. Root cause of the
+  original "incorrect" appearance: the Date column showed only the date
+  portion (`created_at.slice(0, 10)`), so decisions from the same run
+  looked tied even though their real timestamps differ — fixed by showing
+  the full timestamp (`new Date(created_at).toLocaleString()`) instead of
+  just the date, so the real (correct) API order is visibly correct too.
+- **`GET /news/recent`'s `limit` now defaults to `None` (unlimited)**,
+  not 20 — the dashboard's "Recent news" panel showed only a top-20 slice
+  of the last 7 days by construction, not because more didn't exist.
+  `NewsRepository.get_recent_relevant_news`'s own per-symbol cap is still
+  a required int (real internal callers in `app/judge/context.py` and
+  `app/llm/*.py` rely on that contract to bound LLM prompt size), so
+  `limit=None` is translated to a large internal sentinel
+  (`_EFFECTIVELY_UNLIMITED_PER_SYMBOL_CAP = 10_000`) rather than changing
+  that method's signature. `limit` still works as an explicit cap for any
+  caller that wants one (`tests/test_api_news.py`'s existing truncation
+  test still passes `limit=2`). Confirmed live: 45 real articles now
+  returned for the last 7 days (up from a hard 20), 46 real rows (45 +
+  header) confirmed rendered via direct DOM inspection.
+- **New "Screened tokens" section** (`GET /screening/tracked`, new;
+  `/screening/universe` and `/screening/candidates` already existed since
+  Phase 5 but were never surfaced on the dashboard) — answers the user's
+  own question ("only a certain set of tokens is tracked, not the whole
+  universe?") visually, grouped by the three real narrowing layers:
+  **Layer 1** (screened universe — top `SCREENING_UNIVERSE_SIZE`, default
+  30, by CoinGecko market cap; `ScreenedUniverseRepository.get_latest_full_universe()`),
+  **Layer 2** (top candidates — the top `TOP_CANDIDATES_SIZE`, default 10,
+  of Layer 1 by composite factor score; `get_latest_top_candidates()`),
+  **Layer 3** (currently tracked — `AssetRepository.get_active_assets()`,
+  accumulated across every screening run's Layer-2 promotions plus the
+  initial manually-seeded set, sorted by symbol; this is the actual set
+  news matching, Judge decisions, and holdings entry all operate on).
+  Confirmed live against the real screened_universe/assets tables: 30 /
+  10 / 22 rows respectively — Layer 3 (22) exceeds Layer 2's per-run size
+  (10) because it accumulates over multiple runs, exactly as documented,
+  not a bug. `Asset` and `ScreenedAsset` are reused directly as response
+  models (both already existed, no view wrapper needed). Layer 1's rows
+  are sorted by `market_cap` descending (its own defining criterion — "top
+  N by market cap") rather than by the `rank` column (a separate
+  composite-factor rank, kept visible with a clarifying tooltip since it
+  no longer matches this table's row order) — confirmed live: BTC
+  ($1.6T) first down to BUIDL ($2.8B) last, `rank` values now genuinely
+  scattered (13, 12, 8, 10, 5, ...) since they reflect a different
+  ordering criterion.
+
+461 → 466 → **468 tests** (2 new: `test_no_limit_by_default_returns_every_matching_article`
+in `tests/test_api_news.py`, and `test_get_tracked_assets_sorted_by_symbol`
+in `tests/test_api_endpoints.py`. Neither the Judge-decisions column
+reorder nor Layer 1's market-cap sort has pytest coverage — both are
+dashboard-only JavaScript — verified live in the browser instead, per
+this project's live-verification discipline for frontend-only logic).
+
+### Addendum 3: `signal_sources.enabled` removed — dead since 3a, never wired to real behavior
+
+A user question about the dashboard's "Signal sources" panel ("Binance
+shows `OK`/not enabled — but Binance data is already being sourced?")
+surfaced that `enabled` had been actively misleading, not just unused.
+Root cause, confirmed by grep across the whole codebase: it was seeded in
+Phase 3a (`migrations/0003_phase3a_universe_provenance.sql`) — before any
+source besides CoinGecko/News existed, so every other row defaulted to
+`false` — and nothing ever wrote to it afterward as sources were later
+actually implemented (`SignalSourceRepository.update_status` only ever
+writes `status`; see also the Phase 3g calibration-trial-count aside above
+that independently found the same thing). Its only read anywhere was the
+dashboard's own "yes"/"no" display column (Phase 3b's known-limitation
+bullet above already flagged it as "informational only," but the column
+persisted, still showing stale `false` values for real, working, free
+sources like Binance).
+
+Rather than fix the data (a one-time `UPDATE ... SET enabled = true WHERE
+status = 'OK'`) or build real per-source gating logic, the column was
+**dropped entirely** (`migrations/0016_drop_signal_sources_enabled.sql`)
+— there was no real plan to ever wire it into actual behavior, so keeping
+dead schema around to repair indefinitely wasn't worth it over just
+removing it. Removed from `SignalSource` (`app/database/models.py`),
+`SignalSourceRepository`'s docstring, and the dashboard's Signal Sources
+table (`Enabled` column deleted). 468 tests unchanged in count — three
+existing tests (`test_api_endpoints.py`, `test_judge.py`,
+`test_phase3a.py`) constructed `SignalSource(...)` with an `enabled=`
+kwarg and were updated to drop it, not new coverage.
 

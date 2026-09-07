@@ -48,7 +48,6 @@ class SignalSource(BaseModel):
     """One row of the `signal_sources` registry."""
 
     name: str
-    enabled: bool
     status: SignalSourceStatus
     last_checked_at: datetime | None = None
     notes: str | None = None

@@ -1,13 +1,21 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.portfolio.holdings import compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 
 def _entry(asset_id, quantity, cost_basis=None):
     return HoldingsLedgerEntry(asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis, recorded_at=datetime.now(UTC))
+
+
+def _tx(asset_id, quantity, cost_basis=None, transaction_type="BUY", minutes_ago=0):
+    return HoldingsLedgerEntry(
+        asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis,
+        recorded_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
+        transaction_type=transaction_type,
+    )
 
 
 def test_cold_start_with_no_entries_returns_all_zero_never_crashes():
@@ -80,3 +88,67 @@ def test_asset_with_no_entered_holding_defaults_to_zero():
     holdings = [_entry("btc", 1.0), _entry(None, 900.0)]
     result = compute_current_allocations(holdings, price_by_asset_id={"btc": 100.0, "sol": 20.0})
     assert result["sol"] == pytest.approx(0.0)
+
+
+# --- Phase 5b: aggregate_current_holdings (transactional, not snapshot) -------
+
+def test_aggregate_sums_multiple_buys_for_the_same_asset():
+    # 5 SOL @ $100 total, then 3 more SOL @ $120 total, in two separate
+    # transactions -- a transactional view means these ADD to 8 SOL, not
+    # the second transaction silently replacing the first.
+    entries = [_tx("sol", 5.0, cost_basis=100.0, minutes_ago=60), _tx("sol", 3.0, cost_basis=120.0, minutes_ago=10)]
+    result = aggregate_current_holdings(entries)
+    assert len(result) == 1
+    assert result[0].asset_id == "sol"
+    assert result[0].quantity == pytest.approx(8.0)
+    assert result[0].cost_basis_usd == pytest.approx(220.0)  # 100 + 120, weighted-average-cost
+
+
+def test_aggregate_partial_sell_reduces_quantity_and_cost_basis_proportionally():
+    # Bought 10 @ total cost basis $1000 ($100/unit average). Sell 4 units
+    # -- 40% of the position -- should remove 40% of the cost basis too
+    # (weighted-average-cost method), leaving 6 units @ $600 cost basis.
+    entries = [_tx("sol", 10.0, cost_basis=1000.0, minutes_ago=60), _tx("sol", 4.0, transaction_type="SELL", minutes_ago=10)]
+    result = aggregate_current_holdings(entries)
+    assert len(result) == 1
+    assert result[0].quantity == pytest.approx(6.0)
+    assert result[0].cost_basis_usd == pytest.approx(600.0)
+
+
+def test_aggregate_sell_that_exactly_zeroes_position_removes_it_from_result():
+    entries = [_tx("sol", 5.0, cost_basis=500.0, minutes_ago=60), _tx("sol", 5.0, transaction_type="SELL", minutes_ago=10)]
+    result = aggregate_current_holdings(entries)
+    assert result == []  # a fully-sold asset shouldn't appear at all, not as a 0-quantity row
+
+
+def test_aggregate_sell_exceeding_held_quantity_clamps_at_zero_not_negative():
+    # Defensive backstop only (real validation lives at the API layer) --
+    # must never produce a negative quantity that would corrupt allocation math.
+    entries = [_tx("sol", 5.0, cost_basis=500.0, minutes_ago=60), _tx("sol", 9.0, transaction_type="SELL", minutes_ago=10)]
+    result = aggregate_current_holdings(entries)
+    assert result == []  # clamped to 0, same as the exact-zero case above
+
+
+def test_aggregate_cash_line_uses_latest_row_only_never_summed():
+    # Cash keeps its original Phase 5a semantic: an absolute stated total,
+    # not a transaction ledger -- entering $2000 then later $500 means you
+    # NOW have $500 cash, not $2500.
+    entries = [_tx(None, 2000.0, minutes_ago=60), _tx(None, 500.0, minutes_ago=10)]
+    result = aggregate_current_holdings(entries)
+    assert len(result) == 1
+    assert result[0].asset_id is None
+    assert result[0].quantity == pytest.approx(500.0)
+
+
+def test_aggregate_feeds_correctly_into_compute_current_allocations():
+    # Integration check: two BUYs of SOL (8 total) + one cash row, fed
+    # through the real two-step pipeline (aggregate, then allocate).
+    entries = [
+        _tx("sol", 5.0, cost_basis=500.0, minutes_ago=60),
+        _tx("sol", 3.0, cost_basis=360.0, minutes_ago=10),
+        _tx(None, 140.0, minutes_ago=60),
+    ]
+    aggregated = aggregate_current_holdings(entries)
+    result = compute_current_allocations(aggregated, price_by_asset_id={"sol": 100.0})
+    # 8 SOL @ $100 = $800; cash = $140; total = $940 -> SOL fraction = 800/940
+    assert result["sol"] == pytest.approx(800.0 / 940.0)

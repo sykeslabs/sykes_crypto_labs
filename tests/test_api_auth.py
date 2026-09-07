@@ -5,7 +5,7 @@ from app.config.settings import Settings
 
 
 def _client_with_key(monkeypatch, configured_key="real-secret-key"):
-    settings = Settings(_env_file=None, api_access_key=configured_key)
+    settings = Settings(_env_file=None, x_api_key=configured_key)
     monkeypatch.setattr("app.api.auth.get_settings", lambda: settings)
     return TestClient(app)
 
@@ -47,11 +47,11 @@ def test_endpoint_accepts_correct_api_key(monkeypatch):
 
 
 def test_missing_configured_key_raises_runtime_error(monkeypatch):
-    # require_api_access_key() must raise if API_ACCESS_KEY was never set --
+    # require_x_api_key() must raise if X_API_KEY was never set --
     # never silently allow unauthenticated access as a fallback.
-    settings = Settings(_env_file=None, api_access_key=None)
+    settings = Settings(_env_file=None, x_api_key=None)
     monkeypatch.setattr("app.api.auth.get_settings", lambda: settings)
     client = TestClient(app, raise_server_exceptions=False)
     response = client.get("/signal-sources", headers={"X-API-Key": "anything"})
     assert response.status_code == 500  # caught by the global handler, not leaked
-    assert "API_ACCESS_KEY" not in response.text
+    assert "X_API_KEY" not in response.text

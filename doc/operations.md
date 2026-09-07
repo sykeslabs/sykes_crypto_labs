@@ -244,8 +244,8 @@ Open `http://127.0.0.1:8000/` in a browser for the dashboard. The page
 itself loads with no key required, but every data-bearing panel and the
 `POST /holdings` form go through the same `X-API-Key`-gated JSON endpoints
 as any other caller (Phase 5's access-control non-negotiable) — paste the
-value of `API_ACCESS_KEY` from your `.env` into the dashboard's key field
+value of `X_API_KEY` from your `.env` into the dashboard's key field
 and click "Save key" (stored in that browser's `localStorage` only, per
 the documented localhost/personal-machine deployment scope). The same
 header is required for direct API calls, e.g.
-`curl -H "X-API-Key: $API_ACCESS_KEY" http://127.0.0.1:8000/holdings`.
+`curl -H "X-API-Key: $X_API_KEY" http://127.0.0.1:8000/holdings`.

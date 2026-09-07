@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -40,17 +41,32 @@ class PortfolioAllocationChange(BaseModel):
 
 
 class HoldingsLedgerEntry(BaseModel):
-    """One row of `holdings_ledger` (Phase 5a) — the ground-truth "what do
-    I actually own" input, append-only. `asset_id=None` is the reserved
-    cash line (`quantity` is then a stated USD amount directly, not asset
-    units). Never a decision/target_allocation field of any kind — this is
-    factual data entry only, see the non-negotiable in PHASE5A_PROMPT.md."""
+    """One row of `holdings_ledger` (Phase 5a/5b) — a real transaction, not
+    a snapshot: `asset_id=None` is the reserved cash line (`quantity` is
+    then a stated USD amount directly, not asset units, and always an
+    absolute total — cash is never summed across rows the way real-asset
+    transactions are). Append-only. Never a decision/target_allocation
+    field of any kind — this is factual data entry only, see the
+    non-negotiable in PHASE5A_PROMPT.md.
+
+    `transaction_type` (Phase 5b): `"BUY"` adds `quantity` to that asset's
+    running position, `"SELL"` subtracts it — explicit and auditable
+    rather than an implicit sign on `quantity`, which stays non-negative
+    either way (see `aggregate_current_holdings`). Defaults to `"BUY"`,
+    accurate for every row entered before this field existed.
+
+    `purchased_at` (Phase 5b): the real date this was bought/sold at this
+    price — distinct from `recorded_at` (when the row was entered into
+    the ledger, which may be well after the fact). `None` for rows entered
+    before this field existed — never a fabricated backfilled date."""
 
     id: str | None = None
     asset_id: str | None = None
     quantity: float
     cost_basis_usd: float | None = None
     recorded_at: datetime
+    purchased_at: datetime | None = None
+    transaction_type: Literal["BUY", "SELL"] = "BUY"
 
     def to_row(self) -> dict:
         return {
@@ -58,4 +74,6 @@ class HoldingsLedgerEntry(BaseModel):
             "quantity": self.quantity,
             "cost_basis_usd": self.cost_basis_usd,
             "recorded_at": self.recorded_at.isoformat(),
+            "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
+            "transaction_type": self.transaction_type,
         }

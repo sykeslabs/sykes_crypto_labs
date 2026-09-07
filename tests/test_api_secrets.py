@@ -46,7 +46,7 @@ def test_holdings_unhandled_exception_never_leaks_a_secret_embedded_in_its_own_m
     from app.api.dependencies import get_asset_repo, get_holdings_ledger_repo
 
     class LeakySecretAssetRepo:
-        def get_by_id(self, asset_id):
+        def get_by_symbol(self, symbol):
             raise RuntimeError(
                 f"Connection failed using key={FAKE_SUPABASE_KEY} "
                 f"openrouter={FAKE_OPENROUTER_KEY} url={FAKE_DATABASE_URL}"
@@ -57,7 +57,7 @@ def test_holdings_unhandled_exception_never_leaks_a_secret_embedded_in_its_own_m
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: type("R", (), {"insert": lambda self, e: None})()
     try:
         client = TestClient(app, raise_server_exceptions=False)
-        response = client.post("/holdings", json={"asset_id": "a1", "quantity": 1.0})
+        response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0})
         assert response.status_code == 500
         body_text = response.text
         assert FAKE_SUPABASE_KEY not in body_text
@@ -75,7 +75,7 @@ def test_401_error_body_never_echoes_the_submitted_key():
     from app.api.dependencies import get_settings_dependency  # noqa: F401
     from app.config.settings import Settings
 
-    settings = Settings(_env_file=None, api_access_key="real-key")
+    settings = Settings(_env_file=None, x_api_key="real-key")
 
     import app.api.auth as auth_module
     original = auth_module.get_settings

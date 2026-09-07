@@ -207,8 +207,8 @@ def test_context_discloses_unavailable_sources():
     btc = _asset("BTC", "a1")
     candidates = [_screened("BTC", "a1")]
     sources = [
-        SignalSource(name="Glassnode", enabled=False, status="NOT_IMPLEMENTED"),
-        SignalSource(name="CoinGecko", enabled=True, status="OK"),
+        SignalSource(name="Glassnode", status="NOT_IMPLEMENTED"),
+        SignalSource(name="CoinGecko", status="OK"),
     ]
     context = _build_context(candidates, {"a1": btc}, [_assessment("a1")], sources=sources)
     assert context.unavailable_sources == ["Glassnode"]

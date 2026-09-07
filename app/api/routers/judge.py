@@ -1,24 +1,32 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.auth import verify_api_key
-from app.api.dependencies import get_judge_decision_repo, get_reasoning_audit_repo
-from app.database.repository import JudgeDecisionRepository, JudgeReasoningAuditRepository
+from app.api.dependencies import get_asset_repo, get_judge_decision_repo, get_reasoning_audit_repo
+from app.api.schemas import JudgeDecisionView
+from app.database.repository import AssetRepository, JudgeDecisionRepository, JudgeReasoningAuditRepository
 from app.benchmarks.schemas import JudgeReasoningAuditRecord
 from app.judge.schemas import JudgeDecisionRecord
 
 router = APIRouter(prefix="/judge", tags=["judge"], dependencies=[Depends(verify_api_key)])
 
 
-@router.get("/decisions/recent", response_model=list[JudgeDecisionRecord])
+@router.get("/decisions/recent", response_model=list[JudgeDecisionView])
 def get_recent_decisions(
     limit: int = 50, is_backfilled: bool | None = None,
     repo: JudgeDecisionRepository = Depends(get_judge_decision_repo),
-) -> list[JudgeDecisionRecord]:
+    asset_repo: AssetRepository = Depends(get_asset_repo),
+) -> list[JudgeDecisionView]:
     """3e's full decision records (thesis, key/contradictory evidence,
     invalidation conditions), newest first. `is_backfilled` optionally
     filters to just backfilled or just live decisions — never mixed
-    silently, per 3e.1's own non-negotiable."""
-    return repo.get_recent(limit=limit, is_backfilled=is_backfilled)
+    silently, per 3e.1's own non-negotiable. `symbol` (Phase 5b) resolves
+    each record's raw `asset_id` to its real token symbol."""
+    records = repo.get_recent(limit=limit, is_backfilled=is_backfilled)
+    assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
+    return [
+        JudgeDecisionView(symbol=assets_by_id[r.asset_id].symbol if r.asset_id in assets_by_id else r.asset_id, decision=r)
+        for r in records
+    ]
 
 
 @router.get("/decisions/{decision_id}", response_model=JudgeDecisionRecord)

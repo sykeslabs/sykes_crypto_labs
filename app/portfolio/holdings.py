@@ -10,6 +10,69 @@ non-negotiable).
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 
+def aggregate_current_holdings(all_entries: list[HoldingsLedgerEntry]) -> list[HoldingsLedgerEntry]:
+    """Phase 5b: a genuinely transactional view, not a snapshot-per-asset
+    one. `all_entries` is the FULL append-only history (every BUY/SELL
+    transaction ever recorded, every asset) — this sums BUY quantities and
+    subtracts SELL quantities per asset to produce one synthetic "current
+    position" entry per asset, which is what `compute_current_allocations`
+    should be called with (that function itself is unchanged: it still
+    just treats its input as "one row per asset," now genuinely true by
+    construction rather than by "latest wins").
+
+    Cost basis for the synthesized entry uses the weighted-average-cost
+    method: each BUY adds its own cost_basis_usd to a running total; each
+    SELL reduces that running total by the same fraction of cost basis as
+    the fraction of quantity it sold. This is a real, stated accounting
+    policy choice — not FIFO/LIFO, which would require tracking individual
+    lot ages — and this project doesn't claim it's the only correct one.
+
+    The cash line keeps its original Phase 5a semantic completely
+    unchanged: the single LATEST cash row is an absolute stated USD total,
+    never summed with prior cash rows (a deposit/withdrawal ledger is a
+    different, not-yet-built feature) — `transaction_type` is ignored for
+    the cash line entirely.
+
+    A SELL that (due to a data-entry error) exceeds the running position
+    is clamped at zero rather than going negative, which would corrupt
+    every downstream allocation fraction — but this is a defensive
+    backstop, not real validation; the API layer rejects an over-sized
+    SELL outright before it ever reaches this function (see
+    `app/api/routers/holdings.py`)."""
+    cash_entries = [e for e in all_entries if e.asset_id is None]
+    latest_cash = max(cash_entries, key=lambda e: e.recorded_at, default=None)
+
+    by_asset: dict[str, list[HoldingsLedgerEntry]] = {}
+    for entry in all_entries:
+        if entry.asset_id is not None:
+            by_asset.setdefault(entry.asset_id, []).append(entry)
+
+    aggregated: list[HoldingsLedgerEntry] = []
+    for asset_id, entries in by_asset.items():
+        ordered = sorted(entries, key=lambda e: e.recorded_at)
+        quantity = 0.0
+        cost_basis = 0.0
+        for entry in ordered:
+            if entry.transaction_type == "SELL":
+                if quantity > 0:
+                    fraction_sold = min(entry.quantity, quantity) / quantity
+                    cost_basis -= cost_basis * fraction_sold
+                quantity = max(0.0, quantity - entry.quantity)
+            else:  # BUY
+                quantity += entry.quantity
+                cost_basis += entry.cost_basis_usd or 0.0
+        if quantity > 0:
+            aggregated.append(HoldingsLedgerEntry(
+                asset_id=asset_id, quantity=quantity,
+                cost_basis_usd=cost_basis if cost_basis > 0 else None,
+                recorded_at=ordered[-1].recorded_at,
+            ))
+
+    if latest_cash is not None:
+        aggregated.append(latest_cash)
+    return aggregated
+
+
 def compute_current_allocations(
     latest_holdings: list[HoldingsLedgerEntry],
     price_by_asset_id: dict[str, float],

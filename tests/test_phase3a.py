@@ -140,13 +140,13 @@ def test_asset_status_history_to_row_serializes_datetime():
 
 
 def test_signal_source_accepts_valid_status():
-    source = SignalSource(name="CoinGecko", enabled=True, status="OK")
+    source = SignalSource(name="CoinGecko", status="OK")
     assert source.status == "OK"
 
 
 def test_signal_source_rejects_invalid_status():
     with pytest.raises(ValidationError):
-        SignalSource(name="X", enabled=True, status="BROKEN")
+        SignalSource(name="X", status="BROKEN")
 
 
 # --- CostLedgerRepository / COST_TRACKED_TABLES -----------------------------

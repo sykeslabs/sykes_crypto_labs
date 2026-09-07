@@ -12,6 +12,7 @@ from app.database.client import get_supabase_client
 from app.database.repository import (
     AdversarialResearchRepository,
     AssetRepository,
+    AssetStatusRepository,
     CalibrationRunRepository,
     DecisionOutcomeRepository,
     EvidenceValueReportRepository,
@@ -19,12 +20,17 @@ from app.database.repository import (
     JudgeDecisionRepository,
     JudgeReasoningAuditRepository,
     MarketRegimeRepository,
+    MarketSnapshotRepository,
     ModelMarketAssessmentRepository,
+    NewsRepository,
     PortfolioPositionRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
 )
 from app.llm.cost import CostLedgerRepository
+from app.market_data.binance import BinanceClient
+from app.market_data.coinbase import CoinbaseClient
+from app.market_data.coingecko import CoinGeckoClient
 
 
 def get_client() -> Client:
@@ -37,6 +43,10 @@ def get_settings_dependency() -> Settings:
 
 def get_asset_repo() -> AssetRepository:
     return AssetRepository(get_client())
+
+
+def get_asset_status_repo() -> AssetStatusRepository:
+    return AssetStatusRepository(get_client())
 
 
 def get_screened_universe_repo() -> ScreenedUniverseRepository:
@@ -83,9 +93,29 @@ def get_holdings_ledger_repo() -> HoldingsLedgerRepository:
     return HoldingsLedgerRepository(get_client())
 
 
+def get_market_snapshot_repo() -> MarketSnapshotRepository:
+    return MarketSnapshotRepository(get_client())
+
+
 def get_signal_source_repo() -> SignalSourceRepository:
     return SignalSourceRepository(get_client())
 
 
 def get_cost_ledger_repo() -> CostLedgerRepository:
     return CostLedgerRepository(get_client())
+
+
+def get_news_repo() -> NewsRepository:
+    return NewsRepository(get_client())
+
+
+def get_binance_client() -> BinanceClient:
+    return BinanceClient(get_settings())
+
+
+def get_coinbase_client() -> CoinbaseClient:
+    return CoinbaseClient(get_settings())
+
+
+def get_coingecko_client() -> CoinGeckoClient:
+    return CoinGeckoClient(get_settings())

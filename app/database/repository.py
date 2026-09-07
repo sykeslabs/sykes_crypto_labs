@@ -56,6 +56,16 @@ class AssetRepository:
             return None
         return Asset.model_validate(response.data[0])
 
+    def get_by_symbol(self, symbol: str) -> Asset | None:
+        """Phase 5b: lets a holdings-ledger entry be made by real token
+        symbol (e.g. "SOL") instead of a raw asset UUID — same "any
+        status, not just active" rule as `get_by_id`. Case-insensitive
+        (`ilike`) so "sol"/"Sol"/"SOL" all resolve the same real asset."""
+        response = self._client.table("assets").select("*").ilike("symbol", symbol).limit(1).execute()
+        if not response.data:
+            return None
+        return Asset.model_validate(response.data[0])
+
     def create_asset(
         self,
         symbol: str,
@@ -289,8 +299,8 @@ class AssetStatusRepository:
 
 
 class SignalSourceRepository:
-    """Reads the `signal_sources` registry — which evidence sources exist,
-    whether they're enabled, and their current status."""
+    """Reads the `signal_sources` registry — which evidence sources exist
+    and their current status."""
 
     def __init__(self, client: Client) -> None:
         self._client = client
@@ -418,6 +428,22 @@ class MarketRegimeRepository:
             self._client.table("market_regime_snapshots")
             .select("*")
             .order("computed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if not response.data:
+            return None
+        return MarketRegimeSnapshot.model_validate(response.data[0])
+
+    def get_by_id(self, regime_id: str) -> MarketRegimeSnapshot | None:
+        """Phase 5b: resolves a `decision_outcomes.regime_at_decision` FK
+        (a raw UUID) to its real `regime` label (e.g. "RISK_ON") -- that
+        column stores the snapshot id, never the label itself, a real gap
+        found live when the dashboard first rendered a raw UUID."""
+        response = (
+            self._client.table("market_regime_snapshots")
+            .select("*")
+            .eq("id", regime_id)
             .limit(1)
             .execute()
         )

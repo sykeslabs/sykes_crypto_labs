@@ -9,11 +9,15 @@ from app.api.dependencies import (
     get_adversarial_repo,
     get_asset_repo,
     get_assessment_repo,
+    get_binance_client,
     get_calibration_run_repo,
+    get_coinbase_client,
+    get_coingecko_client,
     get_cost_ledger_repo,
     get_decision_outcome_repo,
     get_evidence_value_report_repo,
     get_judge_decision_repo,
+    get_market_snapshot_repo,
     get_portfolio_position_repo,
     get_reasoning_audit_repo,
     get_regime_repo,
@@ -42,6 +46,17 @@ def _bypass_auth():
     app.dependency_overrides[verify_api_key] = lambda: None
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _default_price_clients():
+    # Phase 5b: /portfolio/state now also looks up a stored snapshot and a
+    # live Binance/Coinbase price per asset -- default to "nothing found"
+    # so tests that don't care about pricing don't need their own fakes.
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: type("R", (), {"get_latest_snapshot": lambda self, a: None})()
+    app.dependency_overrides[get_binance_client] = lambda: type("C", (), {"fetch_ticker_24hr": lambda self, s: None})()
+    app.dependency_overrides[get_coinbase_client] = lambda: type("C", (), {"fetch_ticker": lambda self, s: None})()
+    yield
 
 
 @pytest.fixture
@@ -91,6 +106,91 @@ def test_get_universe(client):
     response = client.get("/screening/universe")
     assert response.status_code == 200
     assert len(response.json()) == 2
+
+
+def test_get_tracked_assets_sorted_by_symbol(client):
+    class FakeAssetRepoForTracked:
+        def get_active_assets(self):
+            return [
+                Asset(id="a2", symbol="SOL", name="SOL", coingecko_id="sol", active=True, in_asset=True, created_at=datetime.now(UTC)),
+                Asset(id="a1", symbol="BTC", name="BTC", coingecko_id="btc", active=True, in_asset=True, created_at=datetime.now(UTC)),
+            ]
+
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepoForTracked()
+    response = client.get("/screening/tracked")
+    assert response.status_code == 200
+    assert [a["symbol"] for a in response.json()] == ["BTC", "SOL"]
+
+
+# --- Phase 5b (addendum): live factor recompute -------------------------------
+
+def test_get_live_factors_computes_from_live_data(client):
+    class FakeScreenedRepo:
+        def get_latest_for_symbol(self, symbol):
+            assert symbol == "SOL"
+            return _screened("SOL", asset_id="a1")  # coingecko_id="sol" per _screened()
+
+    class FakeCoinGeckoWithMarkets:
+        def fetch_markets(self, ids):
+            assert set(ids) == {"sol", "bitcoin"}
+            return {
+                "sol": {"price_change_percentage_30d_in_currency": 10.0, "price_change_percentage_7d_in_currency": 2.0, "total_volume": 5_000_000.0},
+                "bitcoin": {"price_change_percentage_30d_in_currency": 4.0},
+            }
+
+    class FakeBinanceWithOhlcv:
+        def fetch_daily_ohlcv(self, symbol, days):
+            assert symbol == "SOL"
+            return [(100.0, 1.0), (105.0, 1.0), (98.0, 1.0)]
+
+    app.dependency_overrides[get_screened_universe_repo] = lambda: FakeScreenedRepo()
+    app.dependency_overrides[get_coingecko_client] = lambda: FakeCoinGeckoWithMarkets()
+    app.dependency_overrides[get_binance_client] = lambda: FakeBinanceWithOhlcv()
+    response = client.get("/screening/live-factors/SOL")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["momentum_30d"] == pytest.approx(10.0)
+    assert body["momentum_7d"] == pytest.approx(2.0)
+    assert body["relative_strength_30d"] == pytest.approx(6.0)  # 10.0 - 4.0
+    assert body["volatility_drawdown_source"] == "BINANCE"
+    assert body["volatility_30d"] is not None
+    assert body["drawdown_30d"] is not None
+
+
+def test_get_live_factors_falls_back_to_coinbase(client):
+    class FakeScreenedRepo:
+        def get_latest_for_symbol(self, symbol):
+            return _screened("SOL", asset_id="a1")
+
+    class FakeCoinGeckoEmpty:
+        def fetch_markets(self, ids):
+            return {}
+
+    class FakeBinanceNoListing:
+        def fetch_daily_ohlcv(self, symbol, days):
+            return None
+
+    class FakeCoinbaseWithOhlcv:
+        def fetch_daily_ohlcv(self, symbol, days):
+            return [(100.0, 1.0), (110.0, 1.0)]
+
+    app.dependency_overrides[get_screened_universe_repo] = lambda: FakeScreenedRepo()
+    app.dependency_overrides[get_coingecko_client] = lambda: FakeCoinGeckoEmpty()
+    app.dependency_overrides[get_binance_client] = lambda: FakeBinanceNoListing()
+    app.dependency_overrides[get_coinbase_client] = lambda: FakeCoinbaseWithOhlcv()
+    response = client.get("/screening/live-factors/SOL")
+    assert response.status_code == 200
+    assert response.json()["volatility_drawdown_source"] == "COINBASE"
+
+
+def test_get_live_factors_404s_for_a_symbol_never_screened(client):
+    class FakeScreenedRepoEmpty:
+        def get_latest_for_symbol(self, symbol):
+            return None
+
+    app.dependency_overrides[get_screened_universe_repo] = lambda: FakeScreenedRepoEmpty()
+    response = client.get("/screening/live-factors/NOTREAL")
+    assert response.status_code == 404
 
 
 def test_get_regime_returns_null_when_none_computed(client):
@@ -152,14 +252,20 @@ def test_get_adversarial_research_for_asset_null_when_none(client):
 # --- judge -----------------------------------------------------------------
 
 def test_get_recent_decisions(client):
+    asset = Asset(id="a1", symbol="BTC", name="Bitcoin", coingecko_id="bitcoin", active=True, in_asset=True, created_at=datetime.now(UTC))
+
     class FakeRepo:
         def get_recent(self, limit=50, is_backfilled=None):
             return [_judge_decision()]
 
     app.dependency_overrides[get_judge_decision_repo] = lambda: FakeRepo()
+    app.dependency_overrides[get_asset_repo] = lambda: type("R", (), {"get_active_assets": lambda self: [asset]})()
     response = client.get("/judge/decisions/recent")
     assert response.status_code == 200
-    assert response.json()[0]["thesis"] == "A real thesis."
+    entry = response.json()[0]
+    # Phase 5b: asset_id is a raw UUID on the record itself -- symbol is the real join
+    assert entry["symbol"] == "BTC"
+    assert entry["decision"]["thesis"] == "A real thesis."
 
 
 def test_get_decision_by_id_404_when_not_found(client):
@@ -208,7 +314,7 @@ def test_get_portfolio_state_joins_position_with_outcome(client):
         decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
         target_return=0.1, stop_return=-0.1, realized_return=0.05, realized_return_net_of_costs=0.048,
         assumed_fill_method="VOLATILITY_SCALED_ESTIMATE", outcome_label="HIT_TARGET",
-        judge_confidence=0.6, is_backfilled=False,
+        judge_confidence=0.6, is_backfilled=False, regime_at_decision="r1",
     )
 
     class FakeAssetRepo:
@@ -223,15 +329,52 @@ def test_get_portfolio_state_joins_position_with_outcome(client):
         def get_by_decision_id(self, decision_id):
             return outcome
 
+    class FakeRegimeRepo:
+        def get_by_id(self, regime_id):
+            assert regime_id == "r1"
+            return type("Snapshot", (), {"regime": "RISK_ON"})()
+
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo()
     app.dependency_overrides[get_portfolio_position_repo] = lambda: FakePositionRepo()
     app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_regime_repo] = lambda: FakeRegimeRepo()
     response = client.get("/portfolio/state")
     assert response.status_code == 200
     entry = response.json()[0]
     assert entry["symbol"] == "BTC"
     assert entry["outcome"]["assumed_fill_method"] == "VOLATILITY_SCALED_ESTIMATE"
     assert entry["outcome"]["realized_return_net_of_costs"] == pytest.approx(0.048)
+    # Phase 5b: regime_at_decision is a raw snapshot id ("r1" here), never
+    # the human-readable label directly -- regime_label is the real join.
+    assert entry["outcome"]["regime_at_decision"] == "r1"
+    assert entry["regime_label"] == "RISK_ON"
+
+
+def test_get_portfolio_state_includes_stored_and_live_price(client):
+    asset = Asset(id="a1", symbol="BTC", name="Bitcoin", coingecko_id="bitcoin", active=True, in_asset=True, created_at=datetime.now(UTC))
+    position = PortfolioPosition(asset_id="a1", current_allocation=0.05, last_decision_id=None, updated_at=datetime.now(UTC))
+
+    class FakeSnapshotRepo:
+        def get_latest_snapshot(self, asset_id):
+            return type("Snapshot", (), {"price": Decimal("79910"), "timestamp": datetime.now(UTC)})()
+
+    class FakeBinanceWithTicker:
+        def fetch_ticker_24hr(self, symbol):
+            return {"lastPrice": "80000.00", "closeTime": 1700000000000}
+
+    app.dependency_overrides[get_asset_repo] = lambda: type("R", (), {"get_active_assets": lambda self: [asset]})()
+    app.dependency_overrides[get_portfolio_position_repo] = lambda: type("R", (), {"get_all": lambda self: {"a1": position}})()
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: type("R", (), {"get_by_decision_id": lambda self, d: None})()
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeSnapshotRepo()
+    app.dependency_overrides[get_binance_client] = lambda: FakeBinanceWithTicker()
+    response = client.get("/portfolio/state")
+    assert response.status_code == 200
+    entry = response.json()[0]
+    # Stored (last-collected) price stays separate from the live spot price
+    assert entry["price_usd"] == pytest.approx(79910.0)
+    assert entry["price_as_of"] is not None
+    assert entry["live_price_usd"] == pytest.approx(80000.0)
+    assert entry["live_price_source"] == "binance"
 
 
 def test_get_portfolio_state_omits_zero_allocation_positions(client):
@@ -241,8 +384,30 @@ def test_get_portfolio_state_omits_zero_allocation_positions(client):
     app.dependency_overrides[get_asset_repo] = lambda: type("R", (), {"get_active_assets": lambda self: [asset]})()
     app.dependency_overrides[get_portfolio_position_repo] = lambda: type("R", (), {"get_all": lambda self: {"a1": position}})()
     app.dependency_overrides[get_decision_outcome_repo] = lambda: type("R", (), {"get_by_decision_id": lambda self, d: None})()
+    app.dependency_overrides[get_regime_repo] = lambda: type("R", (), {"get_by_id": lambda self, r: None})()
     response = client.get("/portfolio/state")
     assert response.json() == []
+
+
+def test_get_portfolio_state_regime_label_none_when_regime_at_decision_is_null(client):
+    # The real, documented persistence gap (3e.1's replay never saved a
+    # regime row) -- regime_label must stay None, never a guessed value.
+    asset = Asset(id="a1", symbol="BTC", name="Bitcoin", coingecko_id="bitcoin", active=True, in_asset=True, created_at=datetime.now(UTC))
+    position = PortfolioPosition(asset_id="a1", current_allocation=0.05, last_decision_id="d1", updated_at=datetime.now(UTC))
+    outcome = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=None, realized_return_net_of_costs=None,
+        assumed_fill_method=None, outcome_label="UNRESOLVED",
+        judge_confidence=0.6, is_backfilled=True, regime_at_decision=None,
+    )
+
+    app.dependency_overrides[get_asset_repo] = lambda: type("R", (), {"get_active_assets": lambda self: [asset]})()
+    app.dependency_overrides[get_portfolio_position_repo] = lambda: type("R", (), {"get_all": lambda self: {"a1": position}})()
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: type("R", (), {"get_by_decision_id": lambda self, d: outcome})()
+    app.dependency_overrides[get_regime_repo] = lambda: type("R", (), {"get_by_id": lambda self, r: (_ for _ in ()).throw(AssertionError("should not be called"))})()
+    response = client.get("/portfolio/state")
+    assert response.status_code == 200
+    assert response.json()[0]["regime_label"] is None
 
 
 # --- calibration -----------------------------------------------------------------
@@ -329,7 +494,7 @@ def test_get_recent_evidence_value_reports(client):
 def test_get_signal_sources(client):
     class FakeRepo:
         def get_all(self):
-            return [SignalSource(name="Etherscan", enabled=False, status="NOT_IMPLEMENTED")]
+            return [SignalSource(name="Etherscan", status="NOT_IMPLEMENTED")]
 
     app.dependency_overrides[get_signal_source_repo] = lambda: FakeRepo()
     response = client.get("/signal-sources")

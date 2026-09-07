@@ -12,6 +12,8 @@
   section h2 { margin-top: 0; font-size: 1.05rem; }
   table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #8884; vertical-align: top; }
+  th.sortable-th { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable-th:hover { color: #1565c0; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
   .badge.ok { background: #2e7d3222; color: #2e7d32; }
   .badge.unavailable { background: #c6282822; color: #c62828; }
@@ -19,12 +21,42 @@
   .badge.backfilled { background: #ef6c0022; color: #ef6c00; }
   .badge.live { background: #1565c022; color: #1565c0; }
   .badge.insufficient { background: #6c6c6c22; color: #6c6c6c; }
+  .badge.warn { background: #ef6c0022; color: #ef6c00; }
+  .overview-strip { display: flex; flex-wrap: wrap; gap: 20px; padding: 14px 16px; margin-bottom: 20px; border: 1px solid #8888; border-radius: 8px; }
+  .overview-strip > div { min-width: 200px; flex: 1; font-size: 0.85rem; }
+  .overview-strip a { color: inherit; }
   .null-note { color: #ef6c00; font-style: italic; font-size: 0.85rem; }
+  .metric-desc { color: #888; font-size: 0.8rem; }
   .key-setup { display: flex; gap: 8px; align-items: center; margin-bottom: 20px; }
   .key-setup input { flex: 1; padding: 6px; }
   .error { color: #c62828; }
   .thesis { max-width: 420px; white-space: normal; }
+  .thesis summary { cursor: pointer; }
   #key-status { font-size: 0.85rem; }
+  .donut-block { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .donut-legend { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
+  .donut-legend li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+  .donut-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .compare-row { margin-bottom: 10px; }
+  .compare-row .compare-label { font-size: 0.85rem; margin-bottom: 2px; display: flex; justify-content: space-between; }
+  .compare-track { position: relative; height: 14px; background: #8882; border-radius: 3px; overflow: hidden; }
+  .compare-bar { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+  .compare-bar.current { background: #1565c0; }
+  .compare-bar.recommended { background: #ef6c00; opacity: 0.6; }
+  .compare-key { font-size: 0.8rem; color: #888; margin-bottom: 10px; }
+  .compare-key .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+  .delta-line { font-size: 0.85rem; margin: 4px 0; }
+  .panel-error summary { cursor: pointer; color: #888; font-size: 0.8rem; }
+  #last-updated { font-size: 0.8rem; color: #888; margin: -12px 0 20px; }
+  .mini-bar-cell { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .mini-bar-track { position: relative; width: 50px; height: 8px; background: #8882; border-radius: 3px; overflow: hidden; flex-shrink: 0; }
+  .mini-bar-fill { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+  .cap-bar-track { position: relative; width: 100%; max-width: 320px; height: 10px; background: #8882; border-radius: 4px; overflow: hidden; margin: 4px 0 10px; }
+  .cap-bar-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 4px; }
+  .glossary { font-size: 0.85rem; margin-top: 16px; }
+  .glossary summary { cursor: pointer; color: #888; }
+  .glossary dt { font-weight: 600; margin-top: 8px; }
+  .glossary dd { margin: 0 0 4px 0; color: #ccc; }
 </style>
 </head>
 <body>
@@ -37,9 +69,59 @@
   <span id="key-status"></span>
 </div>
 
+<p id="last-updated"></p>
+
+<details class="glossary">
+  <summary>Glossary — every term used on this page, one line each</summary>
+  <dl>
+    <dt>AI Portfolio</dt><dd>The system's own recommended allocation (Judge -> Risk Engine -> Portfolio Construction) -- a target, not what you actually hold.</dd>
+    <dt>Allocation</dt><dd>What fraction of the total portfolio value one asset (or cash) represents, as a percentage.</dd>
+    <dt>Backfilled vs. live</dt><dd>Backfilled = a simulated decision from a historical replay, used to build up a track record fast. Live = a decision made in real time, right now.</dd>
+    <dt>Brier score</dt><dd>Whether stated confidence was honest -- did "90% confident" calls come true ~90% of the time? Lower is better; 0 is perfect, ~0.25 is a coin flip.</dd>
+    <dt>Confidence</dt><dd>How sure the system is about a decision, 0 (a guess) to 1 (certain).</dd>
+    <dt>Deflated Sharpe Ratio</dt><dd>The Sharpe ratio, corrected for the chance that trying many variations makes a result look good by luck alone, not skill.</dd>
+    <dt>Expected alpha</dt><dd>The extra return a decision is expected to earn beyond just holding the market -- can be negative.</dd>
+    <dt>Fill method</dt><dd>The order-execution assumption used to estimate realistic trading costs for a position.</dd>
+    <dt>Hit rate</dt><dd>Of resolved decisions, the fraction that called the right direction. 1.0 = always right, 0.5 = a coin flip.</dd>
+    <dt>Mark-to-mid</dt><dd>The paper return if a position could be closed right now at the current market price, before fees.</dd>
+    <dt>My Portfolio</dt><dd>What you actually hold, entered by hand as real transactions -- ground truth, the only input Portfolio Construction uses for current_allocation.</dd>
+    <dt>Net of costs</dt><dd>The same return, after subtracting realistic trading fees and price-impact -- the more honest number.</dd>
+    <dt>NOT_IMPLEMENTED</dt><dd>A deliberate decision (cost, an access relationship not pursued, or genuine infeasibility) -- never a broken or failing source.</dd>
+    <dt>Regime</dt><dd>The market condition (e.g. risk-on/risk-off) the system read at the moment it made a decision.</dd>
+    <dt>Resolved / unresolved</dt><dd>Resolved = the outcome is known (hit target, hit stop, or timed out). Unresolved = still waiting -- every decision has a multi-week horizon.</dd>
+    <dt>Risk score</dt><dd>How much a decision could lose if wrong, 0 (very safe) to 1 (very risky) -- feeds directly into how large a position it's sized at.</dd>
+    <dt>Sharpe ratio</dt><dd>Return earned relative to how bumpy/inconsistent the returns were. Higher means steadier, more dependable gains.</dd>
+    <dt>UNAVAILABLE</dt><dd>Investigated and found to be genuinely blocked (e.g. a bot-challenge or DNS failure) -- a real, attempted access failure.</dd>
+  </dl>
+</details>
+
+<div id="overview-strip" class="overview-strip">Loading…</div>
+
 <section>
   <h2>Signal sources</h2>
   <div id="signal-sources">Loading…</div>
+</section>
+
+<section>
+  <h2>Screened tokens</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    Only a small, algorithmically-narrowed subset of the crypto market is
+    ever tracked here, not the whole universe — three narrowing layers,
+    widest to narrowest.
+  </p>
+  <div id="screened-tokens">Loading…</div>
+</section>
+
+<section>
+  <h2>LLM prompts</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    Every distinct LLM prompt actually defined in this codebase, real code
+    lookups only — not every one runs on every <code>python -m app.main</code>
+    invocation; each row states exactly which flag or script actually
+    triggers it, and any prompt found genuinely unreachable from anywhere
+    would show as not in use here, rather than being silently omitted.
+  </p>
+  <div id="llm-prompts">Loading…</div>
 </section>
 
 <section>
@@ -48,27 +130,56 @@
 </section>
 
 <section>
-  <h2>Portfolio state</h2>
+  <h2>AI Portfolio</h2>
+  <div id="portfolio-state-donut"></div>
   <div id="portfolio-state">Loading…</div>
 </section>
 
 <section>
-  <h2>Real holdings (ground truth)</h2>
+  <h2>My Portfolio</h2>
   <p style="font-size:0.85rem;color:#888;">
-    What you actually hold, entered by hand — the only input Portfolio
-    Construction uses for current_allocation. Append-only: editing or
-    removing a position adds a new dated entry, it never overwrites the
-    prior one. Use asset id <code>CASH</code> for uninvested cash (a
-    stated USD amount).
+    What you actually hold, entered by hand as real transactions — the
+    only input Portfolio Construction uses for current_allocation.
+    Append-only and transactional (Phase 5b): every BUY/SELL you record
+    for an asset sums with every prior one for that asset into the
+    position shown below; nothing you enter ever overwrites or deletes a
+    prior entry. Enter <code>CASH</code> for uninvested cash (a stated
+    USD amount, always an absolute total, not summed like a real asset).
+    The symbol field isn't limited to the autocomplete list above it —
+    typing a real token not yet tracked here (e.g. <code>ADA</code>,
+    <code>LTC</code>) is checked against CoinGecko and, if it's a genuine
+    listed coin, added as a newly tracked asset automatically; a symbol
+    that isn't real is rejected.
   </p>
+  <div id="holdings-donut"></div>
   <div id="holdings-current">Loading…</div>
   <form id="holdings-form" style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
-    <input id="holdings-asset-id" placeholder="asset id (or CASH)" style="flex:1;">
+    <input id="holdings-asset-symbol" list="holdings-symbol-list" placeholder="token symbol (or CASH)" style="flex:1;" autocomplete="off">
+    <datalist id="holdings-symbol-list"></datalist>
+    <select id="holdings-transaction-type">
+      <option value="BUY">Buy</option>
+      <option value="SELL">Sell</option>
+    </select>
     <input id="holdings-quantity" type="number" step="any" placeholder="quantity / USD amount" style="flex:1;">
-    <input id="holdings-cost-basis" type="number" step="any" placeholder="cost basis USD (optional)" style="flex:1;">
+    <input id="holdings-cost-basis" type="number" step="any" placeholder="total cost basis USD (optional)" style="flex:1;">
+    <input id="holdings-purchased-at" type="date" title="The real date this was bought/sold (optional) -- distinct from today, when you're entering it.">
     <button type="submit">Record</button>
   </form>
   <div id="holdings-form-status" style="font-size:0.85rem;"></div>
+  <details style="margin-top:10px;">
+    <summary style="cursor:pointer; color:#888; font-size:0.85rem;">Show full transaction history</summary>
+    <div id="holdings-history" style="margin-top:8px;">Loading…</div>
+  </details>
+</section>
+
+<section>
+  <h2>What should change</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    My Portfolio (above) vs. AI Portfolio (further above) compared
+    directly, per asset — the question this whole system exists to
+    answer.
+  </p>
+  <div id="portfolio-comparison">Loading…</div>
 </section>
 
 <section>
@@ -79,6 +190,16 @@
 <section>
   <h2>Recent Judge decisions</h2>
   <div id="judge-decisions">Loading…</div>
+</section>
+
+<section>
+  <h2>Recent news</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    Articles matched against your tracked assets by keyword (not full NLP —
+    see <code>app/news/relevance.py</code>), feeding the Judge's research
+    context. Shown here read-only, same as everything else on this page.
+  </p>
+  <div id="recent-news">Loading…</div>
 </section>
 
 <script>
@@ -113,10 +234,288 @@ async function apiPost(path, body) {
   return parsed;
 }
 
+// Phase 5b §6: one consistent voice for any panel-level fetch failure --
+// a short plain-language line always visible, the real error text (401,
+// 500, network failure, whatever it is) available on click for anyone
+// who wants it, never a bare stack trace or a silently blank panel.
+function renderError(target, error) {
+  target.innerHTML = `<details class="panel-error">
+    <summary>Couldn't load this data — try refreshing.</summary>
+    <span class="error">${error.message}</span>
+  </details>`;
+}
+
 function statusBadgeClass(status) {
   if (status === "OK") return "ok";
   if (status === "UNAVAILABLE") return "unavailable";
   return "not-implemented";
+}
+
+// Phase 5b item 2: how many percentage points of divergence between a
+// held allocation and the system's recommended allocation counts as a
+// real difference worth calling out -- not a magic number repeated
+// elsewhere, and confirmed against the codebase to have no existing
+// rebalance-trigger constant to reuse (MIN_REBALANCE_CONFIDENCE is a
+// confidence bar, not an allocation-divergence threshold).
+const DIVERGENCE_THRESHOLD_POINTS = 5;
+
+// Phase 5b §1: hand-rolled inline SVG rather than a charting library --
+// evaluated per the non-negotiable, not defaulted. A donut is just a
+// circle with stroke-dasharray/stroke-dashoffset per slice (no arc-path
+// trigonometry needed) and the comparison view is plain scaled <div>
+// bars -- both are genuinely simpler and less code than adding an
+// external dependency for this page's actual needs (a handful of static
+// slices/bars, no interactivity, no animation requested).
+const CASH_CHART_COLOR = "#888888";
+const ASSET_CHART_PALETTE = ["#1565c0", "#2e7d32", "#ef6c00", "#8e24aa", "#c62828", "#00838f", "#9e9d24", "#5d4037", "#455a64", "#d81b60"];
+const assetColorMap = {}; // symbol -> color, shared/stable across every chart on the page
+
+function colorForSymbol(symbol) {
+  if (symbol === "CASH") return CASH_CHART_COLOR;
+  if (!(symbol in assetColorMap)) {
+    assetColorMap[symbol] = ASSET_CHART_PALETTE[Object.keys(assetColorMap).length % ASSET_CHART_PALETTE.length];
+  }
+  return assetColorMap[symbol];
+}
+
+// slices: [{symbol, fraction}], fraction in [0, 1]. CASH is never
+// filtered out here even at 0% -- it's the caller's job to always
+// include a CASH entry (per the non-negotiable that cash stays
+// visually first-class, not silently dropped for having "0 tokens").
+function renderDonutSvg(slices) {
+  const r = 45, cx = 60, cy = 60, circumference = 2 * Math.PI * r;
+  const nonZero = slices.filter(s => s.fraction > 0);
+  if (nonZero.length === 0) {
+    return `<svg viewBox="0 0 120 120" width="140" height="140">
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="#8884" stroke-width="20"></circle>
+    </svg>`;
+  }
+  let offset = 0;
+  const circles = nonZero.map(s => {
+    const dash = s.fraction * circumference;
+    const circle = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colorForSymbol(s.symbol)}" stroke-width="20" stroke-dasharray="${dash} ${circumference - dash}" stroke-dashoffset="${-offset}"></circle>`;
+    offset += dash;
+    return circle;
+  }).join("");
+  return `<svg viewBox="0 0 120 120" width="140" height="140" style="transform: rotate(-90deg)">${circles}</svg>`;
+}
+
+// `valueUsd` is optional per slice -- only My Portfolio's donut passes it
+// (a real dollar value naturally exists per position there); Portfolio
+// state's donut doesn't pass it and renders exactly as before.
+function renderDonutLegend(slices) {
+  const items = slices.filter(s => s.symbol === "CASH" || s.fraction > 0)
+    .map(s => {
+      const usdPart = s.valueUsd !== undefined && s.valueUsd !== null
+        ? ` ($${s.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })})`
+        : "";
+      return `<li><span class="swatch" style="background:${colorForSymbol(s.symbol)}"></span>${s.symbol}: ${(s.fraction * 100).toFixed(2)}%${usdPart}</li>`;
+    })
+    .join("");
+  return `<ul class="donut-legend">${items}</ul>`;
+}
+
+function renderDonutBlock(slices) {
+  return `<div class="donut-block">${renderDonutSvg(slices)}${renderDonutLegend(slices)}</div>`;
+}
+
+// Phase 5b: a stored (last-collected) price always renders with its own
+// timestamp alongside it -- never shown as if it were live (see
+// app/api/schemas.py's HoldingsEntryView docstring for why).
+function renderStoredPrice(priceUsd, asOf) {
+  if (priceUsd === null || priceUsd === undefined) return "—";
+  const time = asOf ? new Date(asOf).toLocaleString() : "unknown time";
+  return `$${priceUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}
+    <br><span class="metric-desc">as of ${time}</span>`;
+}
+
+// A genuinely live spot price, fetched at request time -- kept visually
+// and semantically distinct from the stored price above.
+function renderLivePrice(liveUsd, liveAsOf, source) {
+  if (liveUsd === null || liveUsd === undefined) return "—";
+  const time = liveAsOf ? new Date(liveAsOf).toLocaleTimeString() : "";
+  return `$${liveUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}
+    <br><span class="metric-desc">live, ${source || "?"} ${time}</span>`;
+}
+
+// Phase 5b: color-coded, sign-aware -- a quick "up or down" read alongside
+// the exact numbers, consistent with renderDivergingBar's green/red convention.
+function renderPnl(pnlUsd, pnlPct) {
+  if (pnlUsd === null || pnlUsd === undefined) return "—";
+  const color = pnlUsd >= 0 ? "#2e7d32" : "#c62828";
+  const sign = pnlUsd >= 0 ? "+" : "";
+  const pctText = pnlPct !== null && pnlPct !== undefined ? ` (${sign}${pnlPct.toFixed(2)}%)` : "";
+  return `<span style="color:${color};">${sign}$${pnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}${pctText}</span>`;
+}
+
+// Phase 5b §4: a short filled bar alongside the exact number, per the
+// prompt's own wording -- legible at a glance for a non-financial reader,
+// precise for anyone who wants the real value. `value`/`max` in [0, max].
+function renderMiniBar(value, max, color, decimals) {
+  const pct = Math.max(0, Math.min(1, value / max)) * 100;
+  return `<span class="mini-bar-cell">
+    <span class="mini-bar-track"><span class="mini-bar-fill" style="width:${pct.toFixed(1)}%; left:0; background:${color};"></span></span>
+    ${value.toFixed(decimals)}
+  </span>`;
+}
+
+// Expected alpha can be negative -- a bar diverging from a centered zero
+// line (green = positive, red = negative) rather than a plain 0-max fill,
+// so a negative expected return doesn't misleadingly render as "empty."
+function renderDivergingBar(value, maxAbs) {
+  const clamped = Math.max(-maxAbs, Math.min(maxAbs, value));
+  const pct = Math.abs(clamped / maxAbs) * 50; // half-track max in each direction
+  const color = value >= 0 ? "#2e7d32" : "#c62828";
+  const left = value >= 0 ? 50 : 50 - pct;
+  return `<span class="mini-bar-cell">
+    <span class="mini-bar-track"><span class="mini-bar-fill" style="width:${pct.toFixed(1)}%; left:${left.toFixed(1)}%; background:${color};"></span></span>
+    ${(value * 100).toFixed(2)}%
+  </span>`;
+}
+
+// Generic sortable-table utility -- every real data table on this
+// dashboard goes through this so any column header can be clicked to sort
+// ascending, then descending. Sorting operates on each column's own raw
+// value (a number, date, or string given by `value(row)`), never by
+// scraping the rendered HTML -- so a column showing a mini-bar or a badge
+// still sorts correctly by the real underlying number. Nulls/undefined
+// always sort last regardless of direction, rather than colliding with
+// real zero values at one end.
+let _sortableTableSeq = 0;
+const _sortableTables = {};
+
+// `columns`: [{ label, title? (header tooltip), value: row => comparable,
+// html?: row => cell HTML (defaults to `value`) }]. Returns a `<table>`
+// string with a stable id so `sortDashboardTable` can re-render it in place.
+function buildSortableTable(columns, rows) {
+  const id = "sortable-table-" + (++_sortableTableSeq);
+  _sortableTables[id] = { columns, rows, sortCol: null, sortDir: 1 };
+  return renderSortableTableHtml(id);
+}
+
+function renderSortableTableHtml(id) {
+  const state = _sortableTables[id];
+  const { columns, rows, sortCol, sortDir } = state;
+  let displayRows = rows;
+  if (sortCol !== null) {
+    const col = columns[sortCol];
+    displayRows = [...rows].sort((ra, rb) => {
+      const va = col.value(ra), vb = col.value(rb);
+      const aNil = va === null || va === undefined || va === "";
+      const bNil = vb === null || vb === undefined || vb === "";
+      if (aNil && bNil) return 0;
+      if (aNil) return 1;
+      if (bNil) return -1;
+      const cmp = typeof va === "number" && typeof vb === "number"
+        ? va - vb
+        : String(va).localeCompare(String(vb), undefined, { numeric: true, sensitivity: "base" });
+      return cmp * sortDir;
+    });
+  }
+  const headHtml = columns.map((col, i) => {
+    const arrow = sortCol === i ? (sortDir === 1 ? " ▲" : " ▼") : "";
+    const titleAttr = col.title ? ` title="${col.title.replace(/"/g, "&quot;")}"` : "";
+    return `<th class="sortable-th"${titleAttr} onclick="sortDashboardTable('${id}', ${i})">${col.label}${arrow}</th>`;
+  }).join("");
+  const bodyHtml = displayRows.map(row => {
+    const cells = columns.map(col => `<td>${col.html ? col.html(row) : (row == null ? "—" : col.value(row))}</td>`).join("");
+    return `<tr>${cells}</tr>`;
+  }).join("");
+  return `<table id="${id}"><tr>${headHtml}</tr>${bodyHtml}</table>`;
+}
+
+function sortDashboardTable(id, colIndex) {
+  const state = _sortableTables[id];
+  if (!state) return;
+  if (state.sortCol === colIndex) {
+    state.sortDir *= -1;
+  } else {
+    state.sortCol = colIndex;
+    state.sortDir = 1;
+  }
+  const el = document.getElementById(id);
+  if (el) el.outerHTML = renderSortableTableHtml(id);
+}
+
+// Shared by the overview strip and the "What should change" comparison
+// chart -- one computation of current-vs-recommended-by-symbol (CASH
+// included, per §1's non-negotiable that cash stays first-class), so the
+// two views can never silently drift apart on what counts as "tracked."
+function buildAllocationComparison(holdings, portfolioState) {
+  const currentBySymbol = {};
+  holdings.forEach(h => { currentBySymbol[h.symbol] = h.allocation || 0; });
+  const recommendedBySymbol = {};
+  portfolioState.forEach(p => { recommendedBySymbol[p.symbol] = p.current_allocation; });
+  const recommendedCash = 1 - portfolioState.reduce((sum, p) => sum + p.current_allocation, 0);
+  recommendedBySymbol["CASH"] = recommendedCash;
+  if (!("CASH" in currentBySymbol)) currentBySymbol["CASH"] = 0;
+  const symbols = [...new Set([...Object.keys(currentBySymbol), ...Object.keys(recommendedBySymbol)])];
+  return { currentBySymbol, recommendedBySymbol, symbols };
+}
+
+async function loadOverviewStrip() {
+  const target = document.getElementById("overview-strip");
+  try {
+    const [holdings, portfolioState, calibration, cost, signalSources] = await Promise.all([
+      apiGet("/holdings"), apiGet("/portfolio/state"), apiGet("/calibration/summary"),
+      apiGet("/cost/summary"), apiGet("/signal-sources"),
+    ]);
+
+    let valueLine;
+    if (holdings.length === 0) {
+      valueLine = "No holdings recorded yet.";
+    } else {
+      const totalValue = holdings.reduce((sum, h) => sum + (h.value_usd !== null ? h.value_usd : 0), 0);
+      const missingPrice = holdings.some(h => h.value_usd === null);
+      valueLine = `$${totalValue.toFixed(2)}` + (missingPrice ? ' <span class="null-note">(incomplete -- a real price is missing for at least one holding)</span>' : "");
+    }
+
+    const { currentBySymbol, recommendedBySymbol, symbols } = buildAllocationComparison(holdings, portfolioState);
+    let differing = 0;
+    symbols.forEach(symbol => {
+      const currentPct = (currentBySymbol[symbol] || 0) * 100;
+      const recommendedPct = (recommendedBySymbol[symbol] || 0) * 100;
+      if (Math.abs(currentPct - recommendedPct) >= DIVERGENCE_THRESHOLD_POINTS) differing++;
+    });
+    const divergenceLine = symbols.length === 0
+      ? "No tracked positions yet."
+      : `${differing} of ${symbols.length} position${symbols.length === 1 ? "" : "s"} (cash included) differ${symbols.length === 1 ? "s" : ""} from the system's recommendation by ${DIVERGENCE_THRESHOLD_POINTS}+ points.`;
+
+    const totalLive = calibration.resolved_live_count + calibration.unresolved_live_count;
+    const decisionLine = calibration.resolved_live_count === 0
+      ? `${totalLive} decisions logged, 0 confirmed right or wrong yet -- this system is too new to have graded itself. Check back later.`
+      : `${totalLive} decisions logged, ${calibration.resolved_live_count} confirmed right or wrong so far.`;
+
+    // Simplified health mapping (see doc/prompts/PHASE5B_PROMPT.md item 3's
+    // caveat): signal_sources has no structured deferred/not-accessible/gap
+    // split today, only a flat status + free-text notes. NOT_IMPLEMENTED is
+    // this project's consistent convention for "investigated, deliberately
+    // not pursued" (paid tier or genuine infeasibility) -- a disclosed
+    // decision, never counted as a problem here. Only UNAVAILABLE/UNKNOWN
+    // (a real, attempted access failure) counts against health.
+    const unhealthy = signalSources.filter(s => s.status === "UNAVAILABLE" || s.status === "UNKNOWN").length;
+    const healthLabel = unhealthy === 0 ? "All systems reporting" : `${unhealthy} source${unhealthy === 1 ? "" : "s"} unavailable`;
+
+    target.innerHTML = `
+      <div>
+        <strong>Portfolio value:</strong> ${valueLine}
+        <p class="metric-desc">${divergenceLine} <a href="#portfolio-state">See AI Portfolio ↓</a></p>
+      </div>
+      <div>
+        <strong>Track record:</strong> ${decisionLine}
+        <p class="metric-desc"><a href="#calibration-summary">See Calibration summary ↓</a></p>
+      </div>
+      <div>
+        <strong>Today's spend:</strong> $${cost.daily.total_usd} of $${cost.daily.cap_usd} cap
+        <p class="metric-desc"><a href="#cost-summary">See Cost / spend ↓</a></p>
+      </div>
+      <div>
+        <span class="badge ${unhealthy === 0 ? "ok" : "warn"}">${healthLabel}</span>
+        <p class="metric-desc"><a href="#signal-sources">See Signal sources ↓</a></p>
+      </div>`;
+  } catch (e) {
+    renderError(target, e);
+  }
 }
 
 function el(html) {
@@ -125,63 +524,513 @@ function el(html) {
   return div.firstElementChild;
 }
 
+// Phase 5b §3: a real, honest summary rather than the literal 4-way
+// "live / deferred (paid tier) / not accessible / gap" split the prompt
+// describes. Checked every real row's notes before building this: several
+// genuinely mix more than one reason in the same row (e.g. SPOT_ETF_FLOWS
+// is part Cloudflare-blocked, part no-auth-relationship-established;
+// PREDICTION_MARKETS is an environment-specific DNS failure, not a cost
+// or access decision). Forcing a 3-way split onto prose that doesn't
+// cleanly support it would fabricate precision this project doesn't
+// actually have -- so this groups by the one thing the data unambiguously
+// records, the real `status` field, and uses plain language to convey
+// the one distinction that IS always true: NOT_IMPLEMENTED means a
+// deliberate decision was made (cost, access relationship, or genuine
+// infeasibility), never a broken/failing source, while UNAVAILABLE means
+// a real, attempted access failure. The full real per-row reasoning
+// stays one click away in the detail table, never summarized away.
+const SIGNAL_STATUS_GROUP_ORDER = ["OK", "NOT_IMPLEMENTED", "UNAVAILABLE", "UNKNOWN"];
+
+// Phase 5b: which of the 29 signal_sources rows name one specific,
+// directly-integrated vendor (Table 1) vs. an evidence CATEGORY from the
+// original Phase 3 vision/roadmap, often fulfilled by multiple vendors
+// combined (Table 2) -- see doc/phases.md's Phase 3a section. "Macro" is
+// Title-Case-styled like a vendor but is actually the broad CPI/PCE/
+// claims/payrolls/yields/Fed-funds matrix, so it's classified into Table
+// 2 despite its styling -- a deliberate exception, not an oversight.
+const VENDOR_SOURCE_NAMES = new Set([
+  "Binance", "Coinbase", "CoinGecko", "CoinMarketCap", "Deribit", "Etherscan",
+  "DefiLlama", "News", "CoinAnk", "CoinGlass", "CryptoBubbles", "PlanB",
+]);
+
+// Curated, hand-researched detail for each source -- provider/description/
+// purpose/db_tables don't change per-request (unlike `status`, which always
+// comes live from GET /signal-sources below), so this is static reference
+// content, not derived from any API response.
+const SIGNAL_SOURCE_DETAILS = {
+  "Binance": { provider: "Binance", description: "Public, unauthenticated REST API (spot + futures). Missing perpetuals for STORJ/BONK/WBT; dated futures exist for BTC/ETH only.", purpose: "Primary source for 30d realized volatility/max-drawdown in the screening composite score (chosen over CoinGecko, which rate-limits after ~5 rapid calls on its free tier); live spot price (tried before Coinbase fallback); funding rate/open interest/dated futures feed Judge derivatives context; order-book depth feeds Phase 4's fill simulator.", tables: "market_snapshots (price/ticker history), evidence_observations (funding rate, open interest, dated-futures basis)" },
+  "Coinbase": { provider: "Coinbase", description: "Public Exchange API, no key. Fallback venue for symbols Binance doesn't list.", purpose: "Volatility/drawdown and live-price fallback specifically for HYPE/STORJ (no Binance USDT pair).", tables: "market_snapshots" },
+  "CoinGecko": { provider: "CoinGecko", description: "Aggregated price/market-cap data; free demo-key tier.", purpose: "Base market data collected on every run regardless of flags; ranks the top-30 screening universe by market cap.", tables: "market_snapshots, screened_universe" },
+  "CoinMarketCap": { provider: "CoinMarketCap", description: "Aggregated price/market-cap cross-check; a real free tier exists but no key is configured yet.", purpose: "Intended as a CoinGecko cross-check and the source of 90d momentum (needed for the altcoin-season index, which CoinGecko doesn't offer).", tables: "None yet -- no COINMARKETCAP_API_KEY configured" },
+  "Deribit": { provider: "Deribit", description: "Public options API, no key. BTC/ETH only -- no other tracked asset has listed options.", purpose: "Implied volatility, put/call open-interest ratio, and volatility-risk-premium (vs. Binance's realized vol) feeding Judge derivatives context.", tables: "evidence_observations" },
+  "Etherscan": { provider: "Etherscan", description: "Free-tier key. Large-ETH-transfer proxy (3c) + per-token tokentx network-usage proxy for 7 verified ERC-20 contracts (3i) -- not the paid-only network-wide dailytx stat.", purpose: "Whale-flow signal (ETH) and network-usage/fundamentals signal (7 assets), distinguishing real usage from pure speculation.", tables: "evidence_observations" },
+  "DefiLlama": { provider: "DefiLlama", description: "Free, no key. Protocol TVL matched by governance token; a dedicated stablecoins endpoint.", purpose: "DeFi capital-flow signal (TVL) plus stablecoin supply growth (capital-rotation proxy).", tables: "evidence_observations" },
+  "News": { provider: "RSS (CoinDesk, CoinTelegraph, Decrypt)", description: "Free, no key. Matched to tracked assets by word-bounded name/ticker (ticker matching is case-sensitive).", purpose: "Feeds the Judge/LLM research context; also backs the dashboard's own \"Recent news\" panel (Phase 5b).", tables: "news" },
+  "CoinAnk": { provider: "CoinAnk", description: "Investigated: a BytePlus WAF bot-challenge blocks every path tried, no legitimate API surface exists.", purpose: "Intended: long/short ratio signal. Never realized.", tables: "None -- never collected" },
+  "CoinGlass": { provider: "CoinGlass", description: "A real, documented API exists but is paid-tier-gated (Startup/Standard/Professional); no usable free tier confirmed.", purpose: "Intended: liquidation-heatmap signal. Never realized -- a cost decision, not an infeasibility.", tables: "None -- never collected" },
+  "CryptoBubbles": { provider: "CryptoBubbles", description: "No documented API (a guessed data endpoint returned 404); robots.txt explicitly disallows ClaudeBot site-wide.", purpose: "Intended: market-cap bubble visualization data. Never realized.", tables: "None -- never collected" },
+  "PlanB": { provider: "xAI / Grok (PlanB/X analysis)", description: "xAI's API is live and functional (verified a real auth-challenge response), but no paid relationship has been established.", purpose: "Intended: independent-analyst opinion signal. Deliberately deferred, not infeasible.", tables: "None -- never collected" },
+
+  "AGGREGATE_OPEN_INTEREST": { provider: "Binance + Deribit", description: "Two separate open-interest observations (binance_open_interest, deribit_open_interest), distinct from funding rate.", purpose: "Derivatives-positioning signal for Judge context.", tables: "evidence_observations" },
+  "CME_COT_POSITIONING": { provider: "CFTC (public Socrata API)", description: "Free, official \"Traders in Financial Futures\" report, BTC + ETH (as CME's own MICRO ETHER contract). Deliberately stored STALE (weekly publication).", purpose: "Institutional positioning breakdown (Dealer/Asset Manager/Leveraged Money/Other) for Judge context.", tables: "evidence_observations" },
+  "ENTITY_FLOW_INTELLIGENCE": { provider: "Nansen", description: "Free tier: 100 one-time + 10/day credits, genuinely constrained -- TOP_CANDIDATES only, EVM/Solana chains only (BTC and native-chain coins excluded). Cohort labels are Nansen's own unverified inference.", purpose: "Smart-money wallet netflow signal for Judge context.", tables: "evidence_observations" },
+  "FUTURES_TERM_STRUCTURE": { provider: "Binance + Deribit", description: "Dated (quarterly) futures vs. spot, BTC/ETH only (verified live: no other tracked asset has dated contracts).", purpose: "Basis/contango-backwardation curve + volatility-risk-premium computation.", tables: "evidence_observations" },
+  "GLOBAL_LIQUIDITY_MACRO": { provider: "FRED", description: "Free, no key. M2/Fed balance sheet/reverse repo + cross-asset correlation.", purpose: "Feeds the Judge's macro_sensitivity reasoning.", tables: "evidence_observations" },
+  "Macro": { provider: "FRED (+ BLS/Treasury-class series)", description: "Classification note: Title-Case like a vendor, but is actually the broader CPI/PCE/claims/payrolls/yields/Fed-funds matrix -- a category, kept here for that reason, not a single vendor.", purpose: "Same macro_sensitivity feed as GLOBAL_LIQUIDITY_MACRO, over a broader series set.", tables: "evidence_observations" },
+  "NETWORK_FUNDAMENTALS_DEV_ACTIVITY": { provider: "Etherscan + GitHub", description: "Etherscan's tokentx proxy (7 assets) + real GitHub commit/contributor counts (10 assets with an unambiguous primary repo; every other symbol is UNAVAILABLE, never guessed).", purpose: "Fundamentals signal distinguishing real building/usage from speculation.", tables: "evidence_observations" },
+  "REGIONAL_EXCHANGE_PREMIUM": { provider: "Regional exchange price comparison (e.g. Upbit vs. global)", description: "Structural cross-region price divergence, Kimchi-premium-style.", purpose: "Capital-flow / regulatory-arbitrage signal.", tables: "evidence_observations" },
+  "REGULATORY_EVENT_CALENDAR": { provider: "SEC EDGAR + congress.gov", description: "Both free, no key. Global/macro-scope only -- no reliable per-asset attribution attempted (a title/filing match alone isn't reliable enough).", purpose: "Dated regulatory/policy catalyst signal.", tables: "evidence_observations" },
+  "STABLECOIN_SUPPLY_VELOCITY_AND_EXCHANGE_RESERVES": { provider: "DefiLlama", description: "Supply growth captured (7d/30d); velocity and exchange-reserve balances were not built (no transfer-volume field / no curated reserve-address set).", purpose: "Capital-rotation proxy (stablecoin growth -> capital entering/leaving crypto).", tables: "evidence_observations (GLOBAL_CRYPTO scope, asset_id=null)" },
+  "CUSTODY_OTC_FLOW": { provider: "None investigated as viable", description: "No official public registry of custody-provider wallet addresses exists; building this would mean fabricating or guessing addresses.", purpose: "Intended: institutional custody/OTC-desk flow signal. A genuine infeasibility, not a failure.", tables: "None -- never collected" },
+  "ON_CHAIN_MINER_METRICS": { provider: "Glassnode (built, not subscribed)", description: "Client exists (app/market_data/glassnode.py); likely paid-tier-only, deliberately not subscribed -- a real recurring-cost decision.", purpose: "Intended: BTC hash rate/difficulty/miner reserves signal (miner capitulation/accumulation).", tables: "None -- never collected" },
+  "ON_CHAIN_VALUATION_METRICS": { provider: "Glassnode (built, not subscribed)", description: "Same client/deferral as ON_CHAIN_MINER_METRICS.", purpose: "Intended: MVRV/SOPR/NUPL cycle-valuation signal.", tables: "None -- never collected" },
+  "PREDICTION_MARKETS": { provider: "Polymarket / Kalshi (neither reachable)", description: "Both fail DNS resolution from this specific development sandbox (general connectivity confirmed fine) -- unconfirmed elsewhere.", purpose: "Intended: implied-probability signal for macro/crypto event contracts.", tables: "None -- never collected" },
+  "SOCIAL_NARRATIVE_SENTIMENT": { provider: "Santiment (free, but stale) / LunarCrush (needs auth)", description: "Santiment's free tier genuinely works but data is at least ~30 days old -- unusable for live decisions; LunarCrush needs an auth token even for its \"public\" endpoint.", purpose: "Intended: social-volume/narrative-rotation signal.", tables: "None -- never collected" },
+  "SPOT_ETF_FLOWS": { provider: "Farside (no API) / SoSoValue (needs login)", description: "Farside is a Cloudflare-protected webpage only; SoSoValue requires an authenticated login not available here.", purpose: "Intended: daily net BTC/ETH ETF flow signal (institutional demand proxy).", tables: "None -- never collected" },
+  "TOKEN_UNLOCK_SCHEDULE": { provider: "Messari (needs key) / TokenUnlocks.app (no API)", description: "Messari requires a key not available here (coverage unconfirmed); TokenUnlocks.app has no discoverable public API.", purpose: "Intended: vesting/unlock calendar (supply-shock risk signal).", tables: "None -- never collected" },
+};
+
+function renderSignalSourceTable(sources) {
+  // Default row order (before any header click): grouped by status --
+  // matches the panel's own "grouped by status" summary text. Clicking
+  // any column header re-sorts by that column instead.
+  const defaultOrder = [...sources].sort((a, b) => {
+    const groupDiff = SIGNAL_STATUS_GROUP_ORDER.indexOf(a.status) - SIGNAL_STATUS_GROUP_ORDER.indexOf(b.status);
+    return groupDiff !== 0 ? groupDiff : a.name.localeCompare(b.name);
+  });
+  const withDetails = defaultOrder.map(s => ({ s, d: SIGNAL_SOURCE_DETAILS[s.name] || { provider: "—", description: "", purpose: "", tables: "—" } }));
+  return buildSortableTable([
+    { label: "Source", value: r => r.s.name },
+    { label: "Provider", value: r => r.d.provider },
+    { label: "Description", value: r => r.d.description },
+    { label: "Purpose of use", value: r => r.d.purpose },
+    { label: "DB tables impacted", value: r => r.d.tables },
+    { label: "Status", title: "OK = live and used today. NOT_IMPLEMENTED = a deliberate decision, not a failure. UNAVAILABLE/UNKNOWN = investigated and genuinely blocked.",
+      value: r => r.s.status, html: r => `<span class="badge ${statusBadgeClass(r.s.status)}">${r.s.status}</span>` },
+  ], withDetails);
+}
+
 async function loadSignalSources() {
   const target = document.getElementById("signal-sources");
   try {
     const sources = await apiGet("/signal-sources");
-    const rows = sources.map(s => `
-      <tr>
-        <td>${s.name}</td>
-        <td><span class="badge ${statusBadgeClass(s.status)}">${s.status}</span></td>
-        <td>${s.enabled ? "yes" : "no"}</td>
-        <td>${s.notes || ""}</td>
-      </tr>`).join("");
-    target.innerHTML = `<table><tr><th>Source</th><th>Status</th><th>Enabled</th><th>Notes</th></tr>${rows}</table>`;
+    const live = sources.filter(s => s.status === "OK").length;
+    const notBuilt = sources.filter(s => s.status === "NOT_IMPLEMENTED").length;
+    const unreachable = sources.filter(s => s.status === "UNAVAILABLE" || s.status === "UNKNOWN").length;
+
+    const vendorSources = sources.filter(s => VENDOR_SOURCE_NAMES.has(s.name));
+    const categorySources = sources.filter(s => !VENDOR_SOURCE_NAMES.has(s.name));
+
+    target.innerHTML = `
+      <p class="metric-desc">
+        <strong>${live} live</strong> &nbsp;•&nbsp;
+        <strong>${notBuilt} not built</strong> (deliberate decisions -- paid tier, an access relationship not pursued, or a genuine infeasibility investigated and confirmed -- never a broken source) &nbsp;•&nbsp;
+        <strong>${unreachable} genuinely inaccessible</strong> (investigated and found actually blocked, e.g. a bot-challenge or DNS failure)
+      </p>
+      <details>
+        <summary>Show all ${sources.length} sources, grouped by status</summary>
+        <h3>Vendors (${vendorSources.length})</h3>
+        <p class="metric-desc">Named after one specific, directly-integrated provider.</p>
+        ${renderSignalSourceTable(vendorSources)}
+        <h3 style="margin-top:16px;">Evidence categories (${categorySources.length})</h3>
+        <p class="metric-desc">Named after an evidence category from this project's original Phase 3 roadmap, often fulfilled by multiple vendors combined -- see the Provider column for which vendor(s) actually implement each.</p>
+        ${renderSignalSourceTable(categorySources)}
+      </details>`;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    renderError(target, e);
   }
+}
+
+function fmtUsd0(n) {
+  return n === null || n === undefined ? "—" : "$" + Math.round(n).toLocaleString();
+}
+
+// Three narrowing layers, widest to narrowest -- Layer 1 (screened
+// universe, top N by market cap) discovers candidates; Layer 2 (top
+// candidates, ranked by composite factor score) is auto-promoted from it;
+// Layer 3 (currently tracked) is what everything downstream (news
+// matching, Judge decisions, holdings) actually operates on. Fetched and
+// rendered together so their real sizes are directly comparable.
+// composite_factor_score has no LLM/narrative reasoning behind it by
+// design (Phase 3b) -- it's a purely deterministic, rank-based combination
+// of these six raw factors, never blended with any LLM-generated
+// explanation (this project's own "no blended sentiment" rule). The real
+// "why" is this real per-factor breakdown, not a fabricated narrative --
+// weights and the percentile-rank method mirror
+// app/market_data/factors.py's COMPOSITE_FACTOR_WEIGHTS/percentile_ranks
+// exactly, recomputed client-side from the same screened-universe batch
+// already fetched, so it can show each factor's actual weighted
+// contribution, not just its raw value.
+const COMPOSITE_FACTOR_WEIGHTS = {
+  momentum_30d: 0.30, momentum_7d: 0.15, relative_strength_30d: 0.20,
+  volatility_30d: 0.15, drawdown_30d: 0.10, volume_24h: 0.10,
+};
+const INVERTED_FACTORS = new Set(["volatility_30d", "drawdown_30d"]);
+
+// Mirrors app/market_data/factors.py's percentile_ranks() exactly: 0.0
+// worst .. 1.0 best among the non-null values, ties averaged, a lone
+// non-null value ranks neutral (0.5).
+function computePercentileRanks(values) {
+  const present = values.map((v, i) => [i, v]).filter(([, v]) => v !== null && v !== undefined);
+  const result = new Array(values.length).fill(null);
+  const n = present.length;
+  if (n === 0) return result;
+  if (n === 1) { result[present[0][0]] = 0.5; return result; }
+  const sorted = [...present].sort((a, b) => a[1] - b[1]);
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j + 1 < n && sorted[j + 1][1] === sorted[i][1]) j++;
+    const avgRankPos = (i + j) / 2;
+    for (let k = i; k <= j; k++) result[sorted[k][0]] = avgRankPos / (n - 1);
+    i = j + 1;
+  }
+  return result;
+}
+
+// One breakdown entry per asset in `universeBatch`: { symbol -> [{factor,
+// rawValue, rank, weight, contribution}], recomputedScore }. `rank` here
+// already accounts for factor inversion (volatility/drawdown); a higher
+// rank always means "better for the composite score."
+function buildFactorBreakdown(universeBatch) {
+  const ranksByFactor = {};
+  for (const factor of Object.keys(COMPOSITE_FACTOR_WEIGHTS)) {
+    const raw = universeBatch.map(s => s[factor]);
+    const values = INVERTED_FACTORS.has(factor) ? raw.map(v => (v === null || v === undefined ? null : -v)) : raw;
+    ranksByFactor[factor] = computePercentileRanks(values);
+  }
+  const breakdownBySymbol = {};
+  universeBatch.forEach((asset, i) => {
+    let weightedSum = 0, totalWeight = 0;
+    const factors = Object.entries(COMPOSITE_FACTOR_WEIGHTS).map(([factor, weight]) => {
+      const rank = ranksByFactor[factor][i];
+      if (rank !== null) { weightedSum += rank * weight; totalWeight += weight; }
+      return { factor, rawValue: asset[factor], rank, weight, contribution: rank === null ? null : rank * weight };
+    });
+    breakdownBySymbol[asset.symbol] = { factors, recomputedScore: totalWeight > 0 ? weightedSum / totalWeight : null };
+  });
+  return breakdownBySymbol;
+}
+
+const FACTOR_LABELS = {
+  momentum_30d: "Momentum (30d)", momentum_7d: "Momentum (7d)",
+  relative_strength_30d: "Relative strength (30d, vs. BTC)",
+  volatility_30d: "Volatility (30d, inverted -- lower is better)",
+  drawdown_30d: "Max drawdown (30d, inverted -- shallower is better)",
+  volume_24h: "Liquidity (24h volume)",
+};
+
+const FACTOR_DESCRIPTIONS = {
+  momentum_30d: "This asset's own raw price % change over the trailing 30 days (CoinGecko's price_change_percentage_30d_in_currency) -- a real percent move, not ranked or inverted.",
+  momentum_7d: "This asset's own raw price % change over the trailing 7 days -- same source as Momentum (30d), just a shorter window, so it can diverge (e.g. up over 30d but down over the most recent 7).",
+  relative_strength_30d: "This asset's own Momentum (30d) minus BTC's Momentum (30d) over the same window -- positive means it outperformed BTC, negative means it underperformed, regardless of whether the broader market was up or down that period.",
+  volatility_30d: "Standard deviation of daily returns over the trailing ~31 days (Binance primary, Coinbase fallback) -- a real dispersion measure, not annualized. Inverted before ranking: lower volatility ranks higher, since the composite score treats steadiness as a positive.",
+  drawdown_30d: "The largest peak-to-trough decline in daily closes over the trailing ~31 days, as a negative fraction (e.g. -0.35 = a 35% decline from a recent peak). Inverted before ranking: a shallower (less negative) drawdown ranks higher.",
+  volume_24h: "Real 24h trading volume in USD (CoinGecko) -- a liquidity proxy, used directly, not ranked/inverted beyond the normal percentile-rank step every factor gets.",
+};
+
+// Lazily fetched (only when a row is actually expanded, not eagerly for
+// the whole 30-asset universe) live recompute of the same six factors --
+// GET /screening/live-factors/{symbol}. Cached per symbol for this page
+// load (`data-live-fetched` guards against refetching on repeated
+// expand/collapse). Purely informative: the fetched values never feed
+// composite_factor_score, Layer 2 promotion, or any real decision --
+// only the STORED snapshot (shown alongside it) does.
+const _liveFactorCache = {};
+
+async function loadLiveFactorsForBreakdown(detailsEl, symbol) {
+  if (!detailsEl.open || detailsEl.dataset.liveFetched) return;
+  detailsEl.dataset.liveFetched = "1";
+  try {
+    const live = _liveFactorCache[symbol] || (_liveFactorCache[symbol] = await apiGet(`/screening/live-factors/${encodeURIComponent(symbol)}`));
+    for (const factor of Object.keys(FACTOR_LABELS)) {
+      const cell = detailsEl.querySelector(`td[data-live-factor="${factor}"]`);
+      if (!cell) continue;
+      const v = live[factor];
+      cell.textContent = v === null || v === undefined ? "—" : v.toFixed(4);
+    }
+    const asOfEl = detailsEl.querySelector(".live-factors-as-of");
+    if (asOfEl) asOfEl.textContent = `Live as of ${new Date(live.computed_at).toLocaleString()} (${live.volatility_drawdown_source.toLowerCase()})`;
+  } catch (e) {
+    for (const factor of Object.keys(FACTOR_LABELS)) {
+      const cell = detailsEl.querySelector(`td[data-live-factor="${factor}"]`);
+      if (cell) cell.textContent = "unavailable";
+    }
+  }
+}
+
+function renderFactorBreakdown(breakdown, symbol, computedAt) {
+  if (!breakdown) return "—";
+  const rows = breakdown.factors.map(f => `
+    <tr>
+      <td title="${FACTOR_DESCRIPTIONS[f.factor].replace(/"/g, "&quot;")}">${FACTOR_LABELS[f.factor]}</td>
+      <td>${f.rawValue === null || f.rawValue === undefined ? "—" : f.rawValue.toFixed(4)}</td>
+      <td>${f.rank === null ? "—" : (f.rank * 100).toFixed(1) + "%"}</td>
+      <td>${(f.weight * 100).toFixed(0)}%</td>
+      <td>${f.contribution === null ? "— (missing, weight redistributed)" : f.contribution.toFixed(4)}</td>
+      <td data-live-factor="${f.factor}">Loading…</td>
+    </tr>`).join("");
+  // The literal sum of the Contribution column above -- directly
+  // demonstrates that Composite score is reconstructable from Contribution
+  // alone (no need for the whole batch's percentile distribution once
+  // Contribution is already computed). Matches `recomputedScore` exactly
+  // when every factor is present; if a factor was missing for this asset
+  // (weight redistributed among the rest, see "Recomputed" note below),
+  // this raw sum and recomputedScore can differ slightly -- both real,
+  // just answering different questions ("what does this column add up
+  // to" vs. "the actual renormalized composite score").
+  const sumOfContributions = breakdown.factors.reduce((sum, f) => sum + (f.contribution || 0), 0);
+  const sumRow = `
+    <tr style="font-weight:600;border-top:2px solid #8886;">
+      <td colspan="4" title="Summing the Contribution column reproduces Composite score directly -- no other data (like the whole batch's percentile distribution) is needed once Contribution is already computed.">Sum of Contribution</td>
+      <td>${sumOfContributions.toFixed(4)}</td>
+      <td></td>
+    </tr>`;
+  const detailsId = `factor-breakdown-${symbol}-${Math.random().toString(36).slice(2, 8)}`;
+  return `<details id="${detailsId}" ontoggle="loadLiveFactorsForBreakdown(this, '${symbol}')">
+    <summary>Show factor breakdown</summary>
+    <p class="metric-desc">Snapshot: ${new Date(computedAt).toLocaleString()}</p>
+    <table style="margin-top:4px;"><tr>
+      <th title="One of the six inputs to Composite score -- see doc/phases.md Phase 3b for why these six and not others.">Factor</th>
+      <th title="This factor's real, unranked value from the stored screening snapshot -- e.g. a momentum figure is a real percent change, volatility is a real stdev of daily returns, volume is real 24h dollar volume.">Raw value</th>
+      <th title="This factor's percentile rank among all screened assets this run -- 100% = best, 0% = worst, 50% = a lone/tied value.">Percentile rank</th>
+      <th title="This factor's fixed share of the composite score, per COMPOSITE_FACTOR_WEIGHTS (app/market_data/factors.py) -- momentum_30d 30%, relative_strength_30d 20%, momentum_7d/volatility_30d 15% each, drawdown_30d/volume_24h 10% each. Weights sum to 100%.">Weight</th>
+      <th title="Percentile rank x Weight -- this factor's actual share of the final Composite score. Summing every factor's Contribution reproduces Composite score (see the recomputed total below).">Contribution</th>
+      <th title="A genuinely live recompute of this same factor, fetched from Binance/Coinbase/CoinGecko right now -- informative only, shown for comparison against the stored snapshot to its left. Has NO effect on Composite score, Layer 2 promotion, or any real decision, which only ever use the stored snapshot.">Currently valid</th>
+    </tr>${rows}${sumRow}</table>
+    <p class="metric-desc">Recomputed from this same screening batch: ${breakdown.recomputedScore !== null ? breakdown.recomputedScore.toFixed(3) : "—"} (should match Composite score above, up to rounding).</p>
+    <p class="metric-desc live-factors-as-of"></p>
+  </details>`;
+}
+
+async function loadScreenedTokens() {
+  const target = document.getElementById("screened-tokens");
+  try {
+    const [universe, candidates, tracked, holdings] = await Promise.all([
+      apiGet("/screening/universe"), apiGet("/screening/candidates"), apiGet("/screening/tracked"), apiGet("/holdings"),
+    ]);
+    // `assets.in_asset` is a static flag set once, when an asset row is
+    // first created -- never updated afterward as real BUY/SELL activity
+    // happens (confirmed by grep: nothing in the codebase writes it a
+    // second time) -- so it does NOT track current real holdings and
+    // would show stale HELD/not-HELD badges here. The real current
+    // position, matching what "My Portfolio" itself shows, is whether
+    // this symbol appears in `/holdings` with quantity > 0.
+    const heldSymbols = new Set(holdings.filter(h => h.quantity > 0).map(h => h.symbol));
+    // Real per-factor breakdown behind each asset's composite_factor_score
+    // -- see buildFactorBreakdown's own docstring-comment above for why
+    // this is a recomputation, not stored data.
+    const factorBreakdownBySymbol = buildFactorBreakdown(universe);
+
+    // Default row order (before any header click): market cap descending
+    // for the universe table -- its own defining criterion ("top N by
+    // market cap") -- not the `rank` column (a separate composite-factor
+    // rank, kept visible but no longer the default row order); rank
+    // ascending for candidates, already-given order for tracked.
+    const universeDefaultOrder = [...universe].sort((a, b) => (b.market_cap ?? -Infinity) - (a.market_cap ?? -Infinity));
+    const universeTable = buildSortableTable([
+      { label: "Rank", title: "This screening run's composite-factor rank, independent of this table's own row order (sorted by market cap by default).", value: s => s.rank },
+      { label: "Symbol", value: s => s.symbol },
+      { label: "Market cap", value: s => s.market_cap, html: s => fmtUsd0(s.market_cap) },
+      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines Layer 2 membership below -- the top 10 assets here by this figure become Top candidates.",
+        value: s => s.composite_factor_score, html: s => s.composite_factor_score !== null && s.composite_factor_score !== undefined ? s.composite_factor_score.toFixed(3) : "—" },
+      { label: "Why", title: "The real per-factor breakdown behind Composite score -- a deterministic quantitative formula, not an LLM-generated explanation (no narrative reasoning exists for this figure by design).",
+        value: s => factorBreakdownBySymbol[s.symbol]?.recomputedScore, html: s => renderFactorBreakdown(factorBreakdownBySymbol[s.symbol], s.symbol, s.computed_at) },
+      { label: "Top candidate?", title: "Yes = this asset ranked in the top TOP_CANDIDATES_SIZE (default 10) of this run's universe by Composite score -- purely that ranking, nothing else (not market cap, not whether you hold it). Yes here is what makes an asset eligible for a real Judge decision this run.",
+        value: s => s.is_top_candidate ? 1 : 0, html: s => s.is_top_candidate ? `<span class="badge live">yes</span>` : "no" },
+    ], universeDefaultOrder);
+
+    const candidatesDefaultOrder = [...candidates].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
+    const candidateTable = buildSortableTable([
+      { label: "Rank", value: s => s.rank },
+      { label: "Symbol", value: s => s.symbol },
+      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines Layer 2 membership -- the top 10 of Layer 1 by this figure.",
+        value: s => s.composite_factor_score, html: s => s.composite_factor_score !== null && s.composite_factor_score !== undefined ? s.composite_factor_score.toFixed(3) : "—" },
+    ], candidatesDefaultOrder);
+
+    const trackedTable = buildSortableTable([
+      { label: "Symbol", value: a => a.symbol },
+      { label: "Name", value: a => a.name },
+      { label: "Position", title: "HELD = this symbol currently appears in My Portfolio with quantity > 0, checked live against /holdings. -- = tracked for data/decisions but not currently held.",
+        value: a => heldSymbols.has(a.symbol) ? 1 : 0, html: a => heldSymbols.has(a.symbol) ? `<span class="badge live">HELD</span>` : "—" },
+    ], tracked);
+
+    target.innerHTML = `
+      <h3>Layer 1: Screened universe</h3>
+      <p class="metric-desc">Top ${universe.length} assets by CoinGecko market cap from the most recent screening run (stablecoins excluded) -- where new candidates get discovered from.</p>
+      ${universe.length === 0 ? "<p>Screening has never been run (<code>--with-screening</code>).</p>" : `
+      <details>
+        <summary>Show all ${universe.length} screened assets</summary>
+        ${universeTable}
+      </details>`}
+
+      <h3 style="margin-top:16px;">Layer 2: Top candidates</h3>
+      <p class="metric-desc">The top ${candidates.length} of Layer 1's universe by composite factor score -- auto-promoted into the tracked asset set (Layer 3) the first time each one qualifies.</p>
+      ${candidates.length === 0 ? "<p>None yet.</p>" : candidateTable}
+
+      <h3 style="margin-top:16px;">Layer 3: Currently tracked</h3>
+      <p class="metric-desc">${tracked.length} assets accumulated across every screening run's Layer-2 promotions, plus the initial manually-seeded set -- the actual set news matching, Judge decisions, and holdings entry all operate on.</p>
+      ${trackedTable}`;
+  } catch (e) {
+    renderError(target, e);
+  }
+}
+
+// Every distinct LLM prompt actually defined in this codebase -- static
+// reference content (describes code, not live data), confirmed by real
+// code lookups: which file/constant it lives in, what it actually asks
+// the LLM to do (read from the real prompt text, not just a docstring),
+// which flag/script actually triggers it, which provider(s) it's sent to,
+// and its real in-use status. None found genuinely unreachable as of this
+// writing, but `status` is modeled as a real tri-state (not a boolean) so
+// a future dead prompt would render as "NOT IN USE" here, not be silently
+// dropped from the list.
+const LLM_PROMPTS = [
+  { name: "Research prompt", location: "app/llm/research_context.py (SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Independent BUY/HOLD/SELL view per asset (confidence, target allocation, thesis, bull/bear case, catalysts, risks, invalidation conditions) from given market data + news -- explicitly told to answer HOLD/low-confidence rather than invent a rationale when data is thin.",
+    context: "Phase 2. Flag: --with-llm. All 3 providers (Claude + OpenAI + Gemini via OpenRouter), one batched call per provider covering every active asset (3 calls/run).",
+    status: "IN_USE", statusDetail: "Wired in app/main.py's --with-llm branch (LLMResearchService). Not tracked in prompt_templates -- a real, confirmed gap, since that tracking table postdates this prompt (started Phase 3d).",
+    promptText: "You are a cryptocurrency investment analyst providing structured, independent analysis for a paper-trading research system. You will be given current market data and recent news for a set of crypto assets, as of a fixed cutoff timestamp.\n\nAnalyze EVERY asset listed and respond with ONLY a single JSON object (no markdown fences, no commentary before or after) matching exactly this shape:\n\n{\n  \"analyses\": [\n    {\n      \"asset_symbol\": \"<symbol, must match one from the input exactly>\",\n      \"action\": \"BUY\" | \"HOLD\" | \"SELL\",\n      \"confidence\": <float 0.0-1.0>,\n      \"target_allocation\": <float 0.0-1.0, fraction of total portfolio>,\n      \"investment_horizon\": \"<short/medium/long term description>\",\n      \"thesis\": \"<concise overall thesis>\",\n      \"bull_case\": \"<strongest case for>\",\n      \"bear_case\": \"<strongest case against>\",\n      \"catalysts\": [\"<upcoming catalyst>\", ...],\n      \"risks\": [\"<key risk>\", ...],\n      \"invalidation_conditions\": [\"<what would prove this thesis wrong>\", ...]\n    }\n  ]\n}\n\nInclude exactly one entry per asset provided. Base your analysis only on the data given — do not assume information you were not given, and do not reference events after the stated cutoff timestamp. If the available data is genuinely insufficient to support a BUY or SELL, respond HOLD with low confidence rather than inventing a rationale.\n\nPrompt version: {prompt_version}" },
+  { name: "Assessment prompt", location: "app/llm/assessment_context.py (SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Structured multi-horizon (7d/30d/90d) direction/confidence/expected-return/risk assessment per candidate, using a shared market regime given (not self-inferred), citing only evidence sources actually present in context.",
+    context: "Phase 3d. Flag: --with-assessment. All 3 providers, one batched call per provider over TOP_CANDIDATES (3 calls/run).",
+    status: "IN_USE", statusDetail: "Wired in app/main.py's --with-assessment branch (AssessmentService), tracked in prompt_templates.",
+    promptText: "You are a cryptocurrency market analyst providing a structured, independent CURRENT MARKET ASSESSMENT for a paper-trading research system — distinct from any prior research you may have produced. You will be given the shared market regime for this run, and per-asset market data, screening factors, derivatives/on-chain evidence, and news, all as of a fixed cutoff timestamp.\n\nEvery asset shares the SAME market regime this run — use exactly the `market_regime` value given, do not infer your own.\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary) matching exactly this shape, with one entry per asset provided:\n\n{\n  \"assessments\": [\n    {\n      \"asset\": \"<symbol, must match input exactly>\",\n      \"assessment_timestamp\": \"<ISO timestamp, use the 'As of' value given>\",\n      \"horizon\": {\"short_term_days\": 7, \"medium_term_days\": 30, \"long_term_days\": 90},\n      \"direction\": {\"short_term\": \"BULLISH\"|\"NEUTRAL\"|\"BEARISH\", \"medium_term\": ..., \"long_term\": ...},\n      \"confidence\": {\"short_term\": <0.0-1.0>, \"medium_term\": <0.0-1.0>, \"long_term\": <0.0-1.0>},\n      \"expected_return\": {\"7d\": <float>, \"30d\": <float>, \"90d\": <float>},\n      \"risk\": {\"score\": <0.0-1.0>, \"level\": \"LOW\"|\"MEDIUM\"|\"HIGH\"},\n      \"market_regime\": \"<the shared regime value given>\",\n      \"key_drivers\": [{\"factor\": \"...\", \"direction\": \"BULLISH\"|\"NEUTRAL\"|\"BEARISH\", \"importance\": <0.0-1.0>, \"reason\": \"...\"}],\n      \"key_risks\": [{\"factor\": \"...\", \"direction\": \"BULLISH\"|\"NEUTRAL\"|\"BEARISH\", \"importance\": <0.0-1.0>, \"reason\": \"...\"}],\n      \"source_assessment\": [{\"source\": \"<must be a source actually present in this asset's evidence>\", \"direction\": \"BULLISH\"|\"NEUTRAL\"|\"BEARISH\", \"importance\": <0.0-1.0>, \"reason\": \"...\"}],\n      \"thesis\": \"<concise overall thesis>\",\n      \"invalidation_conditions\": [\"...\"],\n      \"overall_assessment\": \"BULLISH\"|\"NEUTRAL\"|\"BEARISH\"\n    }\n  ]\n}\n\nOnly reference evidence sources actually present in an asset's context in `source_assessment` — never invent a source that wasn't given. If an asset's latest reading is flagged as a possible bad tick, treat it with appropriate caution rather than reasoning confidently from a number that may be a feed glitch. Base your analysis only on data given — do not reference events after the stated cutoff.\n\nPrompt version: {prompt_version}" },
+  { name: "Bull prompt", location: "app/llm/adversarial_context.py (BULL_SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Builds the strongest evidence-grounded bull case per asset (thesis, catalysts, evidence) -- the opening move of an adversarial cycle a bear researcher then attacks.",
+    context: "Phase 3f. Flag: --with-adversarial. Single model (adversarial_model, defaults to Claude), one batched call over all candidates.",
+    status: "IN_USE", statusDetail: "First of 3 sequential calls in AdversarialService.run().",
+    promptText: "You build the STRONGEST evidence-based bull case for each given crypto asset — valuation, adoption, ecosystem growth, and concrete catalysts. Reason only from the evidence given; never invent a source not present in the context. This is one asset's opening argument in an adversarial research cycle — a bear researcher will attack it next, so ground every catalyst/evidence item in something specific from the context, not vague optimism.\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary):\n\n{\n  \"cases\": [\n    {\"asset\": \"<symbol>\", \"thesis\": \"...\", \"catalysts\": [\"...\"], \"evidence\": [\"...\"]}\n  ]\n}\n\nPrompt version: {prompt_version}" },
+  { name: "Bear prompt", location: "app/llm/adversarial_context.py (BEAR_SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Attacks the SPECIFIC bull case just generated (tokenomics, dilution, competition, regulatory, technical, narrative exhaustion) -- required to name which bull catalyst/evidence each attack rebuts.",
+    context: "Phase 3f, same run as bull prompt. Same single model, one batched call, fed the bull batch's own output as input.",
+    status: "IN_USE", statusDetail: "Second sequential call, same adversarial run.",
+    promptText: "You are the BEAR researcher in an adversarial research cycle. For each asset you are given its own bull case — your job is to ATTACK that SPECIFIC thesis, not list generic crypto risks. Consider: tokenomics/unlocks, dilution, competition, leverage/positioning, regulatory risk, technical deterioration, and narrative exhaustion, but only raise points that genuinely undermine THIS asset's stated catalysts/evidence. For every attack point, name which bull catalyst or evidence item it rebuts in `attacks_bull_point` (verbatim or close paraphrase) — a bear case with no `attacks_bull_point` entries has failed at being adversarial.\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary):\n\n{\n  \"cases\": [\n    {\"asset\": \"<symbol>\", \"attack_points\": [\"...\"], \"evidence\": [\"...\"], \"attacks_bull_point\": [\"...\"]}\n  ]\n}\n\nPrompt version: {prompt_version}" },
+  { name: "Scenario prompt", location: "app/llm/adversarial_context.py (SCENARIO_SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Given the bull case and the bear attack on it, builds bull/base/bear scenarios per asset (probability, expected return, price target, timeframe, assumptions, failure conditions).",
+    context: "Phase 3f, same run. Same single model, one batched call, fed both prior batches.",
+    status: "IN_USE", statusDetail: "Third and final sequential call in the same adversarial run; all 3 (bull/bear/scenario) share one prompt_templates entry.",
+    promptText: "Given each asset's bull case and the bear case attacking it, build bull/base/bear SCENARIOS — each with probability, expected_return, price_target (if a concrete level is reasonable, else null), timeframe, assumptions, catalysts, and failure_conditions. The three scenarios' probabilities need not sum to exactly 1.0 but should be roughly complementary. Use whichever of 7d/30d/90d/180d/365d timeframes is most meaningful per scenario — they need not all share one timeframe.\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary):\n\n{\n  \"scenarios\": [\n    {\n      \"asset\": \"<symbol>\",\n      \"bull\": {\"probability\": 0.3, \"expected_return\": 0.5, \"price_target\": null, \"timeframe\": \"90d\", \"assumptions\": [\"...\"], \"catalysts\": [\"...\"], \"failure_conditions\": [\"...\"]},\n      \"base\": {...},\n      \"bear\": {...}\n    }\n  ]\n}\n\nPrompt version: {prompt_version}" },
+  { name: "Judge prompt", location: "app/judge/context.py (SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "The synthesis step: converts every upstream evidence source (screening factors, derivatives/on-chain, 3d's multi-model assessments, 3f's adversarial research, news, portfolio state) into ONE decision per asset (BUY/HOLD/SELL/WATCH/NO_TRADE) -- with extensive non-negotiables distinguishing WATCH from NO_TRADE, requiring genuinely independent confidence/source_agreement (never averaged from inputs), and mandatory per-asset macro_sensitivity reasoning.",
+    context: "Phase 3e. Flag: --with-judge. Single model (judge_model, defaults to Claude), one batched call over all candidates.",
+    status: "IN_USE", statusDetail: "Wired in app/main.py's --with-judge branch (JudgeService), tracked in prompt_templates. Also reused (not re-defined) by 3e.1's historical replay (app/benchmarks/replay.py) for backfilled runs.",
+    promptText: "You are the JUDGE in a paper-trading crypto research system — a deterministic synthesis step that converts independent evidence into ONE decision per asset. You are given, for each asset: 3b's deterministic screening factors and composite_factor_score, 3c's derivatives/on-chain evidence (with freshness and decay-half-life so you can weigh how stale each reading is), 3d's independent multi-model assessments (already computed model_agreement across those models), 3f's adversarial bull/bear research and bull/base/bear scenarios (when available), Phase 2's own prior LLM analyses, recent news, and current portfolio status/allocation. Every asset shares the SAME market regime AND the same macro/global-liquidity/regulatory-calendar backdrop (3f) this run.\n\nNon-negotiables:\n- `confidence` must be YOUR OWN judgment, never an average of model confidence, model_agreement, source_agreement, or composite_factor_score. A high composite_factor_score with low confidence (or vice versa) is a legitimate output, not something to reconcile.\n- `model_agreement` must be copied EXACTLY from the value given to you per asset below (it is already computed, not yours to recompute).\n- `source_agreement`: YOUR OWN estimate of how much ALL evidence sources (not just the 3 models) agree in direction — composite_factor_score, derivatives/on-chain readings, news tone, and the model assessments together. Distinct from model_agreement; never equal to it by default.\n- WATCH and NO_TRADE are DIFFERENT outcomes — do not default to WATCH for every hard case. Use WATCH when you DO have a real, coherent thesis and a specific condition you're waiting to resolve (e.g. \"watch for funding to normalize before entering\"). Use NO_TRADE when you have NO actionable view at all — evidence is too thin/stale to reason from, or so evenly balanced that stating any thesis (bullish, bearish, or \"wait for X\") would be manufacturing false precision. NO_TRADE is a real, reachable decision, not a hypothetical — if you find yourself never selecting it across a batch, reconsider whether some of your WATCH calls actually belong here instead.\n- `target_allocation` is your UNCONSTRAINED view; a Risk Engine finalizes actual sizing afterward — do not self-limit it to what you assume the constraints are.\n- If a source is listed below as UNAVAILABLE, you must not reason as if it exists or invent a value for it.\n- A known scheduled event (e.g. a token unlock date) belongs in `invalidation_conditions` (\"thesis holds unless X occurs before the horizon\"), not buried in `key_risks`.\n- Set `requires_review = true` whenever confidence is low, model_agreement or source_agreement is weak, or the recommended change is unusually large relative current exposure.\n- `macro_sensitivity` is REQUIRED and must be YOUR OWN per-asset reasoning about how the shared macro/global-liquidity backdrop affects THIS SPECIFIC asset — never a blanket rule like \"liquidity up = bullish for everything.\" A rising BTC-equity correlation can mean crypto trades as a macro risk asset (reducing diversification value) just as easily as it can mean anything directional about crypto itself — reason about which, for this asset, rather than assuming. If no macro evidence is available this run, say so explicitly here rather than omitting the field.\n- If 3f's bull/bear research disagrees with the model assessments or the composite_factor_score, surface that tension explicitly in `key_evidence`/`contradictory_evidence` — do not silently prefer one.\n- A dated regulatory/policy event near this asset's decision horizon belongs in `invalidation_conditions`, same treatment as a token unlock.\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary):\n\n{\n  \"decisions\": [\n    {\n      \"asset\": \"<symbol, must match input exactly>\",\n      \"decision\": \"BUY\"|\"HOLD\"|\"SELL\"|\"WATCH\"|\"NO_TRADE\",\n      \"confidence\": <0.0-1.0>,\n      \"target_allocation\": <0.0-1.0>,\n      \"expected_return\": <float>,\n      \"expected_alpha\": <float>,\n      \"risk_score\": <0.0-1.0>,\n      \"uncertainty\": <0.0-1.0>,\n      \"model_agreement\": <copied exactly from input>,\n      \"source_agreement\": <0.0-1.0, your own estimate>,\n      \"investment_horizon_days\": <int>,\n      \"key_evidence\": [\"...\"],\n      \"contradictory_evidence\": [\"...\"],\n      \"key_risks\": [\"...\"],\n      \"invalidation_conditions\": [\"...\"],\n      \"requires_review\": true|false,\n      \"thesis\": \"...\",\n      \"macro_sensitivity\": \"...\"\n    }\n  ]\n}\n\nPrompt version: {prompt_version}" },
+  { name: "Reasoning-audit prompt", location: "app/benchmarks/reasoning_audit.py (SYSTEM_PROMPT_TEMPLATE)",
+    purpose: "Audits ONE already-made decision for internal reasoning consistency only -- does its thesis actually follow from its own cited key_evidence, does it address its own cited contradictory_evidence -- explicitly NOT re-evaluating whether it was a good trade, and using no evidence beyond what the decision itself cited.",
+    context: "Phase 3g. Not wired into app/main.py or any --with-* flag -- invoked only via the standalone scripts/run_reasoning_audit.py. Single model (reasoning_audit setting), one call PER audited decision (looped, not batched) -- unlike every other prompt above.",
+    status: "IN_USE_SCRIPT_ONLY", statusDetail: "Real and tested (tests/test_reasoning_audit.py), tracked in prompt_templates from inside the script. Not part of the daily CLI pipeline -- must be run separately.",
+    promptText: "You are auditing ONE prior decision from a paper-trading crypto research system for internal reasoning consistency — NOT re-evaluating whether the decision was a good trade, and NOT using any evidence beyond what is given below (the live evidence behind this decision may have since decayed, been revised, or resolved differently; that is irrelevant to this audit).\n\nGiven only the decision's stored thesis and its own cited key_evidence and contradictory_evidence, determine: does the thesis actually follow from the cited key_evidence, and does it fairly address the cited contradictory_evidence — or does it contain an unsupported leap (a claim not actually backed by anything in key_evidence, or a contradiction it silently ignores rather than addresses)?\n\nRespond with ONLY a single JSON object (no markdown fences, no commentary):\n\n{\n  \"supported\": true|false,\n  \"unsupported_claims\": [\"<a specific claim in the thesis not backed by the cited evidence, or a contradiction it ignores>\", \"...\"],\n  \"notes\": \"<brief, one or two sentences>\"\n}\n\nPrompt version: {prompt_version}" },
+];
+
+function llmPromptStatusBadge(status) {
+  if (status === "IN_USE") return `<span class="badge ok">in use</span>`;
+  if (status === "IN_USE_SCRIPT_ONLY") return `<span class="badge warn">in use (script only)</span>`;
+  return `<span class="badge not-implemented">not in use</span>`;
+}
+
+const LLM_PROMPT_STATUS_SORT_ORDER = { IN_USE: 0, IN_USE_SCRIPT_ONLY: 1, NOT_IN_USE: 2 };
+
+function loadLlmPrompts() {
+  const target = document.getElementById("llm-prompts");
+  const promptsTable = buildSortableTable([
+    { label: "Name", value: p => p.name },
+    { label: "Purpose / goal", value: p => p.purpose },
+    { label: "Context of use", title: "Pipeline stage, the flag/script that triggers it, which provider(s) it's sent to, and real call frequency per run.", value: p => p.context },
+    { label: "Status", title: "IN USE = reachable from a real python -m app.main flag. IN USE (SCRIPT ONLY) = reachable only from a standalone scripts/ entry point, not the daily CLI pipeline. NOT IN USE = defined but confirmed unreachable from anywhere.",
+      value: p => LLM_PROMPT_STATUS_SORT_ORDER[p.status], html: p => `${llmPromptStatusBadge(p.status)}<br><span class="metric-desc">${p.statusDetail}</span>` },
+    { label: "Prompt", title: "The real system prompt text as it lives in the code -- {prompt_version} is a real placeholder, filled in per call, not a rendering artifact.",
+      value: p => p.promptText,
+      html: p => `<details><summary>Show full prompt</summary><pre style="white-space:pre-wrap;font-size:0.8rem;max-width:480px;">${escapeHtml(p.promptText)}</pre></details>` },
+  ], LLM_PROMPTS);
+  target.innerHTML = `${promptsTable}
+    <p class="null-note">"Not in use" would mean a prompt is defined in the code but confirmed unreachable from any real entry point (main pipeline or a standalone script) -- none currently are, but this list is built to show that state honestly rather than silently omitting a dead prompt.</p>`;
+}
+
+// Phase 5b §5: spent-vs-cap as a bar, not two raw numbers to compare by
+// eye. Green under 70%, amber 70-100%, red only if genuinely over cap
+// (CostGuard blocks further calls before this happens in practice, but
+// the bar shouldn't silently cap out at 100% if it ever did).
+function renderCapProgressBar(totalStr, capStr) {
+  const total = parseFloat(totalStr), cap = parseFloat(capStr);
+  const pct = cap > 0 ? (total / cap) * 100 : 0;
+  const color = pct >= 100 ? "#c62828" : pct >= 70 ? "#ef6c00" : "#2e7d32";
+  return `<div class="cap-bar-track"><div class="cap-bar-fill" style="width:${Math.min(100, pct).toFixed(1)}%; background:${color};"></div></div>`;
 }
 
 async function loadCostSummary() {
   const target = document.getElementById("cost-summary");
   try {
     const c = await apiGet("/cost/summary");
-    const tableRows = (window) => window.by_table.map(t => `<tr><td>${t.table}</td><td>$${t.cost_usd}</td></tr>`).join("");
+    const costTable = buildSortableTable([
+      { label: "Table", title: "Which database table recorded the spend -- each corresponds to one stage of the pipeline (e.g. judge_decisions = the Judge's calls).", value: t => t.table },
+      { label: "Cost", value: t => parseFloat(t.cost_usd), html: t => "$" + t.cost_usd },
+    ], c.daily.by_table);
     target.innerHTML = `
+      <p class="metric-desc">Every real dollar here is a Claude/OpenAI/Gemini API call the system made while researching or deciding something -- capped daily and monthly so a bug or a bad day can never run up an unbounded bill.</p>
       <p><strong>Today:</strong> $${c.daily.total_usd} / $${c.daily.cap_usd} cap ($${c.daily.remaining_usd} remaining)</p>
-      <table><tr><th>Table</th><th>Cost</th></tr>${tableRows(c.daily)}</table>
+      ${renderCapProgressBar(c.daily.total_usd, c.daily.cap_usd)}
+      ${costTable}
       <p><strong>This month:</strong> $${c.monthly.total_usd} / $${c.monthly.cap_usd} cap ($${c.monthly.remaining_usd} remaining)</p>
+      ${renderCapProgressBar(c.monthly.total_usd, c.monthly.cap_usd)}
       <p class="null-note">${c.note}</p>`;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    renderError(target, e);
   }
 }
 
 async function loadPortfolioState() {
   const target = document.getElementById("portfolio-state");
   try {
-    const state = await apiGet("/portfolio/state");
-    if (state.length === 0) {
-      target.innerHTML = "<p>No positions currently allocated.</p>";
-      return;
-    }
-    const rows = state.map(p => {
-      const o = p.outcome;
-      const fillMethod = o && o.assumed_fill_method ? o.assumed_fill_method : "—";
-      const mtm = o && o.realized_return !== null ? o.realized_return.toFixed(4) : "unresolved";
-      const net = o && o.realized_return_net_of_costs !== null ? o.realized_return_net_of_costs.toFixed(4) : "unresolved";
-      return `<tr>
-        <td>${p.symbol}</td>
-        <td>${(p.current_allocation * 100).toFixed(2)}%</td>
-        <td>${o ? o.outcome_label : "—"}</td>
-        <td>${mtm}</td>
-        <td>${net}</td>
-        <td>${fillMethod}</td>
-      </tr>`;
-    }).join("");
-    target.innerHTML = `<table><tr><th>Asset</th><th>Allocation</th><th>Outcome</th><th>Mark-to-mid</th><th>Net of costs</th><th>Fill method</th></tr>${rows}</table>`;
+    const [state, holdings] = await Promise.all([apiGet("/portfolio/state"), apiGet("/holdings")]);
+    // The real total portfolio value (same figure "My Portfolio" itself
+    // shows) -- needed to turn each row's `current_allocation` FRACTION
+    // into a real dollar figure below, since Portfolio Construction only
+    // ever stores a target fraction, never a target dollar amount or
+    // quantity.
+    const totalPortfolioValueUsd = holdings
+      .filter(h => h.value_usd !== null && h.value_usd !== undefined)
+      .reduce((sum, h) => sum + h.value_usd, 0);
+    const allocatedTotal = state.reduce((sum, p) => sum + p.current_allocation, 0);
+    const cashFraction = 1 - allocatedTotal;
+    document.getElementById("portfolio-state-donut").innerHTML = renderDonutBlock(
+      [
+        ...state.map(p => ({ symbol: p.symbol, fraction: p.current_allocation, valueUsd: p.current_allocation * totalPortfolioValueUsd })),
+        { symbol: "CASH", fraction: cashFraction, valueUsd: cashFraction * totalPortfolioValueUsd },
+      ]
+    );
+    const cashRow = {
+      symbol: "CASH", current_allocation: cashFraction,
+      updated_at: null, regime_label: null, outcome: null,
+    };
+    const stateTable = buildSortableTable([
+      { label: "Asset", value: p => p.symbol },
+      { label: "Allocation", value: p => p.current_allocation, html: p => (p.current_allocation * 100).toFixed(2) + "%" },
+      { label: "Recommended value (USD)", title: "current_allocation x your real total portfolio value (shown above, the same total \"My Portfolio\" shows) -- a hypothetical target, not an actual holding: \"if you followed this recommendation exactly, this is how much you'd hold of this asset.\"",
+        value: p => p.current_allocation * totalPortfolioValueUsd,
+        html: p => "$" + (p.current_allocation * totalPortfolioValueUsd).toLocaleString(undefined, { maximumFractionDigits: 2 }) },
+      { label: "Last decided", value: p => p.updated_at },
+      { label: "Regime", title: "The market condition (e.g. risk-on/risk-off) the system read at the moment it made this decision.",
+        value: p => p.regime_label, html: p => p.regime_label ? p.regime_label : (p.outcome ? '<span class="null-note">NULL (see below)</span>' : "—") },
+      { label: "Outcome", title: "Whether the price has since hit this decision's target, hit its stop-loss, or timed out. 'Unresolved' just means not enough time has passed yet.",
+        value: p => p.outcome ? p.outcome.outcome_label : null, html: p => p.outcome ? p.outcome.outcome_label : "—" },
+      { label: "Mark-to-mid", title: "The paper return if this position could be closed right now at the current market price, before any fees.",
+        value: p => p.outcome && p.outcome.realized_return !== null ? p.outcome.realized_return : null,
+        html: p => p.outcome && p.outcome.realized_return !== null ? p.outcome.realized_return.toFixed(4) : "unresolved" },
+      { label: "Net of costs", title: "The same return, after subtracting realistic trading fees and price-impact costs -- the more honest number.",
+        value: p => p.outcome && p.outcome.realized_return_net_of_costs !== null ? p.outcome.realized_return_net_of_costs : null,
+        html: p => p.outcome && p.outcome.realized_return_net_of_costs !== null ? p.outcome.realized_return_net_of_costs.toFixed(4) : "unresolved" },
+      { label: "Fill method", title: "The order-execution assumption used to estimate trading costs for this position.",
+        value: p => p.outcome && p.outcome.assumed_fill_method ? p.outcome.assumed_fill_method : null },
+    ], [...state, cashRow]);
+    target.innerHTML = `
+      <p style="font-size:1.1rem;margin-bottom:8px;"><strong>Total portfolio value: $${totalPortfolioValueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong> <span class="null-note">(the same real total "My Portfolio" shows — every Recommended value below is this figure times that row's Allocation)</span></p>
+      ${stateTable}
+      <p class="null-note">CASH is not a tracked decision — it's the remainder of the portfolio (100% minus every allocation above), computed here, not stored anywhere. Portfolio Construction never forces full capital deployment, so this is normal, not missing data.</p>
+      <p class="null-note">Regime shows NULL for every resolved backfilled decision — a real, known persistence gap (3e.1's historical replay computed a regime per simulated day but never saved it as its own queryable row), not a live-data problem. See doc/phases.md's Phase 3g/3h sections.</p>`;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    document.getElementById("portfolio-state-donut").innerHTML = ""; // never leave a stale chart showing while the table below reports a fresh failure
+    renderError(target, e);
   }
 }
 
@@ -189,23 +1038,55 @@ async function loadCalibrationSummary() {
   const target = document.getElementById("calibration-summary");
   try {
     const s = await apiGet("/calibration/summary");
-    target.innerHTML = `
-      <table>
-        <tr><td>Resolved (backfilled)</td><td><span class="badge backfilled">backfilled</span> ${s.resolved_backfilled_count}</td></tr>
-        <tr><td>Resolved (live)</td><td><span class="badge live">live</span> ${s.resolved_live_count}</td></tr>
-        <tr><td>Unresolved (backfilled)</td><td>${s.unresolved_backfilled_count}</td></tr>
-        <tr><td>Unresolved (live)</td><td>${s.unresolved_live_count}</td></tr>
-        <tr><td>Directional sample size</td><td>${s.directional_sample_size}</td></tr>
-        <tr><td>Hit rate</td><td>${s.hit_rate !== null ? s.hit_rate.toFixed(4) : '<span class="badge insufficient">n/a</span>'}</td></tr>
-        <tr><td>Brier score</td><td>${s.brier_score !== null ? s.brier_score.toFixed(4) : '<span class="badge insufficient">n/a</span>'}</td></tr>
-        <tr><td>Sharpe (decision-level)</td><td>${s.sharpe_decision_level !== null ? s.sharpe_decision_level.toFixed(4) : "n/a"}</td></tr>
-        <tr><td>Deflated Sharpe Ratio</td><td>${s.deflated_sharpe_ratio !== null ? s.deflated_sharpe_ratio.toFixed(6) : "n/a"}</td></tr>
-      </table>
+    const metricRows = [
+      { metric: "Resolved (backfilled)", value: s.resolved_backfilled_count, html: `<span class="badge backfilled">backfilled</span> ${s.resolved_backfilled_count}`,
+        desc: "Decisions from a simulated replay of past dates (not real-time trading) where the outcome is already known — the price has since hit its target, hit its stop-loss, or timed out." },
+      { metric: "Resolved (live)", value: s.resolved_live_count, html: `<span class="badge live">live</span> ${s.resolved_live_count}`,
+        desc: "Decisions made in real time (not simulated) where the outcome is already known, the same way as above." },
+      { metric: "Unresolved (backfilled)", value: s.unresolved_backfilled_count,
+        desc: "Simulated decisions still waiting to hit their target, stop-loss, or timeout — no outcome yet." },
+      { metric: "Unresolved (live)", value: s.unresolved_live_count,
+        desc: "Real decisions still waiting to hit their target, stop-loss, or timeout — no outcome yet. Every decision has a horizon of several weeks, so recent decisions normally stay here for a while." },
+      { metric: "Directional sample size", value: s.directional_sample_size,
+        desc: "How many resolved decisions the Hit rate and Brier score below are actually calculated from. A small number here means those two figures aren't very trustworthy yet." },
+      { metric: "Hit rate", value: s.hit_rate, html: s.hit_rate !== null ? s.hit_rate.toFixed(4) : '<span class="badge insufficient">n/a</span>',
+        desc: "Of the resolved decisions, the fraction that called the right direction (e.g. a BUY that went on to gain, or a SELL that went on to fall). 1.0 = always right, 0.5 = a coin flip." },
+      { metric: "Brier score", value: s.brier_score, html: s.brier_score !== null ? s.brier_score.toFixed(4) : '<span class="badge insufficient">n/a</span>',
+        desc: 'Whether the system\'s stated confidence was honest — e.g. did its "90% confident" calls actually come true about 90% of the time? Lower is better: 0 is perfect, and a coin-flip guesser scores around 0.25. This is different from Hit rate, which ignores confidence entirely.' },
+      { metric: "Sharpe (decision-level)", value: s.sharpe_decision_level, html: s.sharpe_decision_level !== null ? s.sharpe_decision_level.toFixed(4) : "n/a",
+        desc: "Return earned relative to how bumpy/inconsistent those returns were. Higher means steadier, more dependable gains — a strategy with wild swings scores lower even if its average return is the same." },
+      { metric: "Deflated Sharpe Ratio", value: s.deflated_sharpe_ratio, html: s.deflated_sharpe_ratio !== null ? s.deflated_sharpe_ratio.toFixed(6) : "n/a",
+        desc: "The Sharpe ratio above, corrected for a specific risk: if you tweak a strategy and re-test it enough times, a good-looking result can happen by chance alone, not real skill. This number discounts for how many variations were actually tried, so it's the more honest figure to trust." },
+    ];
+    const calibrationTable = buildSortableTable([
+      { label: "Metric", value: r => r.metric },
+      { label: "Value", value: r => r.value, html: r => r.html !== undefined ? r.html : r.value },
+      { label: "What this means", value: r => r.desc, html: r => `<span class="metric-desc">${r.desc}</span>` },
+    ], metricRows);
+    target.innerHTML = `${calibrationTable}
       <p class="null-note">By-regime: ${s.by_regime_note}</p>
       <p class="null-note">Held-out window: ${s.held_out_window_note}</p>`;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    renderError(target, e);
   }
+}
+
+// Phase 5b §4: a one-line summary (the thesis's own first sentence, so
+// nothing is paraphrased or invented) with the full thesis one click
+// away, so scanning many decisions doesn't mean reading a paragraph each.
+function renderExpandableThesis(thesis) {
+  const firstSentenceEnd = thesis.indexOf(". ");
+  const useSentence = firstSentenceEnd > 0 && firstSentenceEnd < 140;
+  const cutoff = useSentence ? firstSentenceEnd + 1 : Math.min(120, thesis.length);
+  if (cutoff >= thesis.length) return `<span class="thesis">${thesis}</span>`;
+  const summary = useSentence ? thesis.slice(0, cutoff) : thesis.slice(0, cutoff) + "…";
+  // The expanded <details> content is only the REMAINDER after `summary`,
+  // not the full thesis again -- <summary> stays visible once expanded
+  // (it's the clickable disclosure line), so appending the whole thesis
+  // after it duplicated the lead-in text on expand. A real bug, not
+  // cosmetic -- fixed here rather than papered over with CSS.
+  const remainder = thesis.slice(cutoff);
+  return `<details class="thesis"><summary>${summary}</summary>${remainder}</details>`;
 }
 
 async function loadJudgeDecisions() {
@@ -216,17 +1097,71 @@ async function loadJudgeDecisions() {
       target.innerHTML = "<p>No decisions yet.</p>";
       return;
     }
-    const rows = decisions.map(d => `
-      <tr>
-        <td>${d.created_at.slice(0, 10)}</td>
-        <td><span class="badge ${d.is_backfilled ? "backfilled" : "live"}">${d.is_backfilled ? "backfilled" : "live"}</span></td>
-        <td>${d.decision}</td>
-        <td>${d.confidence.toFixed(2)}</td>
-        <td class="thesis">${d.thesis}</td>
-      </tr>`).join("");
-    target.innerHTML = `<table><tr><th>Date</th><th>Source</th><th>Decision</th><th>Confidence</th><th>Thesis</th></tr>${rows}</table>`;
+    // Default row order (before any header click) is the API's own
+    // newest-first order (JudgeDecisionRepository.get_recent orders by
+    // created_at desc) -- clicking any column header re-sorts by that
+    // column instead. The Date column shows the full timestamp, not just
+    // the date, since decisions from the same run share a date but not a
+    // timestamp -- sorting by Date is meaningful even within one run.
+    const decisionsTable = buildSortableTable([
+      { label: "Date", title: "The full decision timestamp, not just the date -- decisions from the same run share a date but not a timestamp.",
+        value: d => new Date(d.decision.created_at).getTime(), html: d => new Date(d.decision.created_at).toLocaleString() },
+      { label: "Token", value: d => d.symbol },
+      { label: "Source", value: d => d.decision.is_backfilled ? "backfilled" : "live",
+        html: d => `<span class="badge ${d.decision.is_backfilled ? "backfilled" : "live"}">${d.decision.is_backfilled ? "backfilled" : "live"}</span>` },
+      { label: "Decision", value: d => d.decision.decision },
+      { label: "Confidence", title: "How sure the system is about this call, 0 (a guess) to 1 (certain).",
+        value: d => d.decision.confidence, html: d => renderMiniBar(d.decision.confidence, 1, "#1565c0", 2) },
+      { label: "Expected alpha", title: "The extra return the system expects this decision to earn beyond just holding the market -- can be negative.",
+        value: d => d.decision.expected_alpha, html: d => renderDivergingBar(d.decision.expected_alpha, 0.10) },
+      { label: "Risk score", title: "How much this specific decision could lose if wrong, 0 (very safe) to 1 (very risky) -- feeds directly into how large a position it's sized at.",
+        value: d => d.decision.risk_score, html: d => renderMiniBar(d.decision.risk_score, 1, "#ef6c00", 2) },
+      { label: "Horizon", title: "How long this decision's own outcome window runs -- the Judge's stated investment_horizon_days for this call.",
+        value: d => d.decision.investment_horizon_days, html: d => `${d.decision.investment_horizon_days}d` },
+      { label: "Resolves by", title: "Date + Horizon -- when this decision's outcome window closes and it either hit target, hit stop, or times out. Computed client-side; the exact same date the benchmarking system itself uses (decision_timestamp + horizon_days).",
+        value: d => new Date(d.decision.created_at).getTime() + d.decision.investment_horizon_days * 86400000,
+        html: d => new Date(new Date(d.decision.created_at).getTime() + d.decision.investment_horizon_days * 86400000).toISOString().slice(0, 10) },
+      { label: "Thesis", value: d => d.decision.thesis, html: d => renderExpandableThesis(d.decision.thesis) },
+    ], decisions);
+    target.innerHTML = decisionsTable;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    renderError(target, e);
+  }
+}
+
+// News titles/summaries come from external RSS feeds -- genuinely
+// untrusted third-party content, unlike the LLM-authored text elsewhere
+// on this page -- so this is escaped before going into innerHTML.
+function escapeHtml(text) {
+  const div = document.createElement("div");
+  div.textContent = text ?? "";
+  return div.innerHTML;
+}
+
+async function loadRecentNews() {
+  const target = document.getElementById("recent-news");
+  try {
+    // No limit -- every article from the past 7 days, not just a top-20 slice.
+    const articles = await apiGet("/news/recent?days=7");
+    if (articles.length === 0) {
+      target.innerHTML = "<p>No recent news matched against your tracked assets.</p>";
+      return;
+    }
+    const newsTable = buildSortableTable([
+      { label: "Published", value: a => new Date(a.published_at).getTime(), html: a => new Date(a.published_at).toLocaleString() },
+      { label: "Source", value: a => a.source, html: a => escapeHtml(a.source) },
+      { label: "Title", value: a => a.title, html: a => {
+        const isSafeLink = a.url && (a.url.startsWith("http://") || a.url.startsWith("https://"));
+        return isSafeLink
+          ? `<a href="${escapeHtml(a.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(a.title)}</a>`
+          : escapeHtml(a.title);
+      } },
+      { label: "Relevant assets", value: a => a.relevant_assets.join(", "), html: a => a.relevant_assets.map(escapeHtml).join(", ") || "—" },
+      { label: "Sentiment", value: a => a.sentiment, html: a => a.sentiment ? escapeHtml(a.sentiment) : "—" },
+    ], articles);
+    target.innerHTML = newsTable;
+  } catch (e) {
+    renderError(target, e);
   }
 }
 
@@ -234,50 +1169,193 @@ async function loadHoldings() {
   const target = document.getElementById("holdings-current");
   try {
     const holdings = await apiGet("/holdings");
+    document.getElementById("holdings-donut").innerHTML = renderDonutBlock(
+      holdings.map(h => ({ symbol: h.symbol, fraction: h.allocation || 0, valueUsd: h.value_usd }))
+    );
     if (holdings.length === 0) {
       target.innerHTML = "<p>No holdings recorded yet — treated as 100% cash by omission.</p>";
       return;
     }
-    const rows = holdings.map(h => `
-      <tr>
-        <td>${h.asset_id === null ? "CASH" : h.asset_id}</td>
-        <td>${h.quantity}</td>
-        <td>${h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—"}</td>
-        <td>${h.recorded_at}</td>
-      </tr>`).join("");
-    target.innerHTML = `<table><tr><th>Asset</th><th>Quantity</th><th>Cost basis</th><th>Recorded at</th></tr>${rows}</table>`;
+    const holdingsTable = buildSortableTable([
+      { label: "Asset", value: h => h.symbol },
+      { label: "Quantity", value: h => h.quantity },
+      { label: "Cost / unit", title: "Cost basis divided by current quantity -- the weighted-average price per unit this position was really bought at.",
+        value: h => h.cost_per_unit, html: h => h.cost_per_unit !== null && h.cost_per_unit !== undefined ? "$" + h.cost_per_unit.toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
+      { label: "Cost basis", title: "The TOTAL cost basis of this whole aggregated position -- the sum of every BUY's cost basis, reduced proportionally by any SELLs.",
+        value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
+      { label: "Price (collected)", title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from.",
+        value: h => h.price_usd, html: h => renderStoredPrice(h.price_usd, h.price_as_of) },
+      { label: "Value (USD)", title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below.",
+        value: h => h.value_usd, html: h => h.value_usd !== null && h.value_usd !== undefined ? "$" + h.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
+      { label: "Live price", title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead.",
+        value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_as_of, h.live_price_source) },
+      { label: "Unrealized P&L", title: "Value (USD) minus Cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
+        value: h => h.unrealized_pnl_usd, html: h => renderPnl(h.unrealized_pnl_usd, h.unrealized_pnl_pct) },
+      { label: "Allocation", value: h => h.allocation, html: h => h.allocation !== null ? (h.allocation * 100).toFixed(2) + "%" : "—" },
+      { label: "Recorded at", value: h => h.recorded_at },
+    ], holdings);
+    // Sum of every row's real Value (USD) -- the same stored-price basis
+    // as the table's own Value column, so this total is always internally
+    // consistent with it. Rows with no current price available (null
+    // value_usd) are excluded from the sum, not treated as $0, and called
+    // out explicitly rather than silently understating the real total.
+    const knownValueRows = holdings.filter(h => h.value_usd !== null && h.value_usd !== undefined);
+    const totalValueUsd = knownValueRows.reduce((sum, h) => sum + h.value_usd, 0);
+    const missingPriceCount = holdings.length - knownValueRows.length;
+    target.innerHTML = `
+      <p style="font-size:1.1rem;margin-bottom:8px;"><strong>Total portfolio value: $${totalValueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>${missingPriceCount > 0 ? ` <span class="null-note">(excludes ${missingPriceCount} position${missingPriceCount > 1 ? "s" : ""} with no current price available)</span>` : ""}</p>
+      ${holdingsTable}
+      <p class="null-note">Allocation is this holding's real share of your total portfolio value right now — directly comparable to "AI Portfolio"'s Allocation column (the system's recommended target), since both are fractions of the same total. Cost basis / Value / P&amp;L are "—" whenever no cost basis was ever entered, or no current price is available, for that position.</p>`;
   } catch (e) {
-    target.innerHTML = `<span class="error">${e.message}</span>`;
+    document.getElementById("holdings-donut").innerHTML = ""; // never leave a stale chart showing while the table below reports a fresh failure
+    renderError(target, e);
+  }
+}
+
+// Phase 5b: populates the entry form's symbol autocomplete from the real
+// currently-active tracked assets -- a lookup, not free-text-only entry.
+async function populateHoldingsSymbolList() {
+  const listEl = document.getElementById("holdings-symbol-list");
+  try {
+    const symbols = await apiGet("/holdings/valid-symbols");
+    listEl.innerHTML = ["CASH", ...symbols].map(s => `<option value="${s}">`).join("");
+  } catch (e) {
+    // Non-fatal: the field still accepts free-text entry, just without
+    // autocomplete, if this lookup itself fails.
+  }
+}
+
+// Phase 5b: the full append-only transaction history -- proves the
+// transactional model (every BUY/SELL summed, none overwritten) is real,
+// not just correctly computed server-side and invisible in the UI.
+async function loadHoldingsHistory() {
+  const target = document.getElementById("holdings-history");
+  try {
+    const history = await apiGet("/holdings/history");
+    if (history.length === 0) {
+      target.innerHTML = "<p>No transactions recorded yet.</p>";
+      return;
+    }
+    const historyTable = buildSortableTable([
+      { label: "Recorded at", value: h => h.recorded_at },
+      { label: "Asset", value: h => h.symbol },
+      { label: "Type", value: h => h.transaction_type, html: h => `<span class="badge ${h.transaction_type === "SELL" ? "backfilled" : "live"}">${h.transaction_type}</span>` },
+      { label: "Quantity", value: h => h.quantity },
+      { label: "Cost basis (this txn)", value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
+      { label: "Purchased at", value: h => h.purchased_at, html: h => h.purchased_at ? h.purchased_at.slice(0, 10) : "—" },
+    ], history);
+    target.innerHTML = historyTable;
+  } catch (e) {
+    renderError(target, e);
   }
 }
 
 document.getElementById("holdings-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const statusEl = document.getElementById("holdings-form-status");
-  const rawAssetId = document.getElementById("holdings-asset-id").value.trim();
-  const assetId = rawAssetId.toUpperCase() === "CASH" || rawAssetId === "" ? null : rawAssetId;
+  const assetSymbol = document.getElementById("holdings-asset-symbol").value.trim() || "CASH";
+  const transactionType = document.getElementById("holdings-transaction-type").value;
   const quantity = parseFloat(document.getElementById("holdings-quantity").value);
   const costBasisRaw = document.getElementById("holdings-cost-basis").value.trim();
   const costBasis = costBasisRaw === "" ? null : parseFloat(costBasisRaw);
+  const purchasedAtRaw = document.getElementById("holdings-purchased-at").value;
+  const purchasedAt = purchasedAtRaw === "" ? null : purchasedAtRaw;
 
   try {
-    await apiPost("/holdings", { asset_id: assetId, quantity, cost_basis_usd: costBasis });
+    await apiPost("/holdings", {
+      asset_symbol: assetSymbol, quantity, cost_basis_usd: costBasis,
+      purchased_at: purchasedAt, transaction_type: transactionType,
+    });
     statusEl.textContent = "Recorded.";
+    document.getElementById("holdings-asset-symbol").value = "";
     document.getElementById("holdings-quantity").value = "";
     document.getElementById("holdings-cost-basis").value = "";
+    document.getElementById("holdings-purchased-at").value = "";
+    // Every one of these independently fetches /holdings and derives its
+    // own total-portfolio-value figure from it (AI Portfolio's total +
+    // Recommended value column, What should change's total + USD amounts,
+    // Screened tokens' Layer 3 HELD column) -- all four must refresh
+    // together after any holdings mutation, or they'd show a stale total
+    // until the next full page load while My Portfolio already updated.
     loadHoldings();
+    loadHoldingsHistory();
+    loadPortfolioState();
+    loadPortfolioComparison();
+    loadScreenedTokens();
   } catch (e) {
     statusEl.innerHTML = `<span class="error">${e.message}</span>`;
   }
 });
 
-function loadAll() {
-  loadSignalSources();
-  loadCostSummary();
-  loadPortfolioState();
-  loadCalibrationSummary();
-  loadJudgeDecisions();
-  loadHoldings();
+async function loadPortfolioComparison() {
+  const target = document.getElementById("portfolio-comparison");
+  try {
+    const [holdings, state] = await Promise.all([apiGet("/holdings"), apiGet("/portfolio/state")]);
+    const { currentBySymbol, recommendedBySymbol, symbols } = buildAllocationComparison(holdings, state);
+    // Both fractions are of the SAME real total (buildAllocationComparison's
+    // own contract) -- one total portfolio value turns both into real
+    // dollar amounts, not two separately-scaled figures.
+    const totalPortfolioValueUsd = holdings
+      .filter(h => h.value_usd !== null && h.value_usd !== undefined)
+      .reduce((sum, h) => sum + h.value_usd, 0);
+    const fmtUsd2 = n => "$" + n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // CASH last, everything else by how large the bigger of its two bars is,
+    // so the positions that matter most are the easiest to scan first.
+    symbols.sort((a, b) => {
+      if (a === "CASH") return 1;
+      if (b === "CASH") return -1;
+      return Math.max(currentBySymbol[b] || 0, recommendedBySymbol[b] || 0)
+           - Math.max(currentBySymbol[a] || 0, recommendedBySymbol[a] || 0);
+    });
+
+    const maxPct = Math.max(5, ...symbols.map(s => Math.max((currentBySymbol[s] || 0) * 100, (recommendedBySymbol[s] || 0) * 100)));
+    const rows = symbols.map(symbol => {
+      const currentPct = (currentBySymbol[symbol] || 0) * 100;
+      const recommendedPct = (recommendedBySymbol[symbol] || 0) * 100;
+      const currentUsd = (currentBySymbol[symbol] || 0) * totalPortfolioValueUsd;
+      const recommendedUsd = (recommendedBySymbol[symbol] || 0) * totalPortfolioValueUsd;
+      return `<div class="compare-row">
+        <div class="compare-label"><strong>${symbol}</strong><span>${currentPct.toFixed(2)}% (${fmtUsd2(currentUsd)}) / ${recommendedPct.toFixed(2)}% (${fmtUsd2(recommendedUsd)})</span></div>
+        <div class="compare-track">
+          <div class="compare-bar current" style="width:${(currentPct / maxPct * 100).toFixed(2)}%; top:0; height:6px;"></div>
+          <div class="compare-bar recommended" style="width:${(recommendedPct / maxPct * 100).toFixed(2)}%; top:8px; height:6px;"></div>
+        </div>
+      </div>`;
+    }).join("");
+
+    const deltaLines = symbols.map(symbol => {
+      const currentPct = (currentBySymbol[symbol] || 0) * 100;
+      const recommendedPct = (recommendedBySymbol[symbol] || 0) * 100;
+      const delta = recommendedPct - currentPct;
+      if (Math.abs(delta) < DIVERGENCE_THRESHOLD_POINTS) return "";
+      const verb = delta > 0 ? "an increase" : "a decrease";
+      const deltaUsd = Math.abs(delta / 100) * totalPortfolioValueUsd;
+      return `<p class="delta-line">You hold <strong>${currentPct.toFixed(2)}%</strong> in ${symbol}; the system recommends <strong>${recommendedPct.toFixed(2)}%</strong> — ${verb} of ${Math.abs(delta).toFixed(2)} points (${fmtUsd2(deltaUsd)}).</p>`;
+    }).join("");
+
+    target.innerHTML = `
+      <p style="font-size:1.1rem;margin-bottom:8px;"><strong>Total portfolio value: ${fmtUsd2(totalPortfolioValueUsd)}</strong></p>
+      <p class="compare-key"><span class="swatch" style="background:#1565c0"></span>You hold &nbsp;
+        <span class="swatch" style="background:#ef6c00cc"></span>System recommends</p>
+      ${rows}
+      ${deltaLines || '<p class="metric-desc">Nothing differs by 5+ points right now -- current holdings already roughly match the recommendation.</p>'}`;
+  } catch (e) {
+    renderError(target, e);
+  }
+}
+
+async function loadAll() {
+  document.getElementById("last-updated").textContent = "Refreshing…";
+  await Promise.allSettled([
+    loadOverviewStrip(), loadSignalSources(), loadScreenedTokens(), loadLlmPrompts(), loadCostSummary(), loadPortfolioState(),
+    loadCalibrationSummary(), loadJudgeDecisions(), loadHoldings(), loadPortfolioComparison(),
+    loadHoldingsHistory(), populateHoldingsSymbolList(), loadRecentNews(),
+  ]);
+  // Page-wide, not per-panel (Phase 5b §6): every panel loads together
+  // from this one loadAll() call, so one honest "as of" timestamp for
+  // the whole page is simpler and no less accurate than repeating it in
+  // every panel individually.
+  document.getElementById("last-updated").textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
 }
 
 document.getElementById("api-key-input").value = getKey();

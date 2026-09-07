@@ -57,7 +57,7 @@ from app.market_data.upbit import UpbitClient
 from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
 from app.portfolio.construction import PortfolioConstructionService
-from app.portfolio.holdings import compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
 from app.risk.correlation import compute_daily_returns
 from app.risk.engine import RiskEngine
 
@@ -372,12 +372,17 @@ def main() -> int:
             # price, plus an explicit cash line) -- never from
             # portfolio_positions, which is retired as an input and only
             # written going forward as Portfolio Construction's own derived
-            # bookkeeping (see README's Phase 5a section). Real prices are
-            # looked up for every asset with a real holdings entry, not
+            # bookkeeping (see doc/phases.md's Phase 5a section). Real prices
+            # are looked up for every asset with a real holdings entry, not
             # just this run's candidates, so the total portfolio value used
             # to compute fractions is correct even for a long-term hold
             # that isn't a TOP_CANDIDATE this run.
-            latest_holdings = holdings_ledger_repo.get_latest_holdings()
+            #
+            # Phase 5b: holdings_ledger is now genuinely transactional --
+            # multiple BUY/SELL rows per asset sum into the current
+            # position (see aggregate_current_holdings) rather than only
+            # the latest row per asset counting.
+            latest_holdings = aggregate_current_holdings(holdings_ledger_repo.get_all_history())
             price_lookup_ids = {a.id for a in assets_by_id.values()} | {
                 h.asset_id for h in latest_holdings if h.asset_id is not None
             }
