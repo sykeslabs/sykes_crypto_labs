@@ -19,6 +19,7 @@ from app.database.repository import (
     HoldingsLedgerRepository,
     JudgeDecisionRepository,
     JudgeReasoningAuditRepository,
+    LLMAnalysisRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
     ModelMarketAssessmentRepository,
@@ -103,6 +104,10 @@ def get_signal_source_repo() -> SignalSourceRepository:
 
 def get_cost_ledger_repo() -> CostLedgerRepository:
     return CostLedgerRepository(get_client())
+
+
+def get_llm_analysis_repo() -> LLMAnalysisRepository:
+    return LLMAnalysisRepository(get_client())
 
 
 def get_news_repo() -> NewsRepository:

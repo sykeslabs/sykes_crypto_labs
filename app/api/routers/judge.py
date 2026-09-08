@@ -12,7 +12,7 @@ router = APIRouter(prefix="/judge", tags=["judge"], dependencies=[Depends(verify
 
 @router.get("/decisions/recent", response_model=list[JudgeDecisionView])
 def get_recent_decisions(
-    limit: int = 50, is_backfilled: bool | None = None,
+    limit: int | None = None, is_backfilled: bool | None = None,
     repo: JudgeDecisionRepository = Depends(get_judge_decision_repo),
     asset_repo: AssetRepository = Depends(get_asset_repo),
 ) -> list[JudgeDecisionView]:
@@ -20,7 +20,9 @@ def get_recent_decisions(
     invalidation conditions), newest first. `is_backfilled` optionally
     filters to just backfilled or just live decisions — never mixed
     silently, per 3e.1's own non-negotiable. `symbol` (Phase 5b) resolves
-    each record's raw `asset_id` to its real token symbol."""
+    each record's raw `asset_id` to its real token symbol. `limit=None`
+    (Phase 5b addendum, default) returns every decision ever made -- pass
+    a real `limit` to cap the result if a caller wants that instead."""
     records = repo.get_recent(limit=limit, is_backfilled=is_backfilled)
     assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
     return [

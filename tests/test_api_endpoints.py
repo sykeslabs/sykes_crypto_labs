@@ -238,6 +238,27 @@ def test_get_latest_assessments(client):
     assert response.json()[0]["provider"] == "claude"
 
 
+def test_get_recent_research(client):
+    from app.api.dependencies import get_llm_analysis_repo
+    from app.llm.schemas import LLMAnalysisRecord
+
+    record = LLMAnalysisRecord(
+        run_id="RUN-1", asset_id="a1", provider="claude", model="m", prompt_version="1.0",
+        timestamp=datetime.now(UTC), input_hash="h", response={}, action="BUY", confidence=0.6,
+        target_allocation=0.05, investment_horizon="medium", bull_case="b", bear_case="b",
+        catalysts=[], risks=[], invalidation_conditions=[], token_usage=None, estimated_cost=Decimal("0.01"),
+    )
+
+    class FakeRepo:
+        def get_recent(self, limit=None):
+            return [record]
+
+    app.dependency_overrides[get_llm_analysis_repo] = lambda: FakeRepo()
+    response = client.get("/assessments/research/recent")
+    assert response.status_code == 200
+    assert response.json()[0]["provider"] == "claude"
+
+
 def test_get_adversarial_research_for_asset_null_when_none(client):
     class FakeRepo:
         def get_latest_by_asset(self, asset_id):

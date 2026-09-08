@@ -5,6 +5,7 @@
 <title>Crypto AI Portfolio — Dashboard</title>
 <style>
   :root { color-scheme: light dark; }
+  html { scroll-behavior: smooth; }
   body { font-family: system-ui, sans-serif; margin: 0; padding: 24px; max-width: 1100px; }
   h1 { font-size: 1.4rem; margin-bottom: 4px; }
   .subtitle { color: #888; margin-top: 0; margin-bottom: 20px; font-size: 0.9rem; }
@@ -14,6 +15,15 @@
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #8884; vertical-align: top; }
   th.sortable-th { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable-th:hover { color: #1565c0; }
+  /* Caps a table to roughly N visible rows with a vertical scrollbar for
+     the rest -- an approximation, not a pixel-exact row count, since real
+     row height varies with content (e.g. a table with an expandable
+     thesis column). `Canvas` is a CSS system-color keyword that follows
+     the page's own light/dark mode automatically, so the sticky header
+     never shows scrolled-past rows bleeding through underneath it. */
+  .scroll-table-wrap { max-height: 900px; overflow-y: auto; border: 1px solid #8884; margin-top: 4px; }
+  .scroll-table-wrap table { margin: 0; }
+  .scroll-table-wrap th { position: sticky; top: 0; background: Canvas; z-index: 1; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
   .badge.ok { background: #2e7d3222; color: #2e7d32; }
   .badge.unavailable { background: #c6282822; color: #c62828; }
@@ -57,11 +67,52 @@
   .glossary summary { cursor: pointer; color: #888; }
   .glossary dt { font-weight: 600; margin-top: 8px; }
   .glossary dd { margin: 0 0 4px 0; color: #ccc; }
+  /* Click-to-expand `<details>` blocks (Factor breakdown, Thesis, Prompt
+     text) replaced with a link opening this one shared overlay instead --
+     avoids a table row silently pushing the rest of the page down when
+     expanded in place, and gives every expandable value the same
+     interaction everywhere on the page. */
+  a.modal-link { color: #1565c0; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+  .modal-overlay { display: none; position: fixed; inset: 0; background: #00000088; z-index: 100; align-items: center; justify-content: center; padding: 24px; }
+  .modal-box { background: Canvas; color: CanvasText; border: 1px solid #8888; border-radius: 8px; max-width: 720px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px #00000055; }
+  .modal-box-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #8884; }
+  .modal-box-header h3 { margin: 0; font-size: 1rem; }
+  .modal-box-close { background: none; border: none; font-size: 1.3rem; line-height: 1; cursor: pointer; color: inherit; padding: 0 4px; }
+  .modal-box-body { padding: 12px 16px; overflow-y: auto; font-size: 0.85rem; }
+  .modal-box-body table { font-size: 0.8rem; }
 </style>
 </head>
 <body>
 <h1>Crypto AI Portfolio</h1>
 <p class="subtitle">Read-only dashboard over the Evidence Store — localhost/personal-machine only (Phase 5).</p>
+
+<div class="modal-overlay" id="dashboard-modal-overlay" onclick="if (event.target === this) closeDashboardModal();">
+  <div class="modal-box">
+    <div class="modal-box-header">
+      <h3 id="dashboard-modal-title"></h3>
+      <button type="button" class="modal-box-close" onclick="closeDashboardModal();" aria-label="Close">×</button>
+    </div>
+    <div class="modal-box-body" id="dashboard-modal-body"></div>
+  </div>
+</div>
+
+<section>
+  <h2>TODO</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    Real recommendations that came up while building/discussing this
+    dashboard — not built (or not yet decided), kept here so they aren't
+    lost. Static list, not derived from any live data.
+  </p>
+  <ul style="font-size:0.9rem;">
+    <li><strong>Include currently-held assets in Judge coverage</strong> — right now only Layer 2 (top 10 by composite score) gets a real Judge decision; an asset you hold that falls out of the top 10 gets no fresh opinion at all, however long you've held it. Proposed fix: top 10 by score PLUS every currently-held asset. Real added cost estimated at ~$0.09/asset/run (trivial against the $12/day cap). <strong>Declined for now</strong> ("leave it as is") — revisit if this becomes a real pain point.</li>
+    <li><strong>A way to correct or remove a mistaken holdings entry</strong> — currently no delete exists at all (by design: the ledger is append-only). Two real options discussed: (a) a genuine hard delete, which breaks the append-only guarantee and several real downstream consequences (retroactive history corruption, current numbers shifting with no new action, past Judge decisions becoming unreproducible — see the full breakdown from that discussion); (b) a "Remove" button that posts an offsetting correcting transaction instead, preserving the audit trail. <strong>Deferred</strong> — "let's address this at a later point in time."</li>
+    <li><strong>Revisit <code>SCREENING_UNIVERSE_SIZE</code> (currently 30)</strong> — this default was originally set because of a CoinGecko per-asset historical-endpoint rate limit, but that specific endpoint isn't even used by today's screening pipeline anymore (Binance/Coinbase supply volatility/drawdown instead, and the CoinGecko/CoinMarketCap universe calls are single batched requests regardless of size). Raising it would mainly mean more sequential Binance/Coinbase OHLCV calls (longer run time, not more real cost, and well within Binance's generous rate limits). Never formally decided either way — just an observation from investigating why 30 was chosen.</li>
+    <li><strong>Reconcile <code>assets.in_asset</code> with real holdings data at the source</strong> — this column is set once at asset-creation time and never updated again, so it doesn't reflect current real holdings (confirmed live via "S"/Sonic: <code>in_asset=true</code> but zero real transactions ever recorded). The dashboard's own HELD badges were fixed to compute live from <code>/holdings</code> instead of trusting this column — but the column itself, in the database, is still permanently stale, which could bite anything else that ever reads it directly in the future.</li>
+    <li><strong>Merge "LLM prompts" and "LLM answers" into one section</strong> — today they're two separate sections a user has to scroll between and mentally re-match: one shows each prompt's static definition, the other shows what it actually got back, and there's no link between a given prompt's row and its own answers table. Proposed structure: one panel per prompt (Research / Assessment / Bull / Bear / Scenario / Reasoning-audit — Judge stays cross-linked to Judge Decisions rather than duplicated, as now), each panel opening to show that prompt's own definition (purpose, context of use, status, "Show full prompt" link) directly above its own live answers table, instead of the definition and the answers living in two separately-scrolled sections with their own independent open/closed state. Real benefit: exploring "what does this prompt ask for" and "what did it actually answer" becomes one click into one panel instead of two lookups in two places, and a future prompt with genuinely zero answers yet (a new prompt just added, or one that hasn't run since a schema change) would show that honestly right under its own definition, rather than as a silent gap in a differently-ordered second table. Not built — proposed here for a decision on whether the consolidation is worth restructuring both sections' current independent load functions (<code>loadLlmPrompts()</code> / <code>loadLlmAnswers()</code>) around.</li>
+    <li><strong>Merge "AI Portfolio" and "What should change" into one section</strong> — both already describe the exact same recommendation (<code>/portfolio/state</code>'s per-candidate <code>current_allocation</code>), fetched independently by both sections' own load functions today: "AI Portfolio" shows it as a table (Allocation, Recommended value, Regime, Outcome, Mark-to-mid, Net of costs, Fill method) plus its own donut; "What should change" re-fetches the same data plus <code>/holdings</code> and shows it again as current-vs-recommended bars with delta callouts, one section below. A user has to hold the recommended number from the first table in their head while reading the second section's bars to see whether it's actually a big gap from what they hold. Proposed structure: one section, one fetch of <code>/holdings</code> + <code>/portfolio/state</code>, with the current-vs-recommended bar comparison (already the more informative, decision-relevant view) as the primary per-asset row, and each row's own recommendation metadata (Regime, Outcome, Mark-to-mid, Net of costs, Fill method) tucked behind a "Show details" link (the same overlay-modal pattern already used for Factor breakdown/Judge thesis/full prompts) instead of 5 more always-visible table columns competing for attention with the bars. The donut could similarly become one current-vs-recommended pair instead of two separately-titled single donuts. Not built — proposed here for the same reason as the LLM-section merge above: a decision on whether consolidating <code>loadPortfolioState()</code> and <code>loadPortfolioComparison()</code> is worth it.</li>
+    <li><strong>Compute a real "effective" (realized) alpha, not just expected alpha</strong> — Judge Decisions shows <code>expected_alpha</code> (the Judge's own prediction: "the extra return this decision should earn beyond just holding the market"), but there is no realized counterpart anywhere in the codebase, confirmed by a full search: <code>decision_outcomes</code> only stores the decision's own absolute <code>realized_return</code>/<code>realized_return_net_of_costs</code> (now shown as Mark-to-mid / Net of costs), never diffed against what the market did over the same window -- so it's a raw return, not alpha. The only benchmark-comparison code that exists at all, <code>app/benchmarks/baseline_comparison.py</code>, is used solely by a standalone script (<code>scripts/run_benchmark_comparison.py</code>) that computes BTC-buy-and-hold / equal-weight-basket baseline returns over the resolved-decisions window -- but that script doesn't even compute the system's own aggregate return to diff against those baselines, so it doesn't produce an alpha figure either, and none of it is wired into the API or dashboard. Real effective alpha would need, per resolved decision: the benchmark's (BTC, or the asset's own prior trend) return over that exact <code>decision_timestamp</code> → <code>evaluated_at</code> window, then <code>realized_return - benchmark_return</code> -- a genuinely new computation and (likely) a new persisted column, not just a dashboard change. Not built.</li>
+  </ul>
+</section>
 
 <div class="key-setup">
   <input id="api-key-input" type="password" placeholder="X-API-Key">
@@ -98,18 +149,26 @@
 <div id="overview-strip" class="overview-strip">Loading…</div>
 
 <section>
-  <h2>Signal sources</h2>
-  <div id="signal-sources">Loading…</div>
-</section>
-
-<section>
   <h2>Screened tokens</h2>
   <p style="font-size:0.85rem;color:#888;">
     Only a small, algorithmically-narrowed subset of the crypto market is
-    ever tracked here, not the whole universe — three narrowing layers,
-    widest to narrowest.
+    ever tracked here, not the whole universe. Every asset that's either
+    currently tracked or in this run's screened universe, one row each,
+    marked with real independent status badges — see the Legend below the
+    table for what SCREENED / JUDGED / HELD each actually mean, and which
+    one of them is the only thing that earns a real Judge decision.
   </p>
   <div id="screened-tokens">Loading…</div>
+</section>
+
+<section>
+  <h2>Judge Decisions</h2>
+  <div id="judge-decisions">Loading…</div>
+</section>
+
+<section>
+  <h2>Calibration summary</h2>
+  <div id="calibration-summary">Loading…</div>
 </section>
 
 <section>
@@ -125,8 +184,14 @@
 </section>
 
 <section>
-  <h2>Cost / spend</h2>
-  <div id="cost-summary">Loading…</div>
+  <h2>LLM answers</h2>
+  <p style="font-size:0.85rem;color:#888;">
+    The real answers each prompt above actually got back from OpenRouter,
+    across every run -- not just the prompt definitions. The Judge
+    prompt's own answers are already shown in full in Judge Decisions
+    above, so aren't repeated here.
+  </p>
+  <div id="llm-answers">Loading…</div>
 </section>
 
 <section>
@@ -183,16 +248,6 @@
 </section>
 
 <section>
-  <h2>Calibration summary</h2>
-  <div id="calibration-summary">Loading…</div>
-</section>
-
-<section>
-  <h2>Recent Judge decisions</h2>
-  <div id="judge-decisions">Loading…</div>
-</section>
-
-<section>
   <h2>Recent news</h2>
   <p style="font-size:0.85rem;color:#888;">
     Articles matched against your tracked assets by keyword (not full NLP —
@@ -200,6 +255,16 @@
     context. Shown here read-only, same as everything else on this page.
   </p>
   <div id="recent-news">Loading…</div>
+</section>
+
+<section>
+  <h2>Cost / spend</h2>
+  <div id="cost-summary">Loading…</div>
+</section>
+
+<section>
+  <h2>Signal sources</h2>
+  <div id="signal-sources">Loading…</div>
 </section>
 
 <script>
@@ -418,11 +483,73 @@ function renderSortableTableHtml(id) {
     return `<th class="sortable-th"${titleAttr} onclick="sortDashboardTable('${id}', ${i})">${col.label}${arrow}</th>`;
   }).join("");
   const bodyHtml = displayRows.map(row => {
-    const cells = columns.map(col => `<td>${col.html ? col.html(row) : (row == null ? "—" : col.value(row))}</td>`).join("");
+    // Bug fixed here (found live via the Screened tokens restructure): this
+    // used to check whether the ROW was null, not whether the column's own
+    // VALUE was -- so a real null/undefined value (e.g. Rank for an
+    // unscreened asset) rendered as the literal text "null" for any column
+    // with no explicit `html` function. Now checks the actual value.
+    const cells = columns.map(col => {
+      if (col.html) return `<td>${col.html(row)}</td>`;
+      const value = col.value(row);
+      return `<td>${value === null || value === undefined ? "—" : value}</td>`;
+    }).join("");
     return `<tr>${cells}</tr>`;
   }).join("");
   return `<table id="${id}"><tr>${headHtml}</tr>${bodyHtml}</table>`;
 }
+
+// Caps a `.scroll-table-wrap` to roughly `visibleRows` rows before it
+// scrolls -- measured from the table's OWN real rendered row height rather
+// than a single fixed pixel guess, since real row height varies wildly
+// across tables (e.g. Judge Decisions' thesis column wraps to several
+// lines; News/Signal-sources rows are much shorter). Uses the first data
+// row (table.rows[1]; rows[0] is the header row -- these tables have no
+// <thead>, so the browser puts every <tr> in one implicit <tbody>) as the
+// representative row height -- an approximation, not pixel-exact, since
+// individual rows can still vary.
+function capTableWrapToRows(wrapEl, visibleRows) {
+  const table = wrapEl && wrapEl.querySelector("table");
+  if (!table || table.rows.length < 2) return;
+  const headerHeight = table.rows[0].getBoundingClientRect().height;
+  const rowHeight = table.rows[1].getBoundingClientRect().height;
+  wrapEl.style.maxHeight = `${headerHeight + rowHeight * visibleRows}px`;
+}
+
+// Shared overlay used by every click-to-expand value on the page (Factor
+// breakdown, Judge thesis, full prompt text) instead of each one being its
+// own in-place `<details>` -- avoids a single table row silently pushing
+// the whole rest of the page down when expanded. `_textModalRegistry`
+// holds simple {title, html} content; `openDashboardModal` is also called
+// directly (not through the registry) by the Factor breakdown link, which
+// needs to trigger a live-factor fetch after its content is in the DOM.
+const _textModalRegistry = {};
+let _modalSeq = 0;
+
+function registerTextModal(title, html) {
+  const id = "modal-" + (++_modalSeq);
+  _textModalRegistry[id] = { title, html };
+  return id;
+}
+
+function openTextModal(id) {
+  const entry = _textModalRegistry[id];
+  if (!entry) return;
+  openDashboardModal(entry.title, entry.html);
+}
+
+function openDashboardModal(title, bodyHtml) {
+  document.getElementById("dashboard-modal-title").textContent = title;
+  document.getElementById("dashboard-modal-body").innerHTML = bodyHtml;
+  document.getElementById("dashboard-modal-overlay").style.display = "flex";
+}
+
+function closeDashboardModal() {
+  document.getElementById("dashboard-modal-overlay").style.display = "none";
+}
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") closeDashboardModal();
+});
 
 function sortDashboardTable(id, colIndex) {
   const state = _sortableTables[id];
@@ -506,7 +633,7 @@ async function loadOverviewStrip() {
         <p class="metric-desc"><a href="#calibration-summary">See Calibration summary ↓</a></p>
       </div>
       <div>
-        <strong>Today's spend:</strong> $${cost.daily.total_usd} of $${cost.daily.cap_usd} cap
+        <strong>Today's spend:</strong> $${parseFloat(cost.daily.total_usd).toFixed(3)} of $${cost.daily.cap_usd} cap
         <p class="metric-desc"><a href="#cost-summary">See Cost / spend ↓</a></p>
       </div>
       <div>
@@ -627,15 +754,16 @@ async function loadSignalSources() {
         <strong>${notBuilt} not built</strong> (deliberate decisions -- paid tier, an access relationship not pursued, or a genuine infeasibility investigated and confirmed -- never a broken source) &nbsp;•&nbsp;
         <strong>${unreachable} genuinely inaccessible</strong> (investigated and found actually blocked, e.g. a bot-challenge or DNS failure)
       </p>
-      <details>
+      <details open>
         <summary>Show all ${sources.length} sources, grouped by status</summary>
-        <h3>Vendors (${vendorSources.length})</h3>
         <p class="metric-desc">Named after one specific, directly-integrated provider.</p>
-        ${renderSignalSourceTable(vendorSources)}
+        <div class="scroll-table-wrap" id="signal-sources-vendors-scroll">${renderSignalSourceTable(vendorSources)}</div>
         <h3 style="margin-top:16px;">Evidence categories (${categorySources.length})</h3>
         <p class="metric-desc">Named after an evidence category from this project's original Phase 3 roadmap, often fulfilled by multiple vendors combined -- see the Provider column for which vendor(s) actually implement each.</p>
-        ${renderSignalSourceTable(categorySources)}
+        <div class="scroll-table-wrap" id="signal-sources-categories-scroll">${renderSignalSourceTable(categorySources)}</div>
       </details>`;
+    capTableWrapToRows(document.getElementById("signal-sources-vendors-scroll"), 20);
+    capTableWrapToRows(document.getElementById("signal-sources-categories-scroll"), 20);
   } catch (e) {
     renderError(target, e);
   }
@@ -738,25 +866,34 @@ const FACTOR_DESCRIPTIONS = {
 // only the STORED snapshot (shown alongside it) does.
 const _liveFactorCache = {};
 
-async function loadLiveFactorsForBreakdown(detailsEl, symbol) {
-  if (!detailsEl.open || detailsEl.dataset.liveFetched) return;
-  detailsEl.dataset.liveFetched = "1";
+// Container passed in is now the modal body (fetch triggered once, right
+// when the modal opens, instead of on a `<details>` element's `ontoggle`).
+async function loadLiveFactorsForModal(containerEl, symbol) {
   try {
     const live = _liveFactorCache[symbol] || (_liveFactorCache[symbol] = await apiGet(`/screening/live-factors/${encodeURIComponent(symbol)}`));
     for (const factor of Object.keys(FACTOR_LABELS)) {
-      const cell = detailsEl.querySelector(`td[data-live-factor="${factor}"]`);
+      const cell = containerEl.querySelector(`td[data-live-factor="${factor}"]`);
       if (!cell) continue;
       const v = live[factor];
       cell.textContent = v === null || v === undefined ? "—" : v.toFixed(4);
     }
-    const asOfEl = detailsEl.querySelector(".live-factors-as-of");
+    const asOfEl = containerEl.querySelector(".live-factors-as-of");
     if (asOfEl) asOfEl.textContent = `Live as of ${new Date(live.computed_at).toLocaleString()} (${live.volatility_drawdown_source.toLowerCase()})`;
   } catch (e) {
     for (const factor of Object.keys(FACTOR_LABELS)) {
-      const cell = detailsEl.querySelector(`td[data-live-factor="${factor}"]`);
+      const cell = containerEl.querySelector(`td[data-live-factor="${factor}"]`);
       if (cell) cell.textContent = "unavailable";
     }
   }
+}
+
+const _factorBreakdownRegistry = {};
+
+function openFactorBreakdownModal(modalId) {
+  const entry = _factorBreakdownRegistry[modalId];
+  if (!entry) return;
+  openDashboardModal(`Factor breakdown — ${entry.symbol}`, entry.html);
+  loadLiveFactorsForModal(document.getElementById("dashboard-modal-body"), entry.symbol);
 }
 
 function renderFactorBreakdown(breakdown, symbol, computedAt) {
@@ -786,9 +923,8 @@ function renderFactorBreakdown(breakdown, symbol, computedAt) {
       <td>${sumOfContributions.toFixed(4)}</td>
       <td></td>
     </tr>`;
-  const detailsId = `factor-breakdown-${symbol}-${Math.random().toString(36).slice(2, 8)}`;
-  return `<details id="${detailsId}" ontoggle="loadLiveFactorsForBreakdown(this, '${symbol}')">
-    <summary>Show factor breakdown</summary>
+  const modalId = `factor-breakdown-${symbol}-${Math.random().toString(36).slice(2, 8)}`;
+  _factorBreakdownRegistry[modalId] = { symbol, html: `
     <p class="metric-desc">Snapshot: ${new Date(computedAt).toLocaleString()}</p>
     <table style="margin-top:4px;"><tr>
       <th title="One of the six inputs to Composite score -- see doc/phases.md Phase 3b for why these six and not others.">Factor</th>
@@ -799,8 +935,8 @@ function renderFactorBreakdown(breakdown, symbol, computedAt) {
       <th title="A genuinely live recompute of this same factor, fetched from Binance/Coinbase/CoinGecko right now -- informative only, shown for comparison against the stored snapshot to its left. Has NO effect on Composite score, Layer 2 promotion, or any real decision, which only ever use the stored snapshot.">Currently valid</th>
     </tr>${rows}${sumRow}</table>
     <p class="metric-desc">Recomputed from this same screening batch: ${breakdown.recomputedScore !== null ? breakdown.recomputedScore.toFixed(3) : "—"} (should match Composite score above, up to rounding).</p>
-    <p class="metric-desc live-factors-as-of"></p>
-  </details>`;
+    <p class="metric-desc live-factors-as-of"></p>` };
+  return `<a class="modal-link" onclick="openFactorBreakdownModal('${modalId}');">Show factor breakdown</a>`;
 }
 
 async function loadScreenedTokens() {
@@ -819,58 +955,80 @@ async function loadScreenedTokens() {
     const heldSymbols = new Set(holdings.filter(h => h.quantity > 0).map(h => h.symbol));
     // Real per-factor breakdown behind each asset's composite_factor_score
     // -- see buildFactorBreakdown's own docstring-comment above for why
-    // this is a recomputation, not stored data.
+    // this is a recomputation, not stored data. Only ever has entries for
+    // symbols in `universe` (this run's screened batch) -- a tracked-but
+    // -unscreened asset (see below) genuinely has no factor data to show.
     const factorBreakdownBySymbol = buildFactorBreakdown(universe);
 
-    // Default row order (before any header click): market cap descending
-    // for the universe table -- its own defining criterion ("top N by
-    // market cap") -- not the `rank` column (a separate composite-factor
-    // rank, kept visible but no longer the default row order); rank
-    // ascending for candidates, already-given order for tracked.
-    const universeDefaultOrder = [...universe].sort((a, b) => (b.market_cap ?? -Infinity) - (a.market_cap ?? -Infinity));
-    const universeTable = buildSortableTable([
-      { label: "Rank", title: "This screening run's composite-factor rank, independent of this table's own row order (sorted by market cap by default).", value: s => s.rank },
-      { label: "Symbol", value: s => s.symbol },
-      { label: "Market cap", value: s => s.market_cap, html: s => fmtUsd0(s.market_cap) },
-      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines Layer 2 membership below -- the top 10 assets here by this figure become Top candidates.",
-        value: s => s.composite_factor_score, html: s => s.composite_factor_score !== null && s.composite_factor_score !== undefined ? s.composite_factor_score.toFixed(3) : "—" },
-      { label: "Why", title: "The real per-factor breakdown behind Composite score -- a deterministic quantitative formula, not an LLM-generated explanation (no narrative reasoning exists for this figure by design).",
-        value: s => factorBreakdownBySymbol[s.symbol]?.recomputedScore, html: s => renderFactorBreakdown(factorBreakdownBySymbol[s.symbol], s.symbol, s.computed_at) },
-      { label: "Top candidate?", title: "Yes = this asset ranked in the top TOP_CANDIDATES_SIZE (default 10) of this run's universe by Composite score -- purely that ranking, nothing else (not market cap, not whether you hold it). Yes here is what makes an asset eligible for a real Judge decision this run.",
-        value: s => s.is_top_candidate ? 1 : 0, html: s => s.is_top_candidate ? `<span class="badge live">yes</span>` : "no" },
-    ], universeDefaultOrder);
+    // One row per symbol, UNION of "currently tracked" (Layer 3) and "this
+    // run's screened universe" (Layer 1) -- NOT just the screened universe
+    // alone. A tracked asset can fall out of the screened universe (market
+    // cap dropped out of the top N) without ever being untracked -- a real
+    // case confirmed live (e.g. "S"/Sonic: tracked, not currently
+    // screened, not held) -- so limiting this table to `universe` would
+    // make a "screened?" badge trivially true for every row. `name` only
+    // ever comes from `tracked` (ScreenedAsset has no name field at all) --
+    // "—" for a screened-but-never-tracked row, never a fabricated guess.
+    const bySymbol = {};
+    for (const asset of tracked) {
+      bySymbol[asset.symbol] = { symbol: asset.symbol, name: asset.name, rank: null, marketCap: null, compositeScore: null, isTopCandidate: false, isScreened: false, computedAt: null };
+    }
+    for (const s of universe) {
+      if (!bySymbol[s.symbol]) bySymbol[s.symbol] = { symbol: s.symbol, name: null, rank: null, marketCap: null, compositeScore: null, isTopCandidate: false, isScreened: false, computedAt: null };
+      Object.assign(bySymbol[s.symbol], {
+        rank: s.rank, marketCap: s.market_cap, compositeScore: s.composite_factor_score,
+        isTopCandidate: s.is_top_candidate, isScreened: true, computedAt: s.computed_at,
+      });
+    }
+    const combinedRows = Object.values(bySymbol);
 
-    const candidatesDefaultOrder = [...candidates].sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity));
-    const candidateTable = buildSortableTable([
-      { label: "Rank", value: s => s.rank },
-      { label: "Symbol", value: s => s.symbol },
-      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines Layer 2 membership -- the top 10 of Layer 1 by this figure.",
-        value: s => s.composite_factor_score, html: s => s.composite_factor_score !== null && s.composite_factor_score !== undefined ? s.composite_factor_score.toFixed(3) : "—" },
-    ], candidatesDefaultOrder);
+    // Default row order (before any header click): market cap descending,
+    // the real defining criterion behind this whole discovery process --
+    // tracked-but-unscreened rows (no market cap this run) sort last.
+    const defaultOrder = [...combinedRows].sort((a, b) => (b.marketCap ?? -Infinity) - (a.marketCap ?? -Infinity));
 
-    const trackedTable = buildSortableTable([
-      { label: "Symbol", value: a => a.symbol },
-      { label: "Name", value: a => a.name },
-      { label: "Position", title: "HELD = this symbol currently appears in My Portfolio with quantity > 0, checked live against /holdings. -- = tracked for data/decisions but not currently held.",
-        value: a => heldSymbols.has(a.symbol) ? 1 : 0, html: a => heldSymbols.has(a.symbol) ? `<span class="badge live">HELD</span>` : "—" },
-    ], tracked);
+    // Sort priority for the Status column: HELD ranks highest (your real
+    // money), then JUDGED (gets real Judge attention), then SCREENED alone
+    // (in this run's universe but not a top candidate) -- purely a display
+    // convenience, has no bearing on any real computation.
+    const statusSortValue = r => (heldSymbols.has(r.symbol) ? 4 : 0) + (r.isTopCandidate ? 2 : 0) + (r.isScreened ? 1 : 0);
+
+    const combinedTable = buildSortableTable([
+      { label: "Rank", title: "This screening run's composite-factor rank -- \"—\" if this asset isn't in this run's screened universe at all (see the SCREENED badge).",
+        value: r => r.rank, html: r => r.rank === null || r.rank === undefined ? "—" : r.rank },
+      { label: "Symbol", value: r => r.symbol },
+      { label: "Name", title: "Only ever available for a currently-tracked asset (the `assets` table) -- \"—\" for a screened-but-never-tracked asset, never a fabricated guess.", value: r => r.name, html: r => r.name || "—" },
+      { label: "Market cap", value: r => r.marketCap, html: r => fmtUsd0(r.marketCap) },
+      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines the JUDGED badge -- the top 10 assets here become real Judge candidates.",
+        value: r => r.compositeScore, html: r => r.compositeScore !== null && r.compositeScore !== undefined ? r.compositeScore.toFixed(3) : "—" },
+      { label: "Factor breakdown", title: "The real per-factor breakdown behind Composite score -- a deterministic quantitative formula, not an LLM-generated explanation (no narrative reasoning exists for this figure by design). \"—\" if this asset isn't in this run's screened universe at all.",
+        value: r => factorBreakdownBySymbol[r.symbol]?.recomputedScore, html: r => renderFactorBreakdown(factorBreakdownBySymbol[r.symbol], r.symbol, r.computedAt) },
+      { label: "Status", title: "HELD = a real position in My Portfolio right now (quantity > 0). JUDGED = ranked in this run's top TOP_CANDIDATES_SIZE (default 10) by Composite score -- the only thing that earns a real Judge decision this run. SCREENED = appears in this run's top-N-by-market-cap universe at all, whether or not it's a top candidate. A row can have none, some, or all three -- they're independent facts, not a progression.",
+        value: statusSortValue,
+        html: r => {
+          const badges = [];
+          if (heldSymbols.has(r.symbol)) badges.push('<span class="badge live">HELD</span>');
+          if (r.isTopCandidate) badges.push('<span class="badge ok">JUDGED</span>');
+          if (r.isScreened) badges.push('<span class="badge backfilled">SCREENED</span>');
+          return badges.length ? badges.join(" ") : "—";
+        } },
+    ], defaultOrder);
+
+    const heldCount = combinedRows.filter(r => heldSymbols.has(r.symbol)).length;
+    const judgedCount = combinedRows.filter(r => r.isTopCandidate).length;
+    const screenedCount = combinedRows.filter(r => r.isScreened).length;
 
     target.innerHTML = `
-      <h3>Layer 1: Screened universe</h3>
-      <p class="metric-desc">Top ${universe.length} assets by CoinGecko market cap from the most recent screening run (stablecoins excluded) -- where new candidates get discovered from.</p>
-      ${universe.length === 0 ? "<p>Screening has never been run (<code>--with-screening</code>).</p>" : `
-      <details>
-        <summary>Show all ${universe.length} screened assets</summary>
-        ${universeTable}
-      </details>`}
-
-      <h3 style="margin-top:16px;">Layer 2: Top candidates</h3>
-      <p class="metric-desc">The top ${candidates.length} of Layer 1's universe by composite factor score -- auto-promoted into the tracked asset set (Layer 3) the first time each one qualifies.</p>
-      ${candidates.length === 0 ? "<p>None yet.</p>" : candidateTable}
-
-      <h3 style="margin-top:16px;">Layer 3: Currently tracked</h3>
-      <p class="metric-desc">${tracked.length} assets accumulated across every screening run's Layer-2 promotions, plus the initial manually-seeded set -- the actual set news matching, Judge decisions, and holdings entry all operate on.</p>
-      ${trackedTable}`;
+      <details open>
+        <summary>Show all ${combinedRows.length} tracked/screened assets</summary>
+        <div class="scroll-table-wrap" id="screened-tokens-scroll">${combinedTable}</div>
+      </details>
+      <h3 style="margin-top:16px;">Legend</h3>
+      <p class="metric-desc"><strong>HELD (${heldCount})</strong>, <strong>JUDGED (${judgedCount})</strong>, <strong>SCREENED (${screenedCount})</strong> of ${combinedRows.length} total -- independent counts, not a progression: a row can have none, some, or all three badges (real live counts, not fixed proportions of each other).</p>
+      <p class="metric-desc"><strong>SCREENED</strong> — this run's top ${universe.length} assets by CoinGecko market cap (stablecoins excluded), refreshed every screening run -- where new candidates get discovered from. An asset can silently lose this badge if its market cap drops out of the top ${universe.length}, without ever being untracked -- it just stops being eligible to earn JUDGED again until it re-enters.</p>
+      <p class="metric-desc"><strong>JUDGED</strong> — ranked in the top ${candidates.length} of this run's SCREENED assets by composite factor score. This is the ONLY thing that earns a real Judge decision, re-decided fresh every screening run purely by this ranking -- an asset you hold that doesn't earn this badge gets no fresh Judge opinion at all that run, no matter how long it's been tracked or held (a deliberate cost-control choice, not an oversight -- see Judge Decisions above).</p>
+      <p class="metric-desc"><strong>HELD</strong> — a real position currently entered in My Portfolio (quantity > 0), checked live against <code>/holdings</code>. Tracking or even holding an asset does NOT by itself earn JUDGED -- most of these ${combinedRows.length} assets, including ones you may currently hold, get no fresh Judge opinion unless they also earn JUDGED that run.</p>`;
+    capTableWrapToRows(document.getElementById("screened-tokens-scroll"), 20);
   } catch (e) {
     renderError(target, e);
   }
@@ -941,10 +1099,209 @@ function loadLlmPrompts() {
       value: p => LLM_PROMPT_STATUS_SORT_ORDER[p.status], html: p => `${llmPromptStatusBadge(p.status)}<br><span class="metric-desc">${p.statusDetail}</span>` },
     { label: "Prompt", title: "The real system prompt text as it lives in the code -- {prompt_version} is a real placeholder, filled in per call, not a rendering artifact.",
       value: p => p.promptText,
-      html: p => `<details><summary>Show full prompt</summary><pre style="white-space:pre-wrap;font-size:0.8rem;max-width:480px;">${escapeHtml(p.promptText)}</pre></details>` },
+      html: p => {
+        const modalId = registerTextModal(`${p.name} — full prompt`, `<pre style="white-space:pre-wrap;">${escapeHtml(p.promptText)}</pre>`);
+        return `<a class="modal-link" onclick="openTextModal('${modalId}');">Show full prompt</a>`;
+      } },
   ], LLM_PROMPTS);
-  target.innerHTML = `${promptsTable}
-    <p class="null-note">"Not in use" would mean a prompt is defined in the code but confirmed unreachable from any real entry point (main pipeline or a standalone script) -- none currently are, but this list is built to show that state honestly rather than silently omitting a dead prompt.</p>`;
+  target.innerHTML = `
+    <details>
+      <summary>Show all ${LLM_PROMPTS.length} LLM prompts</summary>
+      ${promptsTable}
+      <p class="null-note">"Not in use" would mean a prompt is defined in the code but confirmed unreachable from any real entry point (main pipeline or a standalone script) -- none currently are, but this list is built to show that state honestly rather than silently omitting a dead prompt.</p>
+    </details>`;
+}
+
+// Small helper for a bullet list of {factor/direction/importance/reason}
+// or {source/direction/importance/reason} entries (3d's key_drivers,
+// key_risks, source_assessment) -- same shape, different field name for
+// the label, so one renderer covers all three.
+function renderWeightedFactorList(items, labelKey) {
+  if (!items || !items.length) return "—";
+  return "<ul style=\"margin:4px 0;padding-left:18px;\">" + items.map(i =>
+    `<li><strong>${i[labelKey]}</strong> (${i.direction}, importance ${(i.importance * 100).toFixed(0)}%): ${i.reason}</li>`
+  ).join("") + "</ul>";
+}
+
+function renderStringList(items) {
+  if (!items || !items.length) return "—";
+  return "<ul style=\"margin:4px 0;padding-left:18px;\">" + items.map(i => `<li>${i}</li>`).join("") + "</ul>";
+}
+
+function renderScenario(label, s) {
+  if (!s) return "";
+  return `<p><strong>${label}</strong> (${(s.probability * 100).toFixed(0)}% probability, ${(s.expected_return * 100).toFixed(1)}% expected return${s.price_target !== null && s.price_target !== undefined ? `, target $${s.price_target}` : ""}, ${s.timeframe}):</p>
+    <p class="metric-desc">Assumptions: ${(s.assumptions || []).join("; ") || "—"}<br>Catalysts: ${(s.catalysts || []).join("; ") || "—"}<br>Failure conditions: ${(s.failure_conditions || []).join("; ") || "—"}</p>`;
+}
+
+function answerModalLink(linkText, title, bodyHtml) {
+  const modalId = registerTextModal(title, bodyHtml);
+  return `<a class="modal-link" onclick="openTextModal('${modalId}');">${linkText}</a>`;
+}
+
+// Phase 5b addendum: the real answers behind every "IN USE" prompt above --
+// a confirmed gap found while auditing this page (the "LLM prompts"
+// section only ever showed the prompt DEFINITIONS, never what came back).
+// The Judge prompt's own answers are already shown in full in Judge
+// Decisions above, so aren't duplicated here. `asset_id`/`decision_id` are
+// raw UUIDs in every one of these tables (none of them join to `assets`
+// server-side) -- resolved to a real symbol client-side here, the same
+// gap-fix already applied to holdings/portfolio-state/Judge decisions.
+async function loadLlmAnswers() {
+  const target = document.getElementById("llm-answers");
+  try {
+    const [research, assessments, adversarial, audits, tracked, decisions] = await Promise.all([
+      apiGet("/assessments/research/recent"), apiGet("/assessments/latest"),
+      apiGet("/assessments/adversarial/recent"), apiGet("/judge/reasoning-audits/recent"),
+      apiGet("/screening/tracked"), apiGet("/judge/decisions/recent"),
+    ]);
+    const symbolByAssetId = {};
+    for (const a of tracked) symbolByAssetId[a.id] = a.symbol;
+    const symbolByDecisionId = {};
+    for (const d of decisions) symbolByDecisionId[d.decision.id] = d.symbol;
+    const symbolForAsset = id => symbolByAssetId[id] || "—";
+
+    const researchTable = buildSortableTable([
+      { label: "Date", value: r => new Date(r.timestamp).getTime(), html: r => new Date(r.timestamp).toLocaleString() },
+      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
+      { label: "Provider", value: r => r.provider },
+      { label: "Model", value: r => r.model },
+      { label: "Action", value: r => r.action },
+      { label: "Confidence", value: r => r.confidence, html: r => renderMiniBar(r.confidence, 1, "#1565c0", 2) },
+      { label: "Target allocation", value: r => r.target_allocation, html: r => (r.target_allocation * 100).toFixed(1) + "%" },
+      { label: "Answer", title: "This provider's full real answer -- thesis, bull/bear case, catalysts, risks, invalidation conditions.",
+        value: r => r.response?.thesis || "",
+        html: r => answerModalLink("Show full answer", `Research answer — ${symbolForAsset(r.asset_id)} (${r.provider})`, `
+          <p><strong>Thesis:</strong> ${r.response?.thesis || "—"}</p>
+          <p><strong>Bull case:</strong> ${r.bull_case}</p>
+          <p><strong>Bear case:</strong> ${r.bear_case}</p>
+          <p><strong>Catalysts:</strong></p>${renderStringList(r.catalysts)}
+          <p><strong>Risks:</strong></p>${renderStringList(r.risks)}
+          <p><strong>Invalidation conditions:</strong></p>${renderStringList(r.invalidation_conditions)}`) },
+    ], research);
+
+    const assessmentTable = buildSortableTable([
+      { label: "Date", value: a => new Date(a.assessment_timestamp).getTime(), html: a => new Date(a.assessment_timestamp).toLocaleString() },
+      { label: "Asset", value: a => symbolForAsset(a.asset_id) },
+      { label: "Provider", value: a => a.provider },
+      { label: "Model", value: a => a.model },
+      { label: "Overall", value: a => a.overall_assessment },
+      { label: "Model agreement", value: a => a.model_agreement, html: a => renderMiniBar(a.model_agreement, 1, "#1565c0", 2) },
+      { label: "Expected return (30d)", value: a => a.expected_return_30d, html: a => renderDivergingBar(a.expected_return_30d, 0.5) },
+      { label: "Risk", value: a => a.risk_score, html: a => `${a.risk_level} <br>${renderMiniBar(a.risk_score, 1, "#ef6c00", 2)}` },
+      { label: "Answer", title: "This provider's full real answer -- thesis, key drivers/risks, per-source read, invalidation conditions.",
+        value: a => a.thesis,
+        html: a => answerModalLink("Show full answer", `Assessment answer — ${symbolForAsset(a.asset_id)} (${a.provider})`, `
+          <p><strong>Thesis:</strong> ${a.thesis}</p>
+          <p><strong>Key drivers:</strong></p>${renderWeightedFactorList(a.key_drivers, "factor")}
+          <p><strong>Key risks:</strong></p>${renderWeightedFactorList(a.key_risks, "factor")}
+          <p><strong>Source-by-source read:</strong></p>${renderWeightedFactorList(a.source_assessment, "source")}
+          <p><strong>Invalidation conditions:</strong></p>${renderStringList(a.invalidation_conditions)}`) },
+    ], assessments);
+
+    // Bull/Bear/Scenario are 3 distinct prompts (see LLM prompts above) that
+    // happen to persist as ONE row per asset in `adversarial_research` --
+    // one shared research cycle, fed sequentially (bull's output feeds
+    // bear, both feed scenario). Split into 3 panels below, one per real
+    // prompt, all reading the SAME `adversarial` rows rather than 3 separate
+    // fetches -- there's only one dataset, just 3 different views over it.
+    const bullTable = buildSortableTable([
+      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
+      { label: "Catalysts", value: r => (r.bull_case?.catalysts || []).length },
+      { label: "Evidence items", value: r => (r.bull_case?.evidence || []).length },
+      { label: "Answer", title: "The full bull thesis, catalysts, and evidence -- the opening move of this asset's adversarial research cycle.",
+        value: r => r.bull_case?.thesis || "",
+        html: r => answerModalLink("Show full answer", `Bull case — ${symbolForAsset(r.asset_id)}`, `
+          <p><strong>Thesis:</strong> ${r.bull_case?.thesis || "—"}</p>
+          <p><strong>Catalysts:</strong></p>${renderStringList(r.bull_case?.catalysts)}
+          <p><strong>Evidence:</strong></p>${renderStringList(r.bull_case?.evidence)}`) },
+    ], adversarial);
+
+    const bearTable = buildSortableTable([
+      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
+      { label: "Attack points", value: r => (r.bear_case?.attack_points || []).length },
+      { label: "Rebuts named", title: "How many of the bear's attack points explicitly name which bull catalyst/evidence item they rebut -- the prompt's own check for 'genuinely adversarial, not just a generic risk list.'",
+        value: r => (r.bear_case?.attacks_bull_point || []).length },
+      { label: "Answer", title: "The full bear attack on this asset's own bull case, and which bull point each attack rebuts.",
+        value: r => (r.bear_case?.attack_points || []).join("; "),
+        html: r => answerModalLink("Show full answer", `Bear case — ${symbolForAsset(r.asset_id)}`, `
+          <p><strong>Attack points:</strong></p>${renderStringList(r.bear_case?.attack_points)}
+          <p><strong>Evidence:</strong></p>${renderStringList(r.bear_case?.evidence)}
+          <p><strong>Which bull point each attack rebuts:</strong></p>${renderStringList(r.bear_case?.attacks_bull_point)}`) },
+    ], adversarial);
+
+    const scenarioTable = buildSortableTable([
+      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
+      { label: "Bull", title: "Probability, then expected return.", value: r => r.scenarios?.bull?.probability ?? null,
+        html: r => r.scenarios?.bull ? `${(r.scenarios.bull.probability * 100).toFixed(0)}%, ${(r.scenarios.bull.expected_return * 100).toFixed(1)}%` : "—" },
+      { label: "Base", value: r => r.scenarios?.base?.probability ?? null,
+        html: r => r.scenarios?.base ? `${(r.scenarios.base.probability * 100).toFixed(0)}%, ${(r.scenarios.base.expected_return * 100).toFixed(1)}%` : "—" },
+      { label: "Bear", value: r => r.scenarios?.bear?.probability ?? null,
+        html: r => r.scenarios?.bear ? `${(r.scenarios.bear.probability * 100).toFixed(0)}%, ${(r.scenarios.bear.expected_return * 100).toFixed(1)}%` : "—" },
+      { label: "Answer", title: "The full bull/base/bear scenarios -- assumptions, catalysts, and failure conditions behind each.",
+        value: r => r.scenarios?.bull?.probability ?? "",
+        html: r => answerModalLink("Show full answer", `Scenarios — ${symbolForAsset(r.asset_id)}`, `
+          ${renderScenario("Bull scenario", r.scenarios?.bull)}
+          ${renderScenario("Base scenario", r.scenarios?.base)}
+          ${renderScenario("Bear scenario", r.scenarios?.bear)}`) },
+    ], adversarial);
+
+    const auditTable = buildSortableTable([
+      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Decision's asset", title: "Resolved from this audit's decision_id via /judge/decisions/recent -- \"—\" if that decision isn't in the current (unlimited) decisions list for some reason.",
+        value: r => symbolByDecisionId[r.decision_id] || "—" },
+      { label: "Audit model", value: r => r.audit_model },
+      { label: "Supported", title: "Does the decision's own thesis actually follow from its own cited key_evidence, and does it address its own cited contradictory_evidence -- NOT whether the decision was a good trade.",
+        value: r => r.supported ? 1 : 0, html: r => `<span class="badge ${r.supported ? "ok" : "unavailable"}">${r.supported ? "supported" : "unsupported claim found"}</span>` },
+      { label: "Answer", title: "The full audit answer -- any specific unsupported claims found, and the audit model's own notes.",
+        value: r => r.notes || "",
+        html: r => answerModalLink("Show full answer", `Reasoning audit — ${symbolByDecisionId[r.decision_id] || r.decision_id}`, `
+          <p><strong>Supported:</strong> ${r.supported ? "yes" : "no"}</p>
+          <p><strong>Unsupported claims:</strong></p>${renderStringList(r.unsupported_claims)}
+          <p><strong>Notes:</strong> ${r.notes || "—"}</p>`) },
+    ], audits);
+
+    target.innerHTML = `
+      <p class="metric-desc" style="margin-bottom:12px;">
+        <strong>Judge prompt</strong> answers aren't repeated here -- all ${decisions.length} real decisions, with their full thesis, already live in
+        <a href="#judge-decisions" class="modal-link">Judge Decisions above ↑</a>.
+      </p>
+      <details>
+        <summary>Research answers (${research.length}) -- Phase 2's --with-llm prompt, per (provider, asset)</summary>
+        <div class="scroll-table-wrap" id="llm-answers-research-scroll">${researchTable}</div>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Assessment answers (${assessments.length}) -- 3d's --with-assessment prompt, most recent run, per (provider, asset)</summary>
+        <div class="scroll-table-wrap" id="llm-answers-assessment-scroll">${assessmentTable}</div>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Bull-case answers (${adversarial.length}) -- 3f's bull prompt, per asset</summary>
+        <div class="scroll-table-wrap" id="llm-answers-bull-scroll">${bullTable}</div>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Bear-case answers (${adversarial.length}) -- 3f's bear prompt, attacking the bull case above, per asset</summary>
+        <div class="scroll-table-wrap" id="llm-answers-bear-scroll">${bearTable}</div>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Scenario answers (${adversarial.length}) -- 3f's scenario prompt, given both cases above, per asset</summary>
+        <div class="scroll-table-wrap" id="llm-answers-scenario-scroll">${scenarioTable}</div>
+      </details>
+      <details style="margin-top:12px;">
+        <summary>Reasoning-audit answers (${audits.length}) -- 3g's script-only audit prompt, per audited decision</summary>
+        <div class="scroll-table-wrap" id="llm-answers-audit-scroll">${auditTable}</div>
+      </details>`;
+    capTableWrapToRows(document.getElementById("llm-answers-research-scroll"), 20);
+    capTableWrapToRows(document.getElementById("llm-answers-assessment-scroll"), 20);
+    capTableWrapToRows(document.getElementById("llm-answers-bull-scroll"), 20);
+    capTableWrapToRows(document.getElementById("llm-answers-bear-scroll"), 20);
+    capTableWrapToRows(document.getElementById("llm-answers-scenario-scroll"), 20);
+    capTableWrapToRows(document.getElementById("llm-answers-audit-scroll"), 20);
+  } catch (e) {
+    renderError(target, e);
+  }
 }
 
 // Phase 5b §5: spent-vs-cap as a bar, not two raw numbers to compare by
@@ -1080,21 +1437,46 @@ function renderExpandableThesis(thesis) {
   const cutoff = useSentence ? firstSentenceEnd + 1 : Math.min(120, thesis.length);
   if (cutoff >= thesis.length) return `<span class="thesis">${thesis}</span>`;
   const summary = useSentence ? thesis.slice(0, cutoff) : thesis.slice(0, cutoff) + "…";
-  // The expanded <details> content is only the REMAINDER after `summary`,
-  // not the full thesis again -- <summary> stays visible once expanded
-  // (it's the clickable disclosure line), so appending the whole thesis
-  // after it duplicated the lead-in text on expand. A real bug, not
-  // cosmetic -- fixed here rather than papered over with CSS.
-  const remainder = thesis.slice(cutoff);
-  return `<details class="thesis"><summary>${summary}</summary>${remainder}</details>`;
+  const modalId = registerTextModal("Judge thesis (full)", `<p class="thesis" style="max-width:none;">${thesis}</p>`);
+  return `<span class="thesis">${summary} <a class="modal-link" onclick="openTextModal('${modalId}');">Show full thesis</a></span>`;
 }
+
+// decision_outcomes.outcome_label's real 4 states (app/benchmarks/schemas.py
+// OutcomeLabel) -- HIT_TARGET/HIT_STOP/TIMED_OUT are all "resolved" (the
+// figure the overview strip's "N confirmed" and Calibration summary's
+// "Resolved" counts are built from); UNRESOLVED is real too, just not
+// resolved yet -- reusing existing badge colors (ok=green, unavailable=red,
+// warn=orange, insufficient=gray) rather than inventing new ones.
+const OUTCOME_BADGE_CLASS = { HIT_TARGET: "ok", HIT_STOP: "unavailable", TIMED_OUT: "warn", UNRESOLVED: "insufficient" };
+const OUTCOME_SORT_ORDER = { HIT_TARGET: 3, HIT_STOP: 2, TIMED_OUT: 1, UNRESOLVED: 0 };
 
 async function loadJudgeDecisions() {
   const target = document.getElementById("judge-decisions");
   try {
-    const decisions = await apiGet("/judge/decisions/recent?limit=15");
+    // No limit -- every decision ever made, not just a capped slice (Phase
+    // 5b addendum: /judge/decisions/recent's `limit` now defaults to
+    // unlimited, matching /news/recent's same convention). The table
+    // itself is height-capped with a scrollbar below, not the data.
+    // `/calibration/summary`'s own real resolved+unresolved counts (both
+    // backfilled and live) sum to the same real total independently, as a
+    // cross-check that nothing was silently truncated.
+    // outcomes/recent's own default limit (200) is smaller than the real
+    // decision count already -- 2000 matches the exact limit
+    // /calibration/summary itself uses server-side (calibration.py), so
+    // this table's per-row Outcome below reconciles with that same
+    // "9 confirmed" figure instead of silently truncating.
+    const [decisions, calibration, outcomes] = await Promise.all([
+      apiGet("/judge/decisions/recent"), apiGet("/calibration/summary"), apiGet("/calibration/outcomes/recent?limit=2000"),
+    ]);
+    const outcomeByDecisionId = {};
+    for (const o of outcomes) outcomeByDecisionId[o.decision_id] = o;
+    const totalDecisions = calibration.resolved_backfilled_count + calibration.resolved_live_count
+      + calibration.unresolved_backfilled_count + calibration.unresolved_live_count;
+    const totalLive = calibration.resolved_live_count + calibration.unresolved_live_count;
+    const totalBackfilled = calibration.resolved_backfilled_count + calibration.unresolved_backfilled_count;
+    const countLine = `<p class="metric-desc"><strong>${totalDecisions} Judge decisions total</strong> (${totalLive} live, ${totalBackfilled} backfilled) -- showing all ${decisions.length} below (scroll for more; roughly 20 rows visible at once). <strong>${calibration.resolved_live_count + calibration.resolved_backfilled_count} resolved</strong> (${calibration.resolved_live_count} live, ${calibration.resolved_backfilled_count} backfilled) -- see the Outcome column below to identify exactly which ones.</p>`;
     if (decisions.length === 0) {
-      target.innerHTML = "<p>No decisions yet.</p>";
+      target.innerHTML = `${countLine}<p>No decisions yet.</p>`;
       return;
     }
     // Default row order (before any header click) is the API's own
@@ -1106,10 +1488,12 @@ async function loadJudgeDecisions() {
     const decisionsTable = buildSortableTable([
       { label: "Date", title: "The full decision timestamp, not just the date -- decisions from the same run share a date but not a timestamp.",
         value: d => new Date(d.decision.created_at).getTime(), html: d => new Date(d.decision.created_at).toLocaleString() },
-      { label: "Token", value: d => d.symbol },
-      { label: "Source", value: d => d.decision.is_backfilled ? "backfilled" : "live",
+      { label: "Token", title: "The real tracked asset this decision is about -- joined here from the record's own raw asset_id, never a raw UUID.", value: d => d.symbol },
+      { label: "Source", title: "Live = made in real time, right now. Backfilled = a simulated decision from a historical replay (3e.1), used to build up a track record fast without waiting for real time to pass.",
+        value: d => d.decision.is_backfilled ? "backfilled" : "live",
         html: d => `<span class="badge ${d.decision.is_backfilled ? "backfilled" : "live"}">${d.decision.is_backfilled ? "backfilled" : "live"}</span>` },
-      { label: "Decision", value: d => d.decision.decision },
+      { label: "Decision", title: "BUY/SELL = a directional call. HOLD = maintain the current position as-is. WATCH = a real thesis exists but a specific condition is still being waited on. NO_TRADE = no actionable view at all right now -- see the legend below the table for the full distinction.",
+        value: d => d.decision.decision },
       { label: "Confidence", title: "How sure the system is about this call, 0 (a guess) to 1 (certain).",
         value: d => d.decision.confidence, html: d => renderMiniBar(d.decision.confidence, 1, "#1565c0", 2) },
       { label: "Expected alpha", title: "The extra return the system expects this decision to earn beyond just holding the market -- can be negative.",
@@ -1121,9 +1505,49 @@ async function loadJudgeDecisions() {
       { label: "Resolves by", title: "Date + Horizon -- when this decision's outcome window closes and it either hit target, hit stop, or times out. Computed client-side; the exact same date the benchmarking system itself uses (decision_timestamp + horizon_days).",
         value: d => new Date(d.decision.created_at).getTime() + d.decision.investment_horizon_days * 86400000,
         html: d => new Date(new Date(d.decision.created_at).getTime() + d.decision.investment_horizon_days * 86400000).toISOString().slice(0, 10) },
-      { label: "Thesis", value: d => d.decision.thesis, html: d => renderExpandableThesis(d.decision.thesis) },
+      { label: "Target / Stop", title: "The exact return thresholds set AT DECISION TIME (stored in decision_outcomes, not recomputed here) that Outcome below is judged against -- HIT TARGET means price later moved this far in the decision's favor, HIT STOP means it moved this far against it, whichever happened first. Derived from this decision's own expected_return and risk_score (app/benchmarks/triple_barrier.py compute_target_stop_thresholds): target = max(|expected_return|, 5%); stop = -target x (1 + risk_score) -- a riskier thesis gets more room before being called wrong, not less. \"—\" if this decision has no decision_outcomes row at all.",
+        value: d => outcomeByDecisionId[d.decision.id]?.target_return ?? null,
+        html: d => {
+          const o = outcomeByDecisionId[d.decision.id];
+          if (!o) return "—";
+          return `+${(o.target_return * 100).toFixed(1)}% / ${(o.stop_return * 100).toFixed(1)}%`;
+        } },
+      { label: "Outcome", title: "HIT TARGET / HIT STOP / TIMED OUT = resolved -- the outcome window (Resolves by) has closed. UNRESOLVED = still open, not a missing value. \"—\" means this decision has no decision_outcomes row at all yet (genuinely missing, not just unresolved) -- see /calibration/outcomes/recent.",
+        value: d => OUTCOME_SORT_ORDER[outcomeByDecisionId[d.decision.id]?.outcome_label] ?? -1,
+        html: d => {
+          const o = outcomeByDecisionId[d.decision.id];
+          if (!o) return "—";
+          return `<span class="badge ${OUTCOME_BADGE_CLASS[o.outcome_label]}">${o.outcome_label.replace(/_/g, " ").toLowerCase()}</span>`;
+        } },
+      { label: "Mark-to-mid", title: "The paper return if this position had been (or could be) closed at the current/final market price, before any fees -- \"unresolved\" just means not enough time has passed yet, not a missing value.",
+        value: d => outcomeByDecisionId[d.decision.id]?.realized_return ?? null,
+        html: d => {
+          const o = outcomeByDecisionId[d.decision.id];
+          if (!o) return "—";
+          return o.realized_return !== null && o.realized_return !== undefined ? o.realized_return.toFixed(4) : "unresolved";
+        } },
+      { label: "Net of costs", title: "The same return, after subtracting realistic trading fees and price-impact costs -- the more honest number.",
+        value: d => outcomeByDecisionId[d.decision.id]?.realized_return_net_of_costs ?? null,
+        html: d => {
+          const o = outcomeByDecisionId[d.decision.id];
+          if (!o) return "—";
+          return o.realized_return_net_of_costs !== null && o.realized_return_net_of_costs !== undefined ? o.realized_return_net_of_costs.toFixed(4) : "unresolved";
+        } },
+      { label: "Thesis", title: "The Judge's own real reasoning for this call, in its own words -- click to expand the full text.",
+        value: d => d.decision.thesis, html: d => renderExpandableThesis(d.decision.thesis) },
     ], decisions);
-    target.innerHTML = decisionsTable;
+    target.innerHTML = `${countLine}
+      <div class="scroll-table-wrap" id="judge-decisions-scroll">${decisionsTable}</div>
+      <h3 style="margin-top:16px;">Legend: Source values</h3>
+      <p class="metric-desc"><strong>live</strong> — made in real time, right now, by an actual <code>--with-judge</code> run.</p>
+      <p class="metric-desc"><strong>backfilled</strong> — a simulated decision from 3e.1's historical replay (<code>scripts/run_replay.py</code>), re-running the Judge against real past data to build up a track record fast, without waiting for real time to pass. Never mixed silently with live decisions in any calibration figure elsewhere on this page.</p>
+      <h3 style="margin-top:16px;">Legend: Decision values</h3>
+      <p class="metric-desc"><strong>BUY / SELL</strong> — a directional call: increase or reduce/exit this position.</p>
+      <p class="metric-desc"><strong>HOLD</strong> — maintain the current position as-is; no change recommended.</p>
+      <p class="metric-desc"><strong>WATCH</strong> — a real, coherent thesis exists, but a specific condition is still being waited on before acting (e.g. "watch for funding to normalize before entering") -- not the same as having no view.</p>
+      <p class="metric-desc"><strong>NO_TRADE</strong> — no actionable view at all right now: evidence is too thin or stale to reason from, or so evenly balanced that stating any thesis (bullish, bearish, or "wait for X") would be manufacturing false precision. A real, reachable decision, not a fallback for a hard case.</p>
+      <p class="metric-desc">WATCH and NO_TRADE are deliberately different outcomes, per the Judge's own non-negotiables (see the LLM prompts section below for the real prompt text) -- the system is instructed not to default to WATCH just because a case is hard.</p>`;
+    capTableWrapToRows(document.getElementById("judge-decisions-scroll"), 20);
   } catch (e) {
     renderError(target, e);
   }
@@ -1159,7 +1583,8 @@ async function loadRecentNews() {
       { label: "Relevant assets", value: a => a.relevant_assets.join(", "), html: a => a.relevant_assets.map(escapeHtml).join(", ") || "—" },
       { label: "Sentiment", value: a => a.sentiment, html: a => a.sentiment ? escapeHtml(a.sentiment) : "—" },
     ], articles);
-    target.innerHTML = newsTable;
+    target.innerHTML = `<div class="scroll-table-wrap" id="recent-news-scroll">${newsTable}</div>`;
+    capTableWrapToRows(document.getElementById("recent-news-scroll"), 20);
   } catch (e) {
     renderError(target, e);
   }
@@ -1347,9 +1772,9 @@ async function loadPortfolioComparison() {
 async function loadAll() {
   document.getElementById("last-updated").textContent = "Refreshing…";
   await Promise.allSettled([
-    loadOverviewStrip(), loadSignalSources(), loadScreenedTokens(), loadLlmPrompts(), loadCostSummary(), loadPortfolioState(),
-    loadCalibrationSummary(), loadJudgeDecisions(), loadHoldings(), loadPortfolioComparison(),
-    loadHoldingsHistory(), populateHoldingsSymbolList(), loadRecentNews(),
+    loadOverviewStrip(), loadScreenedTokens(), loadJudgeDecisions(), loadCalibrationSummary(), loadLlmPrompts(), loadLlmAnswers(),
+    loadPortfolioState(), loadHoldings(), loadHoldingsHistory(), populateHoldingsSymbolList(), loadPortfolioComparison(),
+    loadRecentNews(), loadCostSummary(), loadSignalSources(),
   ]);
   // Page-wide, not per-panel (Phase 5b §6): every panel loads together
   // from this one loadAll() call, so one honest "as of" timestamp for

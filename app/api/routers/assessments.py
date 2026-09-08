@@ -1,12 +1,26 @@
 from fastapi import APIRouter, Depends
 
 from app.api.auth import verify_api_key
-from app.api.dependencies import get_adversarial_repo, get_assessment_repo
-from app.database.repository import AdversarialResearchRepository, ModelMarketAssessmentRepository
+from app.api.dependencies import get_adversarial_repo, get_assessment_repo, get_llm_analysis_repo
+from app.database.repository import AdversarialResearchRepository, LLMAnalysisRepository, ModelMarketAssessmentRepository
 from app.llm.adversarial_schemas import AdversarialResearchRecord
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
+from app.llm.schemas import LLMAnalysisRecord
 
 router = APIRouter(prefix="/assessments", tags=["assessments"], dependencies=[Depends(verify_api_key)])
+
+
+@router.get("/research/recent", response_model=list[LLMAnalysisRecord])
+def get_recent_research(
+    limit: int | None = None, repo: LLMAnalysisRepository = Depends(get_llm_analysis_repo),
+) -> list[LLMAnalysisRecord]:
+    """Phase 2's original research prompt (`--with-llm`) real answers,
+    across every asset and provider, newest first -- this table
+    (`llm_analyses`) had no API exposure at all before this (Phase 5b
+    addendum): a real gap found while auditing what the dashboard's "LLM
+    prompts" section does and doesn't show alongside each prompt's
+    definition. `limit=None` (default) returns every analysis ever made."""
+    return repo.get_recent(limit=limit)
 
 
 @router.get("/latest", response_model=list[ModelMarketAssessmentRecord])

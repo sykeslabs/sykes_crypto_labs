@@ -250,6 +250,19 @@ class LLMAnalysisRepository:
         )
         return [LLMAnalysisRecord.model_validate(row) for row in response.data]
 
+    def get_recent(self, limit: int | None = None) -> list[LLMAnalysisRecord]:
+        """Phase 5b addendum: recent Phase 2 research analyses across every
+        asset and provider, newest first -- the dashboard's own "LLM
+        answers" feed (this table had no cross-asset read method before,
+        only `get_latest_by_asset`). `limit=None` (default) returns every
+        analysis ever made, matching `/news/recent` and
+        `/judge/decisions/recent`'s same "None means unlimited" convention."""
+        query = self._client.table("llm_analyses").select("*").order("timestamp", desc=True)
+        if limit is not None:
+            query = query.limit(limit)
+        response = query.execute()
+        return [LLMAnalysisRecord.model_validate(row) for row in response.data]
+
 
 class AssetStatusRepository:
     """Reads/writes `asset_status_history` — an append-only record of
@@ -646,14 +659,20 @@ class JudgeDecisionRepository:
             return None
         return JudgeDecisionRecord.model_validate(response.data[0])
 
-    def get_recent(self, limit: int = 50, is_backfilled: bool | None = None) -> list[JudgeDecisionRecord]:
+    def get_recent(self, limit: int | None = 50, is_backfilled: bool | None = None) -> list[JudgeDecisionRecord]:
         """Phase 5: recent decisions across every asset, newest first — the
         dashboard's decisions feed. `is_backfilled` optionally filters to
-        just backfilled or just live rows (never mixes them silently)."""
+        just backfilled or just live rows (never mixes them silently).
+        `limit=None` (Phase 5b addendum) returns every decision ever made,
+        not just a capped slice -- no `.limit()` call at all in that case,
+        matching `/news/recent`'s same "None means unlimited" convention."""
         query = self._client.table("judge_decisions").select("*")
         if is_backfilled is not None:
             query = query.eq("is_backfilled", is_backfilled)
-        response = query.order("created_at", desc=True).limit(limit).execute()
+        query = query.order("created_at", desc=True)
+        if limit is not None:
+            query = query.limit(limit)
+        response = query.execute()
         return [JudgeDecisionRecord.model_validate(row) for row in response.data]
 
     def get_by_id(self, decision_id: str) -> JudgeDecisionRecord | None:
