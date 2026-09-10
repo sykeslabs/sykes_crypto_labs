@@ -157,7 +157,7 @@ class Settings(BaseSettings):
     sec_edgar_base_url: str = "https://efts.sec.gov/LATEST"
     # A descriptive User-Agent is required by SEC's fair-access policy — not
     # a secret, just identifies the requester.
-    sec_edgar_user_agent: str = "crypto-ai-portfolio research contact@example.com"
+    sec_edgar_user_agent: str = "sykeslabs"
     upbit_base_url: str = "https://api.upbit.com/v1"
     santiment_base_url: str = "https://api.santiment.net/graphql"
 

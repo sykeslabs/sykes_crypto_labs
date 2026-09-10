@@ -170,6 +170,7 @@ class CalibrationSummary(BaseModel):
 class CostTableBreakdown(BaseModel):
     table: str
     cost_usd: str
+    call_count: int
 
 
 class CostWindowReport(BaseModel):
@@ -178,6 +179,17 @@ class CostWindowReport(BaseModel):
     cap_usd: str
     remaining_usd: str
     by_table: list[CostTableBreakdown]
+
+
+class CostDayTableBreakdown(BaseModel):
+    """One (day, table) real cost bucket -- the same COST_TRACKED_TABLES
+    rows CostWindowReport.by_table sums for today/this month, grouped by
+    calendar day instead, so a full day-by-day history is queryable."""
+
+    date: str
+    table: str
+    cost_usd: str
+    call_count: int
 
 
 class CostSummary(BaseModel):

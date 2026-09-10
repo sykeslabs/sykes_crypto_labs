@@ -526,8 +526,8 @@ def test_get_signal_sources(client):
 
 def test_get_cost_summary_reports_by_table_breakdown_and_note(client):
     class FakeCostLedgerRepo:
-        def get_cost_sum_by_table_since(self, since):
-            return {"judge_decisions": Decimal("1.5"), "adversarial_research": Decimal("0.5")}
+        def get_cost_and_count_by_table_since(self, since):
+            return {"judge_decisions": (Decimal("1.5"), 3), "adversarial_research": (Decimal("0.5"), 1)}
 
     settings = Settings(_env_file=None, max_daily_llm_cost=Decimal("12"), max_monthly_llm_cost=Decimal("30"))
     app.dependency_overrides[get_cost_ledger_repo] = lambda: FakeCostLedgerRepo()
@@ -538,3 +538,23 @@ def test_get_cost_summary_reports_by_table_breakdown_and_note(client):
     assert body["daily"]["cap_usd"] == "12"
     assert "not a live provider-billing balance" in body["note"]
     assert len(body["daily"]["by_table"]) == 2
+    judge_row = next(t for t in body["daily"]["by_table"] if t["table"] == "judge_decisions")
+    assert judge_row["call_count"] == 3
+
+
+def test_get_cost_by_day_reports_every_real_day_table_bucket(client):
+    class FakeCostLedgerRepo:
+        def get_cost_and_count_by_table_and_day_since(self, since):
+            return {
+                ("2026-01-02", "judge_decisions"): (Decimal("1.5"), 3),
+                ("2026-01-03", "judge_decisions"): (Decimal("0.5"), 1),
+            }
+
+    app.dependency_overrides[get_cost_ledger_repo] = lambda: FakeCostLedgerRepo()
+    response = client.get("/cost/by-day")
+    body = response.json()
+    assert len(body) == 2
+    jan3 = next(r for r in body if r["date"] == "2026-01-03")
+    assert jan3["table"] == "judge_decisions"
+    assert jan3["cost_usd"] == "0.5"
+    assert jan3["call_count"] == 1

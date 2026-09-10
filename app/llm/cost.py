@@ -107,6 +107,51 @@ class CostLedgerRepository:
             )
         return result
 
+    def get_cost_and_count_by_table_since(self, since: datetime) -> dict[str, tuple[Decimal, int]]:
+        """Phase 5b addendum: same real query as `get_cost_sum_by_table_since`
+        (a new method, not a changed one, per this file's own
+        additive-only convention -- see doc/phases.md) -- also returns how
+        many real LLM calls each table's cost sum came from
+        (`len(response.data)`, the same rows already fetched, no extra
+        query), so the dashboard's Cost / spend table can show call volume
+        alongside dollar spend, not just the total."""
+        result: dict[str, tuple[Decimal, int]] = {}
+        for table, timestamp_column in COST_TRACKED_TABLES.items():
+            response = (
+                self._client.table(table)
+                .select("estimated_cost")
+                .gte(timestamp_column, since.isoformat())
+                .execute()
+            )
+            rows_with_cost = [row for row in response.data if row["estimated_cost"] is not None]
+            cost_sum = sum((Decimal(str(row["estimated_cost"])) for row in rows_with_cost), Decimal("0"))
+            result[table] = (cost_sum, len(rows_with_cost))
+        return result
+
+    def get_cost_and_count_by_table_and_day_since(self, since: datetime) -> dict[tuple[str, str], tuple[Decimal, int]]:
+        """Phase 5b addendum: the same real per-table rows as
+        `get_cost_and_count_by_table_since`, additionally grouped by
+        calendar day (the timestamp column's own date, a plain YYYY-MM-DD
+        string -- UTC, since every stored timestamp already is) -- one
+        extra column selected per query, no extra round-trip. Lets the
+        dashboard show a full day-by-day cost history, not just today's and
+        this month's totals."""
+        result: dict[tuple[str, str], tuple[Decimal, int]] = {}
+        for table, timestamp_column in COST_TRACKED_TABLES.items():
+            response = (
+                self._client.table(table)
+                .select(f"estimated_cost,{timestamp_column}")
+                .gte(timestamp_column, since.isoformat())
+                .execute()
+            )
+            for row in response.data:
+                if row["estimated_cost"] is None:
+                    continue
+                day = row[timestamp_column][:10]
+                cost, count = result.get((day, table), (Decimal("0"), 0))
+                result[(day, table)] = (cost + Decimal(str(row["estimated_cost"])), count + 1)
+        return result
+
 
 class CostGuard:
     """Enforces MAX_DAILY_LLM_COST / MAX_MONTHLY_LLM_COST before each LLM call."""

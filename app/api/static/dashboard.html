@@ -80,6 +80,19 @@
   .modal-box-close { background: none; border: none; font-size: 1.3rem; line-height: 1; cursor: pointer; color: inherit; padding: 0 4px; }
   .modal-box-body { padding: 12px 16px; overflow-y: auto; font-size: 0.85rem; }
   .modal-box-body table { font-size: 0.8rem; }
+  /* Faceted multi-select filters above a table -- one dropdown per
+     filterable column, OR within a dropdown (any checked value matches),
+     AND across dropdowns. Native <details>/<summary> checkbox lists, no
+     JS framework needed. */
+  .filter-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; margin: 8px 0; }
+  .filter-dropdown { position: relative; border: 1px solid #8888; border-radius: 6px; padding: 2px 8px; font-size: 0.8rem; }
+  .filter-dropdown summary { cursor: pointer; user-select: none; white-space: nowrap; }
+  .filter-dropdown summary:hover { color: #1565c0; }
+  .filter-options { position: absolute; top: 100%; left: 0; z-index: 5; margin-top: 4px; background: Canvas; color: CanvasText; border: 1px solid #8888; border-radius: 6px; padding: 6px 10px; min-width: 160px; max-height: 240px; overflow-y: auto; box-shadow: 0 4px 12px #00000033; }
+  .filter-options label { display: block; white-space: nowrap; font-weight: normal; padding: 2px 0; }
+  .filter-clear-btn { font-size: 0.8rem; border: 1px solid #8888; border-radius: 6px; padding: 3px 10px; background: none; color: inherit; cursor: pointer; }
+  .filter-clear-btn:hover { color: #1565c0; }
+  .filter-count-text { font-size: 0.8rem; color: #888; align-self: center; }
 </style>
 </head>
 <body>
@@ -384,23 +397,24 @@ function renderDonutBlock(slices) {
   return `<div class="donut-block">${renderDonutSvg(slices)}${renderDonutLegend(slices)}</div>`;
 }
 
-// Phase 5b: a stored (last-collected) price always renders with its own
-// timestamp alongside it -- never shown as if it were live (see
-// app/api/schemas.py's HoldingsEntryView docstring for why).
-function renderStoredPrice(priceUsd, asOf) {
+// Phase 5b: the stored (last-collected) price. Its "as of" timestamp is NOT
+// repeated per row -- one collector run (python -m app.main) prices every
+// holding at essentially the same moment, so the real per-row information
+// is just the price itself; the shared timestamp is shown once, above the
+// table (see loadHoldings' own "Prices as of" line), not duplicated on
+// every row.
+function renderStoredPrice(priceUsd) {
   if (priceUsd === null || priceUsd === undefined) return "—";
-  const time = asOf ? new Date(asOf).toLocaleString() : "unknown time";
-  return `$${priceUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}
-    <br><span class="metric-desc">as of ${time}</span>`;
+  return `$${priceUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
 }
 
-// A genuinely live spot price, fetched at request time -- kept visually
-// and semantically distinct from the stored price above.
-function renderLivePrice(liveUsd, liveAsOf, source) {
+// A genuinely live spot price, fetched at request time -- kept visually and
+// semantically distinct from the stored price above. Source (Binance vs.
+// Coinbase) can genuinely differ per asset, so stays per-row; the "as of"
+// timestamp does not, for the same reason as renderStoredPrice above.
+function renderLivePrice(liveUsd, source) {
   if (liveUsd === null || liveUsd === undefined) return "—";
-  const time = liveAsOf ? new Date(liveAsOf).toLocaleTimeString() : "";
-  return `$${liveUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}
-    <br><span class="metric-desc">live, ${source || "?"} ${time}</span>`;
+  return `$${liveUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })} <span class="metric-desc">(${source || "?"})</span>`;
 }
 
 // Phase 5b: color-coded, sign-aware -- a quick "up or down" read alongside
@@ -513,6 +527,101 @@ function capTableWrapToRows(wrapEl, visibleRows) {
   const headerHeight = table.rows[0].getBoundingClientRect().height;
   const rowHeight = table.rows[1].getBoundingClientRect().height;
   wrapEl.style.maxHeight = `${headerHeight + rowHeight * visibleRows}px`;
+}
+
+// Generic faceted multi-select filter framework, shared by every filterable
+// table on this page (Judge Decisions, the 4 filterable LLM-answers panels,
+// Recent news, Screened tokens). One dropdown per filter column; checking
+// multiple values within one dropdown is OR ("Token: BTC or ETH"); having
+// selections in multiple dropdowns is AND ("Token: BTC AND Decision: BUY").
+// Filtering is purely client-side over the SAME `rows` array already
+// fetched for the table -- never a re-fetch -- and reuses the exact same
+// `columns` def to rebuild the table via buildSortableTable each time a
+// checkbox changes, so sorting/rendering stays identical to the unfiltered
+// table, just over a smaller row set.
+let _filterStateSeq = 0;
+const _filterStates = {};
+
+function filterDistinctValues(rows, getValues) {
+  const set = new Set();
+  for (const row of rows) for (const v of (getValues(row) || [])) if (v !== null && v !== undefined && v !== "") set.add(String(v));
+  return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+// `filters`: [{ key, label, getValues: row => (string|number)[] }] --
+// getValues returns an ARRAY since one row can carry multiple filter values
+// for the same column (e.g. News' Relevant assets: one article can match
+// several tracked symbols at once).
+function registerFilterableTable({ columns, rows, filters, wrapId, capRows, countElId }) {
+  const stateId = "filter-state-" + (++_filterStateSeq);
+  _filterStates[stateId] = {
+    columns, allRows: rows, filters,
+    selected: Object.fromEntries(filters.map(f => [f.key, new Set()])),
+    wrapId, capRows, countElId, filterBarId: `${stateId}-bar`,
+  };
+  return stateId;
+}
+
+function renderFilterBar(stateId) {
+  const state = _filterStates[stateId];
+  const groups = state.filters.map(f => {
+    const options = filterDistinctValues(state.allRows, f.getValues);
+    const selected = state.selected[f.key];
+    const opts = options.map(opt => {
+      const checked = selected.has(opt) ? "checked" : "";
+      return `<label><input type="checkbox" value="${escapeHtml(opt)}" ${checked} onchange="toggleTableFilter('${stateId}','${f.key}', this.value, this.checked)"> ${escapeHtml(opt)}</label>`;
+    }).join("") || `<span class="metric-desc">No values</span>`;
+    const countBadge = selected.size ? ` (${selected.size})` : "";
+    return `<details class="filter-dropdown">
+      <summary>${escapeHtml(f.label)}${countBadge}</summary>
+      <div class="filter-options">${opts}</div>
+    </details>`;
+  }).join("");
+  return `<div class="filter-bar" id="${state.filterBarId}">${groups}
+    <button type="button" class="filter-clear-btn" onclick="clearTableFilters('${stateId}')">Clear filters</button>
+    <span class="filter-count-text" id="${state.countElId}"></span>
+  </div>`;
+}
+
+function toggleTableFilter(stateId, filterKey, value, checked) {
+  const state = _filterStates[stateId];
+  const set = state.selected[filterKey];
+  if (checked) set.add(value); else set.delete(value);
+  const barEl = document.getElementById(state.filterBarId);
+  const details = barEl && [...barEl.querySelectorAll(".filter-dropdown")].find(d => d.querySelector(`input[onchange*="'${filterKey}'"]`));
+  if (details) {
+    const summary = details.querySelector("summary");
+    const filterDef = state.filters.find(f => f.key === filterKey);
+    summary.textContent = `${filterDef.label}${set.size ? ` (${set.size})` : ""}`;
+  }
+  rerenderFilteredTable(stateId);
+}
+
+function clearTableFilters(stateId) {
+  const state = _filterStates[stateId];
+  for (const key in state.selected) state.selected[key].clear();
+  const barEl = document.getElementById(state.filterBarId);
+  if (barEl) {
+    barEl.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    const dropdowns = barEl.querySelectorAll(".filter-dropdown");
+    state.filters.forEach((f, i) => { dropdowns[i].querySelector("summary").textContent = f.label; });
+  }
+  rerenderFilteredTable(stateId);
+}
+
+function rerenderFilteredTable(stateId) {
+  const state = _filterStates[stateId];
+  const filtered = state.allRows.filter(row => state.filters.every(f => {
+    const sel = state.selected[f.key];
+    if (sel.size === 0) return true;
+    const vals = (f.getValues(row) || []).map(String);
+    return vals.some(v => sel.has(v));
+  }));
+  const wrapEl = document.getElementById(state.wrapId);
+  wrapEl.innerHTML = buildSortableTable(state.columns, filtered);
+  if (state.capRows) capTableWrapToRows(wrapEl, state.capRows);
+  const countEl = document.getElementById(state.countElId);
+  if (countEl) countEl.textContent = filtered.length === state.allRows.length ? "" : `Showing ${filtered.length} of ${state.allRows.length}`;
 }
 
 // Shared overlay used by every click-to-expand value on the page (Factor
@@ -729,11 +838,11 @@ function renderSignalSourceTable(sources) {
   return buildSortableTable([
     { label: "Source", value: r => r.s.name },
     { label: "Provider", value: r => r.d.provider },
+    { label: "Status", title: "OK = live and used today. NOT_IMPLEMENTED = a deliberate decision, not a failure. UNAVAILABLE/UNKNOWN = investigated and genuinely blocked.",
+      value: r => r.s.status, html: r => `<span class="badge ${statusBadgeClass(r.s.status)}">${r.s.status}</span>` },
     { label: "Description", value: r => r.d.description },
     { label: "Purpose of use", value: r => r.d.purpose },
     { label: "DB tables impacted", value: r => r.d.tables },
-    { label: "Status", title: "OK = live and used today. NOT_IMPLEMENTED = a deliberate decision, not a failure. UNAVAILABLE/UNKNOWN = investigated and genuinely blocked.",
-      value: r => r.s.status, html: r => `<span class="badge ${statusBadgeClass(r.s.status)}">${r.s.status}</span>` },
   ], withDetails);
 }
 
@@ -987,32 +1096,39 @@ async function loadScreenedTokens() {
     // tracked-but-unscreened rows (no market cap this run) sort last.
     const defaultOrder = [...combinedRows].sort((a, b) => (b.marketCap ?? -Infinity) - (a.marketCap ?? -Infinity));
 
-    // Sort priority for the Status column: HELD ranks highest (your real
-    // money), then JUDGED (gets real Judge attention), then SCREENED alone
-    // (in this run's universe but not a top candidate) -- purely a display
-    // convenience, has no bearing on any real computation.
-    const statusSortValue = r => (heldSymbols.has(r.symbol) ? 4 : 0) + (r.isTopCandidate ? 2 : 0) + (r.isScreened ? 1 : 0);
+    // A simple TRUE/FALSE badge for a boolean status column -- reused for
+    // all three of SCREENED/JUDGED/HELD below rather than the 3 independent
+    // ok/backfilled/live badge colors the old single merged Status column
+    // used, since these are now 3 separate always-visible columns (not
+    // badges competing for space in one cell) and don't need to be
+    // color-distinguished from each other anymore.
+    const boolBadge = v => `<span class="badge ${v ? "ok" : "not-implemented"}">${v ? "TRUE" : "FALSE"}</span>`;
 
-    const combinedTable = buildSortableTable([
-      { label: "Rank", title: "This screening run's composite-factor rank -- \"—\" if this asset isn't in this run's screened universe at all (see the SCREENED badge).",
+    const screenedTokenColumns = [
+      { label: "Rank", title: "This screening run's composite-factor rank -- \"—\" if this asset isn't in this run's screened universe at all (see the SCREENED column).",
         value: r => r.rank, html: r => r.rank === null || r.rank === undefined ? "—" : r.rank },
       { label: "Symbol", value: r => r.symbol },
       { label: "Name", title: "Only ever available for a currently-tracked asset (the `assets` table) -- \"—\" for a screened-but-never-tracked asset, never a fabricated guess.", value: r => r.name, html: r => r.name || "—" },
       { label: "Market cap", value: r => r.marketCap, html: r => fmtUsd0(r.marketCap) },
-      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines the JUDGED badge -- the top 10 assets here become real Judge candidates.",
+      { label: "Composite score", title: "Rank-based combination of momentum, relative strength, volatility, drawdown, and volume -- see doc/phases.md Phase 3b. Ranking against this score is exactly what determines JUDGED -- the top 10 assets here become real Judge candidates.",
         value: r => r.compositeScore, html: r => r.compositeScore !== null && r.compositeScore !== undefined ? r.compositeScore.toFixed(3) : "—" },
       { label: "Factor breakdown", title: "The real per-factor breakdown behind Composite score -- a deterministic quantitative formula, not an LLM-generated explanation (no narrative reasoning exists for this figure by design). \"—\" if this asset isn't in this run's screened universe at all.",
         value: r => factorBreakdownBySymbol[r.symbol]?.recomputedScore, html: r => renderFactorBreakdown(factorBreakdownBySymbol[r.symbol], r.symbol, r.computedAt) },
-      { label: "Status", title: "HELD = a real position in My Portfolio right now (quantity > 0). JUDGED = ranked in this run's top TOP_CANDIDATES_SIZE (default 10) by Composite score -- the only thing that earns a real Judge decision this run. SCREENED = appears in this run's top-N-by-market-cap universe at all, whether or not it's a top candidate. A row can have none, some, or all three -- they're independent facts, not a progression.",
-        value: statusSortValue,
-        html: r => {
-          const badges = [];
-          if (heldSymbols.has(r.symbol)) badges.push('<span class="badge live">HELD</span>');
-          if (r.isTopCandidate) badges.push('<span class="badge ok">JUDGED</span>');
-          if (r.isScreened) badges.push('<span class="badge backfilled">SCREENED</span>');
-          return badges.length ? badges.join(" ") : "—";
-        } },
-    ], defaultOrder);
+      { label: "SCREENED", title: "This run's top-N-by-market-cap universe -- whether or not it's also a top candidate. Independent of JUDGED and HELD, not a progression.",
+        value: r => r.isScreened ? 1 : 0, html: r => boolBadge(r.isScreened) },
+      { label: "JUDGED", title: "Ranked in this run's top TOP_CANDIDATES_SIZE (default 10) by Composite score -- the only thing that earns a real Judge decision this run. Independent of SCREENED and HELD, not a progression.",
+        value: r => r.isTopCandidate ? 1 : 0, html: r => boolBadge(r.isTopCandidate) },
+      { label: "HELD", title: "A real position in My Portfolio right now (quantity > 0), checked live against /holdings. Independent of SCREENED and JUDGED, not a progression.",
+        value: r => heldSymbols.has(r.symbol) ? 1 : 0, html: r => boolBadge(heldSymbols.has(r.symbol)) },
+    ];
+    const screenedTokenFilterStateId = registerFilterableTable({
+      columns: screenedTokenColumns, rows: defaultOrder, wrapId: "screened-tokens-scroll", capRows: 20, countElId: "screened-tokens-filter-count",
+      filters: [
+        { key: "screened", label: "SCREENED", getValues: r => [r.isScreened ? "TRUE" : "FALSE"] },
+        { key: "judged", label: "JUDGED", getValues: r => [r.isTopCandidate ? "TRUE" : "FALSE"] },
+        { key: "held", label: "HELD", getValues: r => [heldSymbols.has(r.symbol) ? "TRUE" : "FALSE"] },
+      ],
+    });
 
     const heldCount = combinedRows.filter(r => heldSymbols.has(r.symbol)).length;
     const judgedCount = combinedRows.filter(r => r.isTopCandidate).length;
@@ -1021,7 +1137,8 @@ async function loadScreenedTokens() {
     target.innerHTML = `
       <details open>
         <summary>Show all ${combinedRows.length} tracked/screened assets</summary>
-        <div class="scroll-table-wrap" id="screened-tokens-scroll">${combinedTable}</div>
+        ${renderFilterBar(screenedTokenFilterStateId)}
+        <div class="scroll-table-wrap" id="screened-tokens-scroll">${buildSortableTable(screenedTokenColumns, defaultOrder)}</div>
       </details>
       <h3 style="margin-top:16px;">Legend</h3>
       <p class="metric-desc"><strong>HELD (${heldCount})</strong>, <strong>JUDGED (${judgedCount})</strong>, <strong>SCREENED (${screenedCount})</strong> of ${combinedRows.length} total -- independent counts, not a progression: a row can have none, some, or all three badges (real live counts, not fixed proportions of each other).</p>
@@ -1161,14 +1278,21 @@ async function loadLlmAnswers() {
     for (const d of decisions) symbolByDecisionId[d.decision.id] = d.symbol;
     const symbolForAsset = id => symbolByAssetId[id] || "—";
 
-    const researchTable = buildSortableTable([
-      { label: "Date", value: r => new Date(r.timestamp).getTime(), html: r => new Date(r.timestamp).toLocaleString() },
-      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
-      { label: "Provider", value: r => r.provider },
-      { label: "Model", value: r => r.model },
-      { label: "Action", value: r => r.action },
-      { label: "Confidence", value: r => r.confidence, html: r => renderMiniBar(r.confidence, 1, "#1565c0", 2) },
-      { label: "Target allocation", value: r => r.target_allocation, html: r => (r.target_allocation * 100).toFixed(1) + "%" },
+    const researchColumns = [
+      { label: "Date", title: "When this provider's analysis actually ran (Phase 2's --with-llm), not when it's being viewed here.",
+        value: r => new Date(r.timestamp).getTime(), html: r => new Date(r.timestamp).toLocaleString() },
+      { label: "Asset", title: "The tracked asset this analysis is about -- resolved from the record's own raw asset_id via /screening/tracked, never a raw UUID.",
+        value: r => symbolForAsset(r.asset_id) },
+      { label: "Provider", title: "Which of the 3 independent OpenRouter providers produced this specific answer (Claude, OpenAI, or Gemini) -- see LLM prompts above for the one shared prompt all 3 received.",
+        value: r => r.provider },
+      { label: "Model", title: "The exact model string used for this call (e.g. anthropic/claude-sonnet-5) -- can differ from Provider's current default if this run used an older one.",
+        value: r => r.model },
+      { label: "Action", title: "This provider's own independent BUY/HOLD/SELL call for this asset -- purely this provider's opinion, one of several inputs into (never equal to) the Judge's own final decision.",
+        value: r => r.action },
+      { label: "Confidence", title: "This provider's own stated confidence in its Action, 0 (a guess) to 1 (certain).",
+        value: r => r.confidence, html: r => renderMiniBar(r.confidence, 1, "#1565c0", 2) },
+      { label: "Target allocation", title: "This provider's own suggested fraction of total portfolio for this asset -- unconstrained, before any Risk Engine sizing.",
+        value: r => r.target_allocation, html: r => (r.target_allocation * 100).toFixed(1) + "%" },
       { label: "Answer", title: "This provider's full real answer -- thesis, bull/bear case, catalysts, risks, invalidation conditions.",
         value: r => r.response?.thesis || "",
         html: r => answerModalLink("Show full answer", `Research answer — ${symbolForAsset(r.asset_id)} (${r.provider})`, `
@@ -1178,17 +1302,36 @@ async function loadLlmAnswers() {
           <p><strong>Catalysts:</strong></p>${renderStringList(r.catalysts)}
           <p><strong>Risks:</strong></p>${renderStringList(r.risks)}
           <p><strong>Invalidation conditions:</strong></p>${renderStringList(r.invalidation_conditions)}`) },
-    ], research);
+    ];
+    const researchFilterStateId = registerFilterableTable({
+      columns: researchColumns, rows: research, wrapId: "llm-answers-research-scroll", capRows: 20, countElId: "llm-answers-research-filter-count",
+      filters: [
+        { key: "asset", label: "Asset", getValues: r => [symbolForAsset(r.asset_id)] },
+        { key: "provider", label: "Provider", getValues: r => [r.provider] },
+        { key: "model", label: "Model", getValues: r => [r.model] },
+        { key: "action", label: "Action", getValues: r => [r.action] },
+      ],
+    });
 
-    const assessmentTable = buildSortableTable([
-      { label: "Date", value: a => new Date(a.assessment_timestamp).getTime(), html: a => new Date(a.assessment_timestamp).toLocaleString() },
-      { label: "Asset", value: a => symbolForAsset(a.asset_id) },
-      { label: "Provider", value: a => a.provider },
-      { label: "Model", value: a => a.model },
-      { label: "Overall", value: a => a.overall_assessment },
-      { label: "Model agreement", value: a => a.model_agreement, html: a => renderMiniBar(a.model_agreement, 1, "#1565c0", 2) },
-      { label: "Expected return (30d)", value: a => a.expected_return_30d, html: a => renderDivergingBar(a.expected_return_30d, 0.5) },
-      { label: "Risk", value: a => a.risk_score, html: a => `${a.risk_level} <br>${renderMiniBar(a.risk_score, 1, "#ef6c00", 2)}` },
+    const assessmentColumns = [
+      { label: "Date", title: "When this provider's multi-horizon assessment actually ran (3d's --with-assessment), not when it's being viewed here.",
+        value: a => new Date(a.assessment_timestamp).getTime(), html: a => `<span style="white-space:nowrap;">${new Date(a.assessment_timestamp).toLocaleString()}</span>` },
+      { label: "Asset", title: "The tracked asset this assessment is about, resolved from the record's own raw asset_id.",
+        value: a => symbolForAsset(a.asset_id) },
+      { label: "Provider", title: "Which of the 3 independent OpenRouter providers produced this specific assessment.",
+        value: a => a.provider },
+      { label: "Model", title: "The exact model string used for this call.",
+        value: a => a.model, html: a => `<span style="white-space:nowrap;">${a.model}</span>` },
+      { label: "Overall", title: "This provider's own overall BULLISH/NEUTRAL/BEARISH read across all 3 horizons (short/medium/long-term) combined -- the closest thing this prompt has to Research's Action column.",
+        value: a => a.overall_assessment },
+      { label: "Model agreement", title: "How much this provider's view agrees with the other 2 providers' views this run, 0 (total disagreement) to 1 (unanimous) -- computed once per (run, asset), copied verbatim onto every provider's row for that asset.",
+        value: a => a.model_agreement, html: a => renderMiniBar(a.model_agreement, 1, "#1565c0", 2) },
+      { label: "Expected return (30d)", title: "This provider's own expected 30-day return for this asset -- can be negative.",
+        value: a => a.expected_return_30d, html: a => renderDivergingBar(a.expected_return_30d, 0.5) },
+      { label: "Risk category", title: "This provider's own stated risk level -- LOW/MEDIUM/HIGH, its own categorical judgment, not just a threshold slice of Risk score.",
+        value: a => a.risk_level },
+      { label: "Risk score", title: "This provider's own numeric risk score, 0 (very safe) to 1 (very risky).",
+        value: a => a.risk_score, html: a => renderMiniBar(a.risk_score, 1, "#ef6c00", 2) },
       { label: "Answer", title: "This provider's full real answer -- thesis, key drivers/risks, per-source read, invalidation conditions.",
         value: a => a.thesis,
         html: a => answerModalLink("Show full answer", `Assessment answer — ${symbolForAsset(a.asset_id)} (${a.provider})`, `
@@ -1197,7 +1340,20 @@ async function loadLlmAnswers() {
           <p><strong>Key risks:</strong></p>${renderWeightedFactorList(a.key_risks, "factor")}
           <p><strong>Source-by-source read:</strong></p>${renderWeightedFactorList(a.source_assessment, "source")}
           <p><strong>Invalidation conditions:</strong></p>${renderStringList(a.invalidation_conditions)}`) },
-    ], assessments);
+    ];
+    // Assessments have no "Action" field (that's a Research-prompt-only
+    // concept) -- Overall (its own BULLISH/NEUTRAL/BEARISH direction call)
+    // is the closest real equivalent, used here instead.
+    const assessmentFilterStateId = registerFilterableTable({
+      columns: assessmentColumns, rows: assessments, wrapId: "llm-answers-assessment-scroll", capRows: 20, countElId: "llm-answers-assessment-filter-count",
+      filters: [
+        { key: "asset", label: "Asset", getValues: a => [symbolForAsset(a.asset_id)] },
+        { key: "provider", label: "Provider", getValues: a => [a.provider] },
+        { key: "model", label: "Model", getValues: a => [a.model] },
+        { key: "overall", label: "Overall", getValues: a => [a.overall_assessment] },
+        { key: "riskCategory", label: "Risk category", getValues: a => [a.risk_level] },
+      ],
+    });
 
     // Bull/Bear/Scenario are 3 distinct prompts (see LLM prompts above) that
     // happen to persist as ONE row per asset in `adversarial_research` --
@@ -1205,23 +1361,38 @@ async function loadLlmAnswers() {
     // bear, both feed scenario). Split into 3 panels below, one per real
     // prompt, all reading the SAME `adversarial` rows rather than 3 separate
     // fetches -- there's only one dataset, just 3 different views over it.
-    const bullTable = buildSortableTable([
-      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
-      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
-      { label: "Catalysts", value: r => (r.bull_case?.catalysts || []).length },
-      { label: "Evidence items", value: r => (r.bull_case?.evidence || []).length },
+    const bullColumns = [
+      { label: "Date", title: "When this asset's adversarial research cycle actually ran (3f's --with-adversarial).",
+        value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", title: "The tracked asset this bull case is about.",
+        value: r => symbolForAsset(r.asset_id) },
+      { label: "Catalysts", title: "How many concrete upcoming catalysts this bull case cites -- click Answer to read them.",
+        value: r => (r.bull_case?.catalysts || []).length },
+      { label: "Evidence items", title: "How many distinct evidence items this bull case cites -- click Answer to read them.",
+        value: r => (r.bull_case?.evidence || []).length },
       { label: "Answer", title: "The full bull thesis, catalysts, and evidence -- the opening move of this asset's adversarial research cycle.",
         value: r => r.bull_case?.thesis || "",
         html: r => answerModalLink("Show full answer", `Bull case — ${symbolForAsset(r.asset_id)}`, `
           <p><strong>Thesis:</strong> ${r.bull_case?.thesis || "—"}</p>
           <p><strong>Catalysts:</strong></p>${renderStringList(r.bull_case?.catalysts)}
           <p><strong>Evidence:</strong></p>${renderStringList(r.bull_case?.evidence)}`) },
-    ], adversarial);
+    ];
+    const bullFilterStateId = registerFilterableTable({
+      columns: bullColumns, rows: adversarial, wrapId: "llm-answers-bull-scroll", capRows: 20, countElId: "llm-answers-bull-filter-count",
+      filters: [
+        { key: "asset", label: "Asset", getValues: r => [symbolForAsset(r.asset_id)] },
+        { key: "catalysts", label: "Catalysts", getValues: r => [String((r.bull_case?.catalysts || []).length)] },
+        { key: "evidence", label: "Evidence items", getValues: r => [String((r.bull_case?.evidence || []).length)] },
+      ],
+    });
 
-    const bearTable = buildSortableTable([
-      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
-      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
-      { label: "Attack points", value: r => (r.bear_case?.attack_points || []).length },
+    const bearColumns = [
+      { label: "Date", title: "When this asset's adversarial research cycle actually ran (same run as its Bull case above).",
+        value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", title: "The tracked asset this bear case is about.",
+        value: r => symbolForAsset(r.asset_id) },
+      { label: "Attack points", title: "How many distinct attack points this bear case raises against the bull case above -- click Answer to read them.",
+        value: r => (r.bear_case?.attack_points || []).length },
       { label: "Rebuts named", title: "How many of the bear's attack points explicitly name which bull catalyst/evidence item they rebut -- the prompt's own check for 'genuinely adversarial, not just a generic risk list.'",
         value: r => (r.bear_case?.attacks_bull_point || []).length },
       { label: "Answer", title: "The full bear attack on this asset's own bull case, and which bull point each attack rebuts.",
@@ -1230,16 +1401,26 @@ async function loadLlmAnswers() {
           <p><strong>Attack points:</strong></p>${renderStringList(r.bear_case?.attack_points)}
           <p><strong>Evidence:</strong></p>${renderStringList(r.bear_case?.evidence)}
           <p><strong>Which bull point each attack rebuts:</strong></p>${renderStringList(r.bear_case?.attacks_bull_point)}`) },
-    ], adversarial);
+    ];
+    const bearFilterStateId = registerFilterableTable({
+      columns: bearColumns, rows: adversarial, wrapId: "llm-answers-bear-scroll", capRows: 20, countElId: "llm-answers-bear-filter-count",
+      filters: [
+        { key: "asset", label: "Asset", getValues: r => [symbolForAsset(r.asset_id)] },
+        { key: "attackPoints", label: "Attack points", getValues: r => [String((r.bear_case?.attack_points || []).length)] },
+        { key: "rebutsNamed", label: "Rebuts named", getValues: r => [String((r.bear_case?.attacks_bull_point || []).length)] },
+      ],
+    });
 
-    const scenarioTable = buildSortableTable([
-      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
-      { label: "Asset", value: r => symbolForAsset(r.asset_id) },
-      { label: "Bull", title: "Probability, then expected return.", value: r => r.scenarios?.bull?.probability ?? null,
+    const scenarioColumns = [
+      { label: "Date", title: "When this asset's adversarial research cycle actually ran (same run as its Bull/Bear cases above).",
+        value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+      { label: "Asset", title: "The tracked asset these scenarios are about.",
+        value: r => symbolForAsset(r.asset_id) },
+      { label: "Bull", title: "Bull-case scenario: probability, then expected return.", value: r => r.scenarios?.bull?.probability ?? null,
         html: r => r.scenarios?.bull ? `${(r.scenarios.bull.probability * 100).toFixed(0)}%, ${(r.scenarios.bull.expected_return * 100).toFixed(1)}%` : "—" },
-      { label: "Base", value: r => r.scenarios?.base?.probability ?? null,
+      { label: "Base", title: "Base-case scenario: probability, then expected return.", value: r => r.scenarios?.base?.probability ?? null,
         html: r => r.scenarios?.base ? `${(r.scenarios.base.probability * 100).toFixed(0)}%, ${(r.scenarios.base.expected_return * 100).toFixed(1)}%` : "—" },
-      { label: "Bear", value: r => r.scenarios?.bear?.probability ?? null,
+      { label: "Bear", title: "Bear-case scenario: probability, then expected return.", value: r => r.scenarios?.bear?.probability ?? null,
         html: r => r.scenarios?.bear ? `${(r.scenarios.bear.probability * 100).toFixed(0)}%, ${(r.scenarios.bear.expected_return * 100).toFixed(1)}%` : "—" },
       { label: "Answer", title: "The full bull/base/bear scenarios -- assumptions, catalysts, and failure conditions behind each.",
         value: r => r.scenarios?.bull?.probability ?? "",
@@ -1247,13 +1428,15 @@ async function loadLlmAnswers() {
           ${renderScenario("Bull scenario", r.scenarios?.bull)}
           ${renderScenario("Base scenario", r.scenarios?.base)}
           ${renderScenario("Bear scenario", r.scenarios?.bear)}`) },
-    ], adversarial);
+    ];
 
-    const auditTable = buildSortableTable([
-      { label: "Date", value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
+    const auditColumns = [
+      { label: "Date", title: "When this reasoning audit actually ran (3g's script-only audit, scripts/run_reasoning_audit.py) -- not when the audited decision itself was made.",
+        value: r => new Date(r.created_at).getTime(), html: r => new Date(r.created_at).toLocaleString() },
       { label: "Decision's asset", title: "Resolved from this audit's decision_id via /judge/decisions/recent -- \"—\" if that decision isn't in the current (unlimited) decisions list for some reason.",
         value: r => symbolByDecisionId[r.decision_id] || "—" },
-      { label: "Audit model", value: r => r.audit_model },
+      { label: "Audit model", title: "The model used to run this specific audit -- defaults to Claude Sonnet 5 (REASONING_AUDIT_MODEL unset in .env).",
+        value: r => r.audit_model },
       { label: "Supported", title: "Does the decision's own thesis actually follow from its own cited key_evidence, and does it address its own cited contradictory_evidence -- NOT whether the decision was a good trade.",
         value: r => r.supported ? 1 : 0, html: r => `<span class="badge ${r.supported ? "ok" : "unavailable"}">${r.supported ? "supported" : "unsupported claim found"}</span>` },
       { label: "Answer", title: "The full audit answer -- any specific unsupported claims found, and the audit model's own notes.",
@@ -1262,7 +1445,7 @@ async function loadLlmAnswers() {
           <p><strong>Supported:</strong> ${r.supported ? "yes" : "no"}</p>
           <p><strong>Unsupported claims:</strong></p>${renderStringList(r.unsupported_claims)}
           <p><strong>Notes:</strong> ${r.notes || "—"}</p>`) },
-    ], audits);
+    ];
 
     target.innerHTML = `
       <p class="metric-desc" style="margin-bottom:12px;">
@@ -1271,27 +1454,31 @@ async function loadLlmAnswers() {
       </p>
       <details>
         <summary>Research answers (${research.length}) -- Phase 2's --with-llm prompt, per (provider, asset)</summary>
-        <div class="scroll-table-wrap" id="llm-answers-research-scroll">${researchTable}</div>
+        ${renderFilterBar(researchFilterStateId)}
+        <div class="scroll-table-wrap" id="llm-answers-research-scroll">${buildSortableTable(researchColumns, research)}</div>
       </details>
       <details style="margin-top:12px;">
         <summary>Assessment answers (${assessments.length}) -- 3d's --with-assessment prompt, most recent run, per (provider, asset)</summary>
-        <div class="scroll-table-wrap" id="llm-answers-assessment-scroll">${assessmentTable}</div>
+        ${renderFilterBar(assessmentFilterStateId)}
+        <div class="scroll-table-wrap" id="llm-answers-assessment-scroll">${buildSortableTable(assessmentColumns, assessments)}</div>
       </details>
       <details style="margin-top:12px;">
         <summary>Bull-case answers (${adversarial.length}) -- 3f's bull prompt, per asset</summary>
-        <div class="scroll-table-wrap" id="llm-answers-bull-scroll">${bullTable}</div>
+        ${renderFilterBar(bullFilterStateId)}
+        <div class="scroll-table-wrap" id="llm-answers-bull-scroll">${buildSortableTable(bullColumns, adversarial)}</div>
       </details>
       <details style="margin-top:12px;">
         <summary>Bear-case answers (${adversarial.length}) -- 3f's bear prompt, attacking the bull case above, per asset</summary>
-        <div class="scroll-table-wrap" id="llm-answers-bear-scroll">${bearTable}</div>
+        ${renderFilterBar(bearFilterStateId)}
+        <div class="scroll-table-wrap" id="llm-answers-bear-scroll">${buildSortableTable(bearColumns, adversarial)}</div>
       </details>
       <details style="margin-top:12px;">
         <summary>Scenario answers (${adversarial.length}) -- 3f's scenario prompt, given both cases above, per asset</summary>
-        <div class="scroll-table-wrap" id="llm-answers-scenario-scroll">${scenarioTable}</div>
+        <div class="scroll-table-wrap" id="llm-answers-scenario-scroll">${buildSortableTable(scenarioColumns, adversarial)}</div>
       </details>
       <details style="margin-top:12px;">
         <summary>Reasoning-audit answers (${audits.length}) -- 3g's script-only audit prompt, per audited decision</summary>
-        <div class="scroll-table-wrap" id="llm-answers-audit-scroll">${auditTable}</div>
+        <div class="scroll-table-wrap" id="llm-answers-audit-scroll">${buildSortableTable(auditColumns, audits)}</div>
       </details>`;
     capTableWrapToRows(document.getElementById("llm-answers-research-scroll"), 20);
     capTableWrapToRows(document.getElementById("llm-answers-assessment-scroll"), 20);
@@ -1315,22 +1502,52 @@ function renderCapProgressBar(totalStr, capStr) {
   return `<div class="cap-bar-track"><div class="cap-bar-fill" style="width:${Math.min(100, pct).toFixed(1)}%; background:${color};"></div></div>`;
 }
 
+// Same pct-of-cap math renderCapProgressBar's own bar fill already uses --
+// reused here so the printed "X% of cap" text always agrees with the bar
+// next to it, rather than two independently-rounded numbers.
+function pctOfCap(totalStr, capStr) {
+  const total = parseFloat(totalStr), cap = parseFloat(capStr);
+  return cap > 0 ? (total / cap) * 100 : 0;
+}
+
 async function loadCostSummary() {
   const target = document.getElementById("cost-summary");
   try {
-    const c = await apiGet("/cost/summary");
+    const [c, byDay] = await Promise.all([apiGet("/cost/summary"), apiGet("/cost/by-day")]);
     const costTable = buildSortableTable([
       { label: "Table", title: "Which database table recorded the spend -- each corresponds to one stage of the pipeline (e.g. judge_decisions = the Judge's calls).", value: t => t.table },
+      { label: "Calls", title: "How many real LLM calls actually landed in this table today -- the same rows Cost is summed from, just counted instead of summed.", value: t => t.call_count },
       { label: "Cost", value: t => parseFloat(t.cost_usd), html: t => "$" + t.cost_usd },
     ], c.daily.by_table);
+
+    const byDayColumns = [
+      { label: "Date", value: d => d.date },
+      { label: "Table", title: "Which database table recorded the spend -- each corresponds to one stage of the pipeline (e.g. judge_decisions = the Judge's calls).", value: d => d.table },
+      { label: "Calls", title: "How many real LLM calls landed in this table on this real calendar day.", value: d => d.call_count },
+      { label: "Cost", value: d => parseFloat(d.cost_usd), html: d => "$" + d.cost_usd },
+    ];
+    const byDayFilterStateId = registerFilterableTable({
+      columns: byDayColumns, rows: byDay, wrapId: "cost-by-day-scroll", capRows: 20, countElId: "cost-by-day-filter-count",
+      filters: [
+        { key: "date", label: "Date", getValues: d => [d.date] },
+        { key: "table", label: "Table", getValues: d => [d.table] },
+      ],
+    });
+
     target.innerHTML = `
       <p class="metric-desc">Every real dollar here is a Claude/OpenAI/Gemini API call the system made while researching or deciding something -- capped daily and monthly so a bug or a bad day can never run up an unbounded bill.</p>
-      <p><strong>Today:</strong> $${c.daily.total_usd} / $${c.daily.cap_usd} cap ($${c.daily.remaining_usd} remaining)</p>
+      <p><strong>Today:</strong> $${c.daily.total_usd} / $${c.daily.cap_usd} cap (${pctOfCap(c.daily.total_usd, c.daily.cap_usd).toFixed(1)}%) — $${c.daily.remaining_usd} remaining</p>
       ${renderCapProgressBar(c.daily.total_usd, c.daily.cap_usd)}
       ${costTable}
-      <p><strong>This month:</strong> $${c.monthly.total_usd} / $${c.monthly.cap_usd} cap ($${c.monthly.remaining_usd} remaining)</p>
+      <p><strong>This month:</strong> $${c.monthly.total_usd} / $${c.monthly.cap_usd} cap (${pctOfCap(c.monthly.total_usd, c.monthly.cap_usd).toFixed(1)}%) — $${c.monthly.remaining_usd} remaining</p>
       ${renderCapProgressBar(c.monthly.total_usd, c.monthly.cap_usd)}
-      <p class="null-note">${c.note}</p>`;
+      <p class="null-note">${c.note}</p>
+      <details style="margin-top:12px;">
+        <summary>Cost by day (${byDay.length} day/table buckets) -- every real day, not just today/this month</summary>
+        ${renderFilterBar(byDayFilterStateId)}
+        <div class="scroll-table-wrap" id="cost-by-day-scroll">${buildSortableTable(byDayColumns, byDay)}</div>
+      </details>`;
+    capTableWrapToRows(document.getElementById("cost-by-day-scroll"), 20);
   } catch (e) {
     renderError(target, e);
   }
@@ -1432,13 +1649,8 @@ async function loadCalibrationSummary() {
 // nothing is paraphrased or invented) with the full thesis one click
 // away, so scanning many decisions doesn't mean reading a paragraph each.
 function renderExpandableThesis(thesis) {
-  const firstSentenceEnd = thesis.indexOf(". ");
-  const useSentence = firstSentenceEnd > 0 && firstSentenceEnd < 140;
-  const cutoff = useSentence ? firstSentenceEnd + 1 : Math.min(120, thesis.length);
-  if (cutoff >= thesis.length) return `<span class="thesis">${thesis}</span>`;
-  const summary = useSentence ? thesis.slice(0, cutoff) : thesis.slice(0, cutoff) + "…";
   const modalId = registerTextModal("Judge thesis (full)", `<p class="thesis" style="max-width:none;">${thesis}</p>`);
-  return `<span class="thesis">${summary} <a class="modal-link" onclick="openTextModal('${modalId}');">Show full thesis</a></span>`;
+  return `<a class="modal-link" onclick="openTextModal('${modalId}');">Show full thesis</a>`;
 }
 
 // decision_outcomes.outcome_label's real 4 states (app/benchmarks/schemas.py
@@ -1485,9 +1697,9 @@ async function loadJudgeDecisions() {
     // column instead. The Date column shows the full timestamp, not just
     // the date, since decisions from the same run share a date but not a
     // timestamp -- sorting by Date is meaningful even within one run.
-    const decisionsTable = buildSortableTable([
+    const decisionColumns = [
       { label: "Date", title: "The full decision timestamp, not just the date -- decisions from the same run share a date but not a timestamp.",
-        value: d => new Date(d.decision.created_at).getTime(), html: d => new Date(d.decision.created_at).toLocaleString() },
+        value: d => new Date(d.decision.created_at).getTime(), html: d => `<span style="white-space:nowrap;">${new Date(d.decision.created_at).toLocaleString()}</span>` },
       { label: "Token", title: "The real tracked asset this decision is about -- joined here from the record's own raw asset_id, never a raw UUID.", value: d => d.symbol },
       { label: "Source", title: "Live = made in real time, right now. Backfilled = a simulated decision from a historical replay (3e.1), used to build up a track record fast without waiting for real time to pass.",
         value: d => d.decision.is_backfilled ? "backfilled" : "live",
@@ -1510,7 +1722,7 @@ async function loadJudgeDecisions() {
         html: d => {
           const o = outcomeByDecisionId[d.decision.id];
           if (!o) return "—";
-          return `+${(o.target_return * 100).toFixed(1)}% / ${(o.stop_return * 100).toFixed(1)}%`;
+          return `<span style="white-space:nowrap;">+${(o.target_return * 100).toFixed(1)}% / ${(o.stop_return * 100).toFixed(1)}%</span>`;
         } },
       { label: "Outcome", title: "HIT TARGET / HIT STOP / TIMED OUT = resolved -- the outcome window (Resolves by) has closed. UNRESOLVED = still open, not a missing value. \"—\" means this decision has no decision_outcomes row at all yet (genuinely missing, not just unresolved) -- see /calibration/outcomes/recent.",
         value: d => OUTCOME_SORT_ORDER[outcomeByDecisionId[d.decision.id]?.outcome_label] ?? -1,
@@ -1535,9 +1747,19 @@ async function loadJudgeDecisions() {
         } },
       { label: "Thesis", title: "The Judge's own real reasoning for this call, in its own words -- click to expand the full text.",
         value: d => d.decision.thesis, html: d => renderExpandableThesis(d.decision.thesis) },
-    ], decisions);
+    ];
+    const decisionFilterStateId = registerFilterableTable({
+      columns: decisionColumns, rows: decisions, wrapId: "judge-decisions-scroll", capRows: 20, countElId: "judge-decisions-filter-count",
+      filters: [
+        { key: "token", label: "Token", getValues: d => [d.symbol] },
+        { key: "source", label: "Source", getValues: d => [d.decision.is_backfilled ? "backfilled" : "live"] },
+        { key: "decision", label: "Decision", getValues: d => [d.decision.decision] },
+        { key: "outcome", label: "Outcome", getValues: d => [outcomeByDecisionId[d.decision.id]?.outcome_label ?? "NO OUTCOME RECORD"] },
+      ],
+    });
     target.innerHTML = `${countLine}
-      <div class="scroll-table-wrap" id="judge-decisions-scroll">${decisionsTable}</div>
+      ${renderFilterBar(decisionFilterStateId)}
+      <div class="scroll-table-wrap" id="judge-decisions-scroll">${buildSortableTable(decisionColumns, decisions)}</div>
       <h3 style="margin-top:16px;">Legend: Source values</h3>
       <p class="metric-desc"><strong>live</strong> — made in real time, right now, by an actual <code>--with-judge</code> run.</p>
       <p class="metric-desc"><strong>backfilled</strong> — a simulated decision from 3e.1's historical replay (<code>scripts/run_replay.py</code>), re-running the Judge against real past data to build up a track record fast, without waiting for real time to pass. Never mixed silently with live decisions in any calibration figure elsewhere on this page.</p>
@@ -1571,8 +1793,8 @@ async function loadRecentNews() {
       target.innerHTML = "<p>No recent news matched against your tracked assets.</p>";
       return;
     }
-    const newsTable = buildSortableTable([
-      { label: "Published", value: a => new Date(a.published_at).getTime(), html: a => new Date(a.published_at).toLocaleString() },
+    const newsColumns = [
+      { label: "Published", value: a => new Date(a.published_at).getTime(), html: a => `<span style="white-space:nowrap;">${new Date(a.published_at).toLocaleString()}</span>` },
       { label: "Source", value: a => a.source, html: a => escapeHtml(a.source) },
       { label: "Title", value: a => a.title, html: a => {
         const isSafeLink = a.url && (a.url.startsWith("http://") || a.url.startsWith("https://"));
@@ -1581,9 +1803,19 @@ async function loadRecentNews() {
           : escapeHtml(a.title);
       } },
       { label: "Relevant assets", value: a => a.relevant_assets.join(", "), html: a => a.relevant_assets.map(escapeHtml).join(", ") || "—" },
-      { label: "Sentiment", value: a => a.sentiment, html: a => a.sentiment ? escapeHtml(a.sentiment) : "—" },
-    ], articles);
-    target.innerHTML = `<div class="scroll-table-wrap" id="recent-news-scroll">${newsTable}</div>`;
+      { label: "Sentiment", title: "Always \"—\" -- a real, permanent, documented gap, not a bug or missing data. Nothing in this codebase ever computes or assigns this field (confirmed by a full search: no LLM call, no lexicon scorer, no Judge/assessment step writes it) -- doc/phases.md lists it explicitly under \"Known limitations (accepted tradeoffs, not bugs)\": reliably scoring it would need an extra LLM call or a dedicated sentiment model, and that cost/complexity tradeoff hasn't been made. Unrelated to the separate (also unimplemented) SOCIAL_NARRATIVE_SENTIMENT signal source shown in Signal sources -- that's whole-market social sentiment (Santiment/LunarCrush), a different concept from this per-article field.",
+        value: a => a.sentiment, html: a => a.sentiment ? escapeHtml(a.sentiment) : "—" },
+    ];
+    const newsFilterStateId = registerFilterableTable({
+      columns: newsColumns, rows: articles, wrapId: "recent-news-scroll", capRows: 20, countElId: "recent-news-filter-count",
+      filters: [
+        { key: "source", label: "Source", getValues: a => [a.source] },
+        { key: "relevantAssets", label: "Relevant assets", getValues: a => a.relevant_assets || [] },
+      ],
+    });
+    target.innerHTML = `
+      ${renderFilterBar(newsFilterStateId)}
+      <div class="scroll-table-wrap" id="recent-news-scroll">${buildSortableTable(newsColumns, articles)}</div>`;
     capTableWrapToRows(document.getElementById("recent-news-scroll"), 20);
   } catch (e) {
     renderError(target, e);
@@ -1608,12 +1840,12 @@ async function loadHoldings() {
         value: h => h.cost_per_unit, html: h => h.cost_per_unit !== null && h.cost_per_unit !== undefined ? "$" + h.cost_per_unit.toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
       { label: "Cost basis", title: "The TOTAL cost basis of this whole aggregated position -- the sum of every BUY's cost basis, reduced proportionally by any SELLs.",
         value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
-      { label: "Price (collected)", title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from.",
-        value: h => h.price_usd, html: h => renderStoredPrice(h.price_usd, h.price_as_of) },
+      { label: "Price (collected)", title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from. Timestamp shown once, above the table, not repeated per row -- one collector run prices every holding at essentially the same moment.",
+        value: h => h.price_usd, html: h => renderStoredPrice(h.price_usd) },
       { label: "Value (USD)", title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below.",
         value: h => h.value_usd, html: h => h.value_usd !== null && h.value_usd !== undefined ? "$" + h.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
-      { label: "Live price", title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead.",
-        value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_as_of, h.live_price_source) },
+      { label: "Live price", title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead. Timestamp shown once, above the table, not repeated per row.",
+        value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_source) },
       { label: "Unrealized P&L", title: "Value (USD) minus Cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
         value: h => h.unrealized_pnl_usd, html: h => renderPnl(h.unrealized_pnl_usd, h.unrealized_pnl_pct) },
       { label: "Allocation", value: h => h.allocation, html: h => h.allocation !== null ? (h.allocation * 100).toFixed(2) + "%" : "—" },
@@ -1627,8 +1859,22 @@ async function loadHoldings() {
     const knownValueRows = holdings.filter(h => h.value_usd !== null && h.value_usd !== undefined);
     const totalValueUsd = knownValueRows.reduce((sum, h) => sum + h.value_usd, 0);
     const missingPriceCount = holdings.length - knownValueRows.length;
+    // One shared "as of" line instead of repeating it on every row (per
+    // Price (collected)/Live price above) -- real for every non-CASH
+    // holding since one collector run / one page load prices them all at
+    // essentially the same moment. Picks the first row that actually has
+    // each timestamp, rather than assuming row 0 (CASH, or a position with
+    // no current price, has neither).
+    const collectedAsOf = holdings.find(h => h.price_as_of)?.price_as_of;
+    const liveAsOf = holdings.find(h => h.live_price_as_of)?.live_price_as_of;
+    const asOfLine = (collectedAsOf || liveAsOf) ? `<p class="metric-desc" style="margin-bottom:8px;">
+        ${collectedAsOf ? `Prices collected as of ${new Date(collectedAsOf).toLocaleString()}` : ""}
+        ${collectedAsOf && liveAsOf ? " &nbsp;•&nbsp; " : ""}
+        ${liveAsOf ? `Live prices as of ${new Date(liveAsOf).toLocaleString()}` : ""}
+      </p>` : "";
     target.innerHTML = `
       <p style="font-size:1.1rem;margin-bottom:8px;"><strong>Total portfolio value: $${totalValueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}</strong>${missingPriceCount > 0 ? ` <span class="null-note">(excludes ${missingPriceCount} position${missingPriceCount > 1 ? "s" : ""} with no current price available)</span>` : ""}</p>
+      ${asOfLine}
       ${holdingsTable}
       <p class="null-note">Allocation is this holding's real share of your total portfolio value right now — directly comparable to "AI Portfolio"'s Allocation column (the system's recommended target), since both are fractions of the same total. Cost basis / Value / P&amp;L are "—" whenever no cost basis was ever entered, or no current price is available, for that position.</p>`;
   } catch (e) {

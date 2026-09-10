@@ -230,6 +230,45 @@ def test_cost_ledger_ignores_rows_with_null_cost():
     assert total == Decimal("1.0")
 
 
+def test_cost_ledger_and_count_by_table_matches_sum_and_real_row_count():
+    # Phase 5b addendum: get_cost_and_count_by_table_since must agree with
+    # get_cost_sum_by_table_since's own cost sum (same underlying rows), and
+    # additionally report the real count of cost-bearing rows -- a null-cost
+    # row is excluded from both the sum AND the count, not counted as a
+    # zero-cost call.
+    client = FakeSupabaseClient({
+        "llm_analyses": [
+            {"timestamp": "2026-01-02T00:00:00+00:00", "estimated_cost": "0.05"},
+            {"timestamp": "2026-01-03T00:00:00+00:00", "estimated_cost": "0.03"},
+            {"timestamp": "2026-01-03T00:00:00+00:00", "estimated_cost": None},
+        ],
+    })
+    ledger = CostLedgerRepository(client)
+    by_table = ledger.get_cost_and_count_by_table_since(datetime(2026, 1, 1, tzinfo=UTC))
+    cost, count = by_table["llm_analyses"]
+    assert cost == Decimal("0.08")
+    assert count == 2
+
+
+def test_cost_ledger_groups_cost_and_count_by_table_and_day():
+    # Phase 5b addendum: two rows on the same real day for the same table
+    # sum together into one (day, table) bucket; a row on a different day
+    # gets its own bucket -- proves the grouping key is (date, table), not
+    # just table.
+    client = FakeSupabaseClient({
+        "llm_analyses": [
+            {"timestamp": "2026-01-02T08:00:00+00:00", "estimated_cost": "0.05"},
+            {"timestamp": "2026-01-02T20:00:00+00:00", "estimated_cost": "0.03"},
+            {"timestamp": "2026-01-03T00:00:00+00:00", "estimated_cost": "0.10"},
+            {"timestamp": "2026-01-03T01:00:00+00:00", "estimated_cost": None},
+        ],
+    })
+    ledger = CostLedgerRepository(client)
+    by_day_table = ledger.get_cost_and_count_by_table_and_day_since(datetime(2026, 1, 1, tzinfo=UTC))
+    assert by_day_table[("2026-01-02", "llm_analyses")] == (Decimal("0.08"), 2)
+    assert by_day_table[("2026-01-03", "llm_analyses")] == (Decimal("0.10"), 1)
+
+
 def test_cost_guard_still_blocks_via_cost_ledger():
     settings = Settings(_env_file=None, max_daily_llm_cost=Decimal("1"), max_monthly_llm_cost=Decimal("50"))
     client = FakeSupabaseClient({
