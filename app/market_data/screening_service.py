@@ -6,6 +6,7 @@ from app.config import Settings
 from app.database.repository import (
     AssetRepository,
     AssetStatusRepository,
+    HoldingsLedgerRepository,
     MarketRegimeRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
@@ -26,6 +27,7 @@ from app.market_data.regime import (
 )
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.market_data.stablecoins import is_stablecoin
+from app.portfolio.holdings import aggregate_current_holdings
 
 logger = logging.getLogger("crypto_ai_portfolio.market_data")
 
@@ -70,6 +72,7 @@ class ScreeningService:
         coinmarketcap_client: CoinMarketCapClient,
         coinbase_client: CoinbaseClient,
         binance_client: BinanceClient,
+        holdings_ledger_repo: HoldingsLedgerRepository,
     ) -> None:
         self._settings = settings
         self._asset_repo = asset_repo
@@ -81,6 +84,7 @@ class ScreeningService:
         self._coinmarketcap = coinmarketcap_client
         self._coinbase = coinbase_client
         self._binance = binance_client
+        self._holdings_ledger_repo = holdings_ledger_repo
 
     def run(self, run_id: str) -> ScreeningResult:
         result = ScreeningResult()
@@ -171,7 +175,8 @@ class ScreeningService:
         for row, score in zip(screened_rows, composite_scores, strict=True):
             row.composite_factor_score = score
 
-        self._rank_and_tag_candidates(screened_rows)
+        held_symbols = self._get_held_symbols()
+        self._rank_and_tag_candidates(screened_rows, held_symbols)
         result.top_candidates = [r.symbol for r in screened_rows if r.is_top_candidate]
 
         result.new_candidates = self._promote_new_candidates(screened_rows, run_id)
@@ -266,14 +271,44 @@ class ScreeningService:
         if spread > threshold:
             logger.info("%s: cross-source price disagreement %.2f%% — %s", symbol, spread * 100, present)
 
-    def _rank_and_tag_candidates(self, rows: list[ScreenedAsset]) -> None:
+    def _get_held_symbols(self) -> set[str]:
+        """Phase 5b addendum: a real position (quantity > 0 in the
+        append-only holdings_ledger) should never silently lose Judge
+        coverage just because it falls out of today's top
+        TOP_CANDIDATES_SIZE by composite score — previously an asset you
+        hold could go a week or more with zero fresh Judge opinion (see
+        doc/... TODO "Include currently-held assets in Judge coverage",
+        now implemented rather than left declined). Matched by symbol, not
+        asset_id, since `_rank_and_tag_candidates` runs before
+        `_promote_new_candidates` assigns `row.asset_id` for the day's
+        rows."""
+        aggregated = aggregate_current_holdings(self._holdings_ledger_repo.get_all_history())
+        held_symbols: set[str] = set()
+        for entry in aggregated:
+            if entry.asset_id is None:  # the cash line, not a real asset position
+                continue
+            asset = self._asset_repo.get_by_id(entry.asset_id)
+            if asset:
+                held_symbols.add(asset.symbol)
+        return held_symbols
+
+    def _rank_and_tag_candidates(self, rows: list[ScreenedAsset], held_symbols: set[str]) -> None:
         ranked = sorted(
             rows,
             key=lambda r: (r.composite_factor_score is None, -(r.composite_factor_score or 0)),
         )
         for rank, row in enumerate(ranked, start=1):
             row.rank = rank
-            row.is_top_candidate = rank <= self._settings.top_candidates_size
+            row.is_top_candidate = rank <= self._settings.top_candidates_size or row.symbol in held_symbols
+
+        matched_held_symbols = {row.symbol for row in rows}
+        for missing in held_symbols - matched_held_symbols:
+            logger.warning(
+                "Held asset %s wasn't in this run's screened universe at all -- "
+                "still gets no Judge coverage this run (likely fell out of the "
+                "top %d by market cap, not just the top %d by score).",
+                missing, self._settings.screening_universe_size + 15, self._settings.top_candidates_size,
+            )
 
     def _promote_new_candidates(self, rows: list[ScreenedAsset], run_id: str) -> list[str]:
         newly_promoted = []

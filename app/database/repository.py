@@ -738,6 +738,29 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
+    def get_resolved_without_benchmark_alpha(self, limit: int = 500) -> list[DecisionOutcome]:
+        """Phase 5b addendum: resolved rows still missing a real effective
+        alpha -- lets `scripts/apply_benchmark_alpha.py` be re-run safely
+        without recomputing already-processed rows, same convention as
+        `get_resolved_without_net_of_costs` above."""
+        response = (
+            self._client.table("decision_outcomes")
+            .select("*")
+            .neq("outcome_label", "UNRESOLVED")
+            .is_("effective_alpha", "null")
+            .limit(limit)
+            .execute()
+        )
+        return [DecisionOutcome.model_validate(row) for row in response.data]
+
+    def update_benchmark_alpha(self, decision_id: str, benchmark_return: float, effective_alpha: float) -> None:
+        self._client.table("decision_outcomes").update(
+            {
+                "benchmark_return": benchmark_return,
+                "effective_alpha": effective_alpha,
+            }
+        ).eq("decision_id", decision_id).execute()
+
     def get_recent(self, limit: int = 200, is_backfilled: bool | None = None) -> list[DecisionOutcome]:
         """Phase 5: recent outcomes newest-first, for the calibration/ledger
         views — never mixes backfilled/live silently (see 3e.1's own

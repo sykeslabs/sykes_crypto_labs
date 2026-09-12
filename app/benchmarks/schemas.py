@@ -32,6 +32,15 @@ class DecisionOutcome(BaseModel):
     # mark-to-mid `realized_return` above, never instead of it.
     realized_return_net_of_costs: float | None = None
     assumed_fill_method: str | None = None
+    # Phase 5b addendum: real "effective" alpha, alongside judge_decisions'
+    # own predicted `expected_alpha`. `benchmark_return` is BTC's own
+    # realized_return (a straight two-point buy-and-hold, not a
+    # triple-barrier one) over this SAME decision's exact
+    # [decision_timestamp, evaluated_at] window; `effective_alpha` =
+    # realized_return - benchmark_return. Both null until
+    # scripts/apply_benchmark_alpha.py backfills a resolved decision.
+    benchmark_return: float | None = None
+    effective_alpha: float | None = None
 
     def to_row(self) -> dict:
         return {
@@ -50,6 +59,8 @@ class DecisionOutcome(BaseModel):
             "is_backfilled": self.is_backfilled,
             "realized_return_net_of_costs": self.realized_return_net_of_costs,
             "assumed_fill_method": self.assumed_fill_method,
+            "benchmark_return": self.benchmark_return,
+            "effective_alpha": self.effective_alpha,
         }
 
 

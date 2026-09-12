@@ -17,9 +17,9 @@ class CoinMarketCapClient:
 
     Endpoint URL/auth shape verified live (401 "API key missing" with the
     correct error code); response shape (quote.USD.{price,volume_24h,
-    percent_change_24h/7d/30d/90d,market_cap}) is per CoinMarketCap's
-    documented API and has not been live-verified end-to-end against a real
-    key as of this writing — verify once a key is added.
+    percent_change_24h/7d/30d/90d,market_cap}) confirmed live end-to-end
+    against a real key (2026-09-12) — see `fetch_quotes`'s alphanumeric
+    filter for the one real gotcha found doing so.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -41,8 +41,22 @@ class CoinMarketCapClient:
         if not self.is_configured or not symbols:
             return {}
 
+        # Live-verified once a real key was added: CMC's `symbol` param
+        # rejects the ENTIRE comma-separated batch (400 "'symbol' should
+        # only include comma-separated alphanumeric cryptocurrency
+        # symbols") if even one symbol isn't purely alphanumeric -- a real
+        # tracked symbol like FIGR_HELOC (an underscore) would otherwise
+        # silently zero out CMC data for every OTHER symbol in the same
+        # run too, not just itself.
+        valid_symbols = [s for s in symbols if s.isalnum()]
+        skipped = sorted(set(symbols) - set(valid_symbols))
+        if skipped:
+            logger.warning("CMC: skipping symbol(s) this endpoint can't accept (non-alphanumeric): %s", skipped)
+        if not valid_symbols:
+            return {}
+
         headers = {"X-CMC_PRO_API_KEY": self._api_key, "Accept": "application/json"}
-        params = {"symbol": ",".join(symbols), "convert": "USD"}
+        params = {"symbol": ",".join(valid_symbols), "convert": "USD"}
 
         with httpx.Client(timeout=15.0) as client:
             response = client.get(

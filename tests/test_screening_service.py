@@ -3,17 +3,22 @@ from datetime import UTC, datetime
 from app.config.settings import Settings
 from app.database.models import Asset
 from app.market_data.screening_service import ScreeningService
+from app.portfolio.schemas import HoldingsLedgerEntry
 
 # --- Fakes -------------------------------------------------------------------
 
 
 class FakeAssetRepository:
-    def __init__(self, existing_by_coingecko_id=None):
+    def __init__(self, existing_by_coingecko_id=None, existing_by_id=None):
         self._existing = existing_by_coingecko_id or {}
+        self._existing_by_id = existing_by_id or {}
         self.created = []
 
     def get_by_coingecko_id(self, coingecko_id):
         return self._existing.get(coingecko_id)
+
+    def get_by_id(self, asset_id):
+        return self._existing_by_id.get(asset_id)
 
     def create_asset(self, symbol, name, coingecko_id, coinmarketcap_id=None, active=True, in_asset=False):
         asset = Asset(
@@ -23,6 +28,14 @@ class FakeAssetRepository:
         )
         self.created.append(asset)
         return asset
+
+
+class FakeHoldingsLedgerRepository:
+    def __init__(self, history=None):
+        self._history = history or []
+
+    def get_all_history(self):
+        return self._history
 
 
 class FakeAssetStatusRepository:
@@ -113,7 +126,7 @@ def _entry(symbol, coingecko_id=None, market_cap=1_000_000, volume=100_000, mome
 def _make_service(
     entries, cmc=None, binance=None, coinbase=None,
     asset_repo=None, asset_status_repo=None, screened_repo=None, regime_repo=None, signal_repo=None,
-    top_candidates_size=2,
+    holdings_ledger_repo=None, top_candidates_size=2,
 ):
     settings = Settings(_env_file=None, screening_universe_size=10, top_candidates_size=top_candidates_size)
     return settings, ScreeningService(
@@ -127,6 +140,7 @@ def _make_service(
         coinmarketcap_client=cmc or FakeCoinMarketCapClient(configured=False),
         coinbase_client=coinbase or FakeVenueClient(set()),
         binance_client=binance or FakeVenueClient(set()),
+        holdings_ledger_repo=holdings_ledger_repo or FakeHoldingsLedgerRepository(),
     )
 
 
@@ -149,6 +163,58 @@ def test_ranks_by_composite_score_and_tags_top_candidates():
     result = service.run("RUN-1")
     assert set(result.top_candidates) == {"BTC", "GOOD"} or "GOOD" in result.top_candidates
     assert len(result.top_candidates) == 2
+
+
+def test_currently_held_asset_outside_top_n_still_gets_judge_coverage():
+    # BTC ranks 3rd of 3 by composite score -- would normally miss a
+    # top_candidates_size=2 cutoff entirely, the exact real-world gap
+    # (BTC held but un-judged for a week) that prompted this fix.
+    entries = [
+        _entry("BTC", momentum_30d=0.10),
+        _entry("GOOD", momentum_30d=0.80),
+        _entry("BEST", momentum_30d=0.90),
+    ]
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "btc-asset-id": Asset(
+            id="btc-asset-id", symbol="BTC", name="Bitcoin", coingecko_id="btc",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="btc-asset-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+    ])
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=2,
+    )
+
+    result = service.run("RUN-1")
+
+    assert set(result.top_candidates) == {"BTC", "GOOD", "BEST"}
+
+
+def test_held_asset_missing_from_universe_entirely_logs_warning(caplog):
+    # A held asset that isn't even in today's screened universe (e.g. fell
+    # out of the top ~45 by market cap) can't be force-tagged -- this must
+    # be a disclosed warning, never a silent drop.
+    entries = [_entry("GOOD", momentum_30d=0.80)]
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "ghost-id": Asset(
+            id="ghost-id", symbol="GHOST", name="Ghost", coingecko_id="ghost",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="ghost-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+    ])
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
+    )
+
+    with caplog.at_level("WARNING"):
+        result = service.run("RUN-1")
+
+    assert "GHOST" not in result.top_candidates
+    assert any("GHOST" in record.message for record in caplog.records)
 
 
 def test_promotes_genuinely_new_candidate_as_asset_with_candidate_status():
@@ -289,6 +355,7 @@ def test_coingecko_failure_does_not_crash_the_run():
         coinmarketcap_client=FakeCoinMarketCapClient(configured=False),
         coinbase_client=FakeVenueClient(set()),
         binance_client=FakeVenueClient(set()),
+        holdings_ledger_repo=FakeHoldingsLedgerRepository(),
     )
 
     result = service.run("RUN-1")

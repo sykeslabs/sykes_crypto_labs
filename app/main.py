@@ -224,6 +224,7 @@ def main() -> int:
             coinmarketcap_client=CoinMarketCapClient(settings),
             coinbase_client=CoinbaseClient(settings),
             binance_client=BinanceClient(settings),
+            holdings_ledger_repo=HoldingsLedgerRepository(client),
         )
         screening_result = screening_service.run(run_id)
         logger.info("Screening finished: %s", screening_result.summary)

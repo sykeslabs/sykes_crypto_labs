@@ -8,8 +8,13 @@ follows from its own cited key_evidence/contradictory_evidence. Gated through
 CostGuard like any other LLM-calling stage; persists to
 `judge_reasoning_audits` (registered in COST_TRACKED_TABLES).
 
+Only ever samples resolved BACKFILLED decisions (never live ones -- a
+fixed, non-growing pool), and excludes decisions already audited in a
+previous run -- safe to re-run repeatedly to expand coverage over time,
+never re-auditing (and re-billing for) the same decision twice.
+
 Usage:
-    python scripts/run_reasoning_audit.py --sample-size 8 [--dry-run]
+    python -m scripts.run_reasoning_audit --sample-size 8 [--dry-run]
 """
 
 import argparse
@@ -55,8 +60,21 @@ def fetch_candidates(client) -> list[AuditCandidate]:
     )
     outcome_by_decision = {o["decision_id"]: o for o in outcomes}
 
+    # Phase 5b addendum: exclude decisions already audited in a previous
+    # run. This candidate pool (resolved backfilled decisions) is fixed --
+    # it doesn't grow the way live decisions do -- and select_audit_sample's
+    # own priority ranking is deterministic, so without this a repeated run
+    # would just re-audit the same top-priority decisions over and over at
+    # real LLM cost, with zero new coverage.
+    already_audited = {
+        row["decision_id"]
+        for row in client.table("judge_reasoning_audits").select("decision_id").in_("decision_id", decision_ids).execute().data
+    }
+
     candidates = []
     for d in decisions:
+        if d["id"] in already_audited:
+            continue
         outcome = outcome_by_decision.get(d["id"])
         if outcome is None:
             continue  # unresolved — nothing to weight "contradicted outcome" against yet
@@ -88,7 +106,7 @@ def main() -> int:
     client = get_supabase_client()
 
     candidates = fetch_candidates(client)
-    print(f"Resolved backfilled decisions available to sample: {len(candidates)}")
+    print(f"Resolved backfilled decisions available to sample (excluding already-audited): {len(candidates)}")
     sample = select_audit_sample(candidates, args.sample_size)
     print(f"Selected {len(sample)} for audit:")
     for c in sample:

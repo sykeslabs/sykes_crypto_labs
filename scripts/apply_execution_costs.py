@@ -15,7 +15,7 @@ DEPTH_WALKED method, which is built, tested, and live-verified
 decision being made in real time, not retroactively.
 
 Usage:
-    python scripts/apply_execution_costs.py
+    python -m scripts.apply_execution_costs
 """
 
 import sys

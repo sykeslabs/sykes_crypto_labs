@@ -13,7 +13,19 @@ class Settings(BaseSettings):
     has a safe default so the app can run with a minimal .env.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    # `env_ignore_empty=True`: a .env line present but set to an empty
+    # string (e.g. "SEC_EDGAR_USER_AGENT=", left blank rather than deleted)
+    # is treated the same as the var being absent entirely -- falls back to
+    # the field's own Python default instead of literally using "". Real
+    # bug found and fixed here: SEC_EDGAR_USER_AGENT="" was being sent
+    # as-is to SEC EDGAR, which rejects an empty/generic User-Agent with a
+    # 403 per its fair-access policy, silently overriding this class's own
+    # safe non-empty default below. The same blank-but-present pattern
+    # exists in this project's own .env for several other optional
+    # settings (JUDGE_MODEL, ADVERSARIAL_MODEL, REASONING_AUDIT_MODEL,
+    # OPENROUTER_ASSESSMENT_MODELS, and a few API keys) -- this fixes the
+    # whole class of them, not just this one field.
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore", env_ignore_empty=True)
 
     # Supabase (required)
     supabase_url: str | None = None
