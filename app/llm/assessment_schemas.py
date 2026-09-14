@@ -114,6 +114,11 @@ class ModelMarketAssessmentRecord(BaseModel):
     risk_level: RiskLevel
     market_regime: str
     model_agreement: float
+    # Additive continuous complement to model_agreement's coarse discrete
+    # majority-vote fraction -- see compute_return_dispersion's own
+    # docstring. None when only one model's response was usable (nothing to
+    # compute a spread from), never fabricated as 0.
+    expected_return_dispersion_30d: float | None = None
     overall_assessment: Direction
     thesis: str
     key_drivers: list[dict]
@@ -145,6 +150,7 @@ class ModelMarketAssessmentRecord(BaseModel):
             "risk_level": self.risk_level,
             "market_regime": self.market_regime,
             "model_agreement": self.model_agreement,
+            "expected_return_dispersion_30d": self.expected_return_dispersion_30d,
             "overall_assessment": self.overall_assessment,
             "thesis": self.thesis,
             "key_drivers": self.key_drivers,

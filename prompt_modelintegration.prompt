@@ -1,0 +1,604 @@
+You are working on my existing AI crypto portfolio project.
+
+Your task is to **critically integrate three open-source time-series forecasting models into the existing system**:
+
+1. **Kronos**
+2. **Chronos-Bolt**
+3. **OmniFormer**
+
+The goal is NOT simply to add three more prediction numbers to the UI. The goal is to build a robust, reproducible forecasting layer that can be evaluated against the existing models and baselines and eventually contribute to portfolio decisions.
+
+## 1. First inspect the existing project
+
+Before changing anything:
+
+* Understand the complete existing architecture.
+* Identify:
+
+  * data ingestion
+  * historical OHLCV storage
+  * feature engineering
+  * existing prediction models
+  * portfolio logic
+  * buy/sell signals
+  * backtesting
+  * database schema
+  * scheduled jobs
+  * API endpoints
+  * frontend/UI
+  * existing TODO section
+* Determine which parts can be reused.
+* Do NOT unnecessarily rewrite existing functionality.
+* Follow the existing coding conventions and architecture.
+* Check whether the project already has a model abstraction/interface. If so, use it.
+
+Document your findings briefly before implementation.
+
+---
+
+# 2. Implement the three forecasting models
+
+Implement each model as an independent forecasting provider.
+
+### Model A — Kronos
+
+Integrate the open-source Kronos financial time-series model.
+
+Use the appropriate publicly available model/checkpoint for the available hardware.
+
+Kronos should consume market data such as:
+
+* timestamp
+* open
+* high
+* low
+* close
+* volume
+
+Support the relevant prediction horizons already used by the project.
+
+Do not hard-code a single token.
+
+The model must work for the project's supported assets.
+
+---
+
+### Model B — Chronos-Bolt
+
+Integrate Chronos-Bolt as a separate forecasting provider.
+
+Again:
+
+* reuse the existing historical data pipeline where possible
+* do not duplicate data acquisition
+* support multiple crypto assets
+* support the project's relevant forecasting horizons
+* make inference reproducible
+* handle missing/insufficient historical data gracefully
+
+If Chronos-Bolt expects a different input representation than Kronos, create an adapter rather than changing the canonical market-data representation.
+
+---
+
+### Model C — OmniFormer
+
+Integrate OmniFormer as a separate forecasting provider.
+
+Pay particular attention to its **multi-asset forecasting capability**.
+
+Where technically appropriate, allow the model to consider multiple crypto assets rather than treating every token completely independently.
+
+Reuse the existing asset universe from the project.
+
+Do not assume that OmniFormer is automatically superior simply because it is crypto-focused.
+
+---
+
+# 3. Create a common forecasting interface
+
+All three models should implement a common interface, for example:
+
+```text
+ForecastingModel
+    ├── KronosModel
+    ├── ChronosBoltModel
+    └── OmniFormerModel
+```
+
+The exact implementation should follow the existing project architecture.
+
+The interface should support something conceptually similar to:
+
+```text
+predict(
+    asset,
+    historical_data,
+    horizon
+)
+```
+
+and return structured predictions.
+
+Prefer returning more useful information than a single future price.
+
+For example:
+
+```json
+{
+  "asset": "BTC",
+  "model": "kronos",
+  "horizon": "24h",
+  "predicted_price": 112345.12,
+  "predicted_return": 0.034,
+  "direction_probability": 0.63,
+  "generated_at": "...",
+  "model_version": "..."
+}
+```
+
+If the underlying model provides probabilistic/distributional information, preserve it instead of reducing everything to a single number.
+
+---
+
+# 4. Do NOT blindly predict absolute prices
+
+Where technically possible, derive useful decision variables such as:
+
+* expected return
+* direction
+* probability of positive return
+* forecast uncertainty
+* predicted volatility
+* prediction horizon
+
+The system should distinguish:
+
+```text
+predicted_price
+predicted_return
+probability_up
+uncertainty
+```
+
+Do not pretend that these values are statistically calibrated if the underlying model does not provide calibrated probabilities.
+
+Clearly document how each metric is derived.
+
+---
+
+# 5. Add proper model metadata
+
+Every prediction should record at least:
+
+* asset
+* model
+* model version/checkpoint
+* timestamp
+* input timeframe
+* forecast horizon
+* prediction
+* relevant uncertainty metrics
+* data timestamp / latest candle
+* inference timestamp
+
+This is important because I want to be able to reproduce and evaluate historical predictions.
+
+---
+
+# 6. Build a proper evaluation framework
+
+This is one of the most important parts.
+
+Do NOT evaluate the models only by looking at whether predicted prices "look reasonable".
+
+Implement **walk-forward / time-series evaluation**.
+
+Avoid random train/test splits that leak future information.
+
+Evaluate:
+
+### Directional performance
+
+* directional accuracy
+* precision
+* recall where meaningful
+* F1 where meaningful
+
+### Forecast performance
+
+* MAE
+* RMSE
+* MAPE where appropriate
+* return prediction error
+
+### Probabilistic performance
+
+Where probabilities are available:
+
+* Brier score
+* calibration
+* reliability of predicted probabilities
+
+### Trading performance
+
+Evaluate the actual portfolio impact:
+
+* cumulative return
+* CAGR where meaningful
+* Sharpe ratio
+* Sortino ratio
+* maximum drawdown
+* win rate
+* turnover
+* transaction costs
+* slippage
+* number of trades
+
+---
+
+# 7. Compare against strong baselines
+
+This is mandatory.
+
+A sophisticated model is only useful if it beats simple alternatives.
+
+Include at least:
+
+1. Buy & Hold
+2. Random Walk / last price
+3. Momentum baseline
+4. Existing project prediction model(s)
+5. Kronos
+6. Chronos-Bolt
+7. OmniFormer
+
+If the project already has additional meaningful baselines, include them as well.
+
+The evaluation must clearly show whether each AI model actually adds predictive/trading value.
+
+---
+
+# 8. Prevent data leakage
+
+Be extremely strict here.
+
+Check for:
+
+* future candles accidentally entering features
+* normalization using future data
+* future information in labels
+* look-ahead bias
+* overlapping train/test periods
+* backtest decisions using information unavailable at decision time
+* survivorship bias
+* asset-universe leakage
+* improperly cached predictions
+
+Document any assumptions.
+
+If an existing part of the project contains leakage, fix it rather than building the new models on top of it.
+
+---
+
+# 9. Create a model comparison layer
+
+Create a unified result structure allowing the system to compare:
+
+```text
+Kronos
+Chronos-Bolt
+OmniFormer
+Existing model(s)
+Baselines
+```
+
+For each asset and horizon, make it possible to see something like:
+
+```text
+BTC / 24h
+
+                    Expected Return   P(Up)   Direction
+Kronos                  +3.2%          64%      UP
+Chronos-Bolt            +1.8%          57%      UP
+OmniFormer              +4.1%          69%      UP
+Existing Model          +2.7%          61%      UP
+Random Walk              0.0%           50%      -
+```
+
+The exact representation should follow the existing application architecture.
+
+---
+
+# 10. Implement an ensemble — but only after evaluation
+
+Do NOT immediately average the three models.
+
+First measure their historical performance.
+
+Then implement an optional ensemble.
+
+Potential approaches:
+
+* simple average
+* weighted average
+* performance-weighted ensemble
+* regime-dependent weighting
+
+Start with the simplest statistically defensible approach.
+
+Weights must be derived from **historical out-of-sample performance**, never from future results.
+
+Do not optimize the ensemble excessively against the backtest.
+
+Avoid overfitting.
+
+---
+
+# 11. Integrate with the existing portfolio logic
+
+Do not automatically allow the new models to execute trades.
+
+First expose their forecasts to the existing decision layer.
+
+The architecture should conceptually become:
+
+```text
+Market Data
+     │
+     ▼
+Feature / Data Layer
+     │
+     ├── Existing Models
+     ├── Kronos
+     ├── Chronos-Bolt
+     └── OmniFormer
+              │
+              ▼
+       Forecast Layer
+              │
+              ▼
+       Model Comparison
+              │
+              ▼
+          Ensemble
+              │
+              ▼
+       Portfolio Decision
+              │
+              ▼
+        BUY / HOLD / SELL
+```
+
+Keep prediction and trading decisions separate.
+
+---
+
+# 12. Hardware and performance
+
+First determine what hardware/environment the project currently uses.
+
+Do not assume a GPU is available.
+
+Implement:
+
+* CPU fallback where practical
+* GPU acceleration when available
+* sensible batch sizes
+* model caching
+* avoiding unnecessary model reloads
+* configurable inference frequency
+
+Do not download/load large models repeatedly for every token.
+
+If a model is too computationally expensive for the current environment, implement a clean configuration option rather than crippling the whole application.
+
+---
+
+# 13. Configuration
+
+All model configuration should be externalized.
+
+For example:
+
+```text
+ENABLE_KRONOS=true
+ENABLE_CHRONOS=true
+ENABLE_OMNIFORMER=true
+
+KRONOS_MODEL=...
+CHRONOS_MODEL=...
+OMNIFORMER_MODEL=...
+
+FORECAST_HORIZONS=1h,4h,24h
+```
+
+Use the project's existing configuration mechanism rather than introducing a second configuration system.
+
+---
+
+# 14. Error handling
+
+A failure of one forecasting model must NOT break the entire portfolio pipeline.
+
+For example:
+
+```text
+Kronos       SUCCESS
+Chronos      SUCCESS
+OmniFormer   FAILED
+```
+
+should result in:
+
+```text
+Kronos       available
+Chronos      available
+OmniFormer   unavailable
+```
+
+rather than a complete pipeline failure.
+
+Log meaningful errors and expose model status.
+
+---
+
+# 15. UI / UX
+
+Only make UI changes that are useful.
+
+Add a clear model comparison section if the existing UI supports this.
+
+Show:
+
+* current forecast
+* expected return
+* direction
+* model agreement/disagreement
+* confidence/uncertainty where valid
+* historical model performance
+
+Do NOT create misleading "AI confidence" percentages if they are not statistically justified.
+
+Clearly distinguish:
+
+```text
+MODEL PREDICTION
+```
+
+from:
+
+```text
+TRADING RECOMMENDATION
+```
+
+---
+
+# 16. Documentation
+
+Update the project's documentation with:
+
+* what Kronos is
+* what Chronos-Bolt is
+* what OmniFormer is
+* how each model receives data
+* model limitations
+* hardware requirements
+* how to run inference
+* how to run evaluation
+* how to reproduce backtests
+* known limitations
+* potential sources of bias/leakage
+
+Do not make unsupported claims that these models can reliably predict crypto prices.
+
+---
+
+# 17. Tests
+
+Add appropriate tests.
+
+At minimum:
+
+* model initialization
+* input validation
+* missing data
+* insufficient history
+* prediction output schema
+* multiple assets
+* multiple horizons
+* model failure handling
+* no future-data leakage
+* evaluation calculations
+* ensemble calculations
+
+If downloading model weights makes unit tests impractical, mock the model inference layer.
+
+---
+
+# 18. Critical assessment
+
+While implementing, actively challenge the approach.
+
+If one of the three models is:
+
+* incompatible with the current architecture
+* too resource-intensive
+* poorly suited to the available data
+* obsolete
+* difficult to reproduce
+* not genuinely useful compared with a baseline
+
+do NOT blindly implement it just because it was requested.
+
+Document the issue and implement the best practical alternative or a clearly isolated integration.
+
+The goal is a **better forecasting system**, not a higher model count.
+
+---
+
+# 19. TODO section
+
+After implementation, update the existing `TODO` section.
+
+Add a new bullet point containing the remaining improvements identified during this implementation.
+
+The TODO item should specifically include things that are still worth improving, such as:
+
+* model fine-tuning
+* better calibration
+* additional features
+* regime detection
+* improved ensemble weighting
+* additional assets/timeframes
+* better backtesting
+* transaction-cost modelling
+* uncertainty estimation
+* GPU optimization
+
+Only add TODOs that are genuinely relevant after inspecting the implementation.
+
+Do not delete existing TODO items.
+
+If there are several important follow-up tasks, add them as sub-items under one clearly named forecasting/ML TODO item where consistent with the existing TODO structure.
+
+---
+
+# 20. Final report
+
+When finished, provide a concise implementation report containing:
+
+### Implemented
+
+* Kronos
+* Chronos-Bolt
+* OmniFormer
+* common forecasting interface
+* evaluation framework
+* baselines
+* ensemble, if justified
+* UI changes
+* tests
+
+### Results
+
+Show the first meaningful comparison between the models.
+
+Clearly identify:
+
+* best directional model
+* best forecast model
+* best trading model
+* whether the new models outperform the existing system
+* whether the ensemble improves results
+
+### Problems / limitations
+
+List anything that could not be implemented fully or that requires caution.
+
+### TODO
+
+Summarize the new TODO items added to the project's TODO section.
+
+Most importantly:
+
+**Do not optimize for impressive-looking predictions. Optimize for statistically valid, reproducible, out-of-sample predictive and trading performance.**

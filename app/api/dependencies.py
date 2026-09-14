@@ -25,8 +25,10 @@ from app.database.repository import (
     ModelMarketAssessmentRepository,
     NewsRepository,
     PortfolioPositionRepository,
+    PromptTemplateRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
+    TurnoverCapEventRepository,
 )
 from app.llm.cost import CostLedgerRepository
 from app.market_data.binance import BinanceClient
@@ -78,6 +80,10 @@ def get_decision_outcome_repo() -> DecisionOutcomeRepository:
     return DecisionOutcomeRepository(get_client())
 
 
+def get_prompt_template_repo() -> PromptTemplateRepository:
+    return PromptTemplateRepository(get_client())
+
+
 def get_calibration_run_repo() -> CalibrationRunRepository:
     return CalibrationRunRepository(get_client())
 
@@ -96,6 +102,10 @@ def get_holdings_ledger_repo() -> HoldingsLedgerRepository:
 
 def get_market_snapshot_repo() -> MarketSnapshotRepository:
     return MarketSnapshotRepository(get_client())
+
+
+def get_turnover_cap_event_repo() -> TurnoverCapEventRepository:
+    return TurnoverCapEventRepository(get_client())
 
 
 def get_signal_source_repo() -> SignalSourceRepository:

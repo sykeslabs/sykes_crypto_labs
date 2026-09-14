@@ -102,7 +102,7 @@ class JudgeService:
         self._provider = provider
         self._adversarial_repo = adversarial_repo
 
-    def run(self, run_id: str) -> JudgeResult:
+    def run(self, run_id: str, current_allocations: dict[str, float] | None = None) -> JudgeResult:
         result = JudgeResult()
 
         candidates = self._screened_universe_repo.get_latest_top_candidates()
@@ -119,6 +119,7 @@ class JudgeService:
             self._llm_analysis_repo, self._news_repo, self._asset_status_repo,
             self._portfolio_position_repo, self._signal_source_repo,
             adversarial_repo=self._adversarial_repo,
+            current_allocations=current_allocations,
         )
         if not context.assets:
             logger.warning(

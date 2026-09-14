@@ -97,6 +97,7 @@ _INVERTED_FACTORS = {"volatility_30d", "drawdown_30d"}
 
 def compute_composite_factor_scores(
     factor_rows: list[dict[str, float | None]],
+    weights: dict[str, float] | None = None,
 ) -> list[float | None]:
     """Given one dict of raw factor values per screened asset (same keys as
     COMPOSITE_FACTOR_WEIGHTS), returns each asset's composite score.
@@ -106,9 +107,17 @@ def compute_composite_factor_scores(
     value is never treated as neutral/zero (per the "never silently default
     missing data" non-negotiable), it just doesn't contribute, and the other
     factors' weights proportionally cover the gap.
+
+    `weights` defaults to the real live `COMPOSITE_FACTOR_WEIGHTS` (every
+    existing caller's unchanged behavior) -- optionally overridable so
+    `scripts/run_composite_weights_validation.py` can recompute the same
+    real screened peer group's scores under an alternative weighting
+    scheme, without duplicating this ranking logic.
     """
+    if weights is None:
+        weights = COMPOSITE_FACTOR_WEIGHTS
     ranked: dict[str, list[float | None]] = {}
-    for factor_name in COMPOSITE_FACTOR_WEIGHTS:
+    for factor_name in weights:
         raw_values = [row.get(factor_name) for row in factor_rows]
         if factor_name in _INVERTED_FACTORS:
             raw_values = [(-v if v is not None else None) for v in raw_values]
@@ -118,7 +127,7 @@ def compute_composite_factor_scores(
     for i in range(len(factor_rows)):
         weighted_sum = 0.0
         total_weight = 0.0
-        for factor_name, weight in COMPOSITE_FACTOR_WEIGHTS.items():
+        for factor_name, weight in weights.items():
             rank = ranked[factor_name][i]
             if rank is None:
                 continue

@@ -8,6 +8,7 @@ from app.benchmarks.replay import (
     EVIDENCE_UNAVAILABLE_FOR_REPLAY,
     HistoricalReplayService,
     ReplayResult,
+    _assign_model_agreement,
     _daily_cutoffs,
     estimate_replay_cost,
 )
@@ -123,6 +124,44 @@ def test_daily_cutoffs_inclusive_range():
     assert cutoffs == [start, start + timedelta(days=1), start + timedelta(days=2)]
 
 
+def _fake_assessment_record(asset_id, overall_assessment, expected_return_30d):
+    from app.llm.assessment_schemas import ModelMarketAssessmentRecord
+
+    return ModelMarketAssessmentRecord(
+        run_id="BACKFILL-2026-01-01", asset_id=asset_id, provider="claude", model="m1",
+        prompt_template_id=None, assessment_timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        data_cutoff_timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        short_term_direction="NEUTRAL", medium_term_direction="NEUTRAL", long_term_direction="NEUTRAL",
+        short_term_confidence=0.5, medium_term_confidence=0.5, long_term_confidence=0.5,
+        expected_return_7d=0.0, expected_return_30d=expected_return_30d, expected_return_90d=0.0,
+        risk_score=0.5, risk_level="MEDIUM", market_regime="RISK_ON",
+        model_agreement=1.0, overall_assessment=overall_assessment, thesis="t",
+        key_drivers=[], key_risks=[], source_assessment=[], invalidation_conditions=[],
+        raw_response=None, estimated_cost=Decimal("0.01"),
+    )
+
+
+def test_assign_model_agreement_also_assigns_return_dispersion():
+    import statistics
+
+    records = [
+        _fake_assessment_record("a1", "BULLISH", 0.05),
+        _fake_assessment_record("a1", "BULLISH", -0.15),
+        _fake_assessment_record("a2", "BEARISH", 0.02),
+    ]
+    _assign_model_agreement(records)
+
+    a1_records = [r for r in records if r.asset_id == "a1"]
+    a2_records = [r for r in records if r.asset_id == "a2"]
+
+    assert all(r.model_agreement == pytest.approx(1.0) for r in a1_records)
+    expected_dispersion_a1 = statistics.pstdev([0.05, -0.15])
+    assert all(r.expected_return_dispersion_30d == pytest.approx(expected_dispersion_a1) for r in a1_records)
+
+    # A single model for a2 -- nothing to compute a spread from.
+    assert a2_records[0].expected_return_dispersion_30d is None
+
+
 # --- HistoricalReplayService orchestration --------------------------------------
 
 class FakeAssetRepoForReplay:
@@ -181,6 +220,23 @@ class FakeDecisionOutcomeRepoForReplay:
         self.updated.append((decision_id, realized_return, outcome_label, evaluated_at))
 
 
+class FakeMarketRegimeRepoForReplay:
+    def __init__(self):
+        self.inserted = []
+
+    def insert(self, snapshot):
+        self.inserted.append(snapshot)
+        return f"regime-{len(self.inserted)}"
+
+
+class FakeScreenedUniverseRepoForReplay:
+    def __init__(self):
+        self.inserted_batches = []
+
+    def insert_many(self, rows):
+        self.inserted_batches.append(rows)
+
+
 class FakeCostGuardForReplay:
     def check(self):
         return True, None
@@ -224,6 +280,45 @@ class FakeJudgeProviderForReplay:
         )
 
 
+class FakeAdversarialProviderForReplay:
+    """Same duck-typed `.call(system_prompt, user_prompt, response_model)`
+    interface as the real `OpenRouterStructuredProvider` -- returns a valid
+    bull/bear/scenario batch for every symbol regardless of prompt content,
+    matching every other fake provider in this file."""
+
+    def __init__(self, symbols):
+        self._symbols = symbols
+
+    def call(self, system_prompt, user_prompt, response_model):
+        from app.llm.adversarial_schemas import BearBatch, BearCase, BullBatch, BullCase, ScenarioBatch, ScenarioSet
+        from app.llm.structured_provider import StructuredCallResult
+
+        if response_model is BullBatch:
+            batch = BullBatch(cases=[BullCase(asset=s, thesis="t", catalysts=[], evidence=[]) for s in self._symbols])
+            return StructuredCallResult("adversarial", "fake-model", batch, None, Decimal("0.05"), {}, None)
+        if response_model is BearBatch:
+            batch = BearBatch(cases=[BearCase(asset=s, attack_points=[], evidence=[], attacks_bull_point=[]) for s in self._symbols])
+            return StructuredCallResult("adversarial", "fake-model", batch, None, Decimal("0.05"), {}, None)
+        batch = ScenarioBatch(scenarios=[
+            ScenarioSet(
+                asset=s,
+                bull={"probability": 0.3, "expected_return": 0.5, "timeframe": "90d"},
+                base={"probability": 0.4, "expected_return": 0.1, "timeframe": "90d"},
+                bear={"probability": 0.3, "expected_return": -0.2, "timeframe": "90d"},
+            )
+            for s in self._symbols
+        ])
+        return StructuredCallResult("adversarial", "fake-model", batch, None, Decimal("0.08"), {}, None)
+
+
+class FakeAdversarialRepoForReplay:
+    def __init__(self):
+        self.inserted = []
+
+    def insert(self, record):
+        self.inserted.append(record)
+
+
 def _valid_assessment_payload(symbol):
     return dict(
         asset=symbol, assessment_timestamp="2026-01-01T00:00:00Z",
@@ -256,7 +351,10 @@ def _synthetic_series(symbol, asset_id, n_days, end_date, drift=1.005):
     return HistoricalSeries(symbol=symbol, asset_id=asset_id, source="BINANCE", dates=dates, closes=closes, volumes=volumes)
 
 
-def _make_service(assets, series_by_symbol, judge_repo=None, outcome_repo=None, prompt_repo=None):
+def _make_service(
+    assets, series_by_symbol, judge_repo=None, outcome_repo=None, prompt_repo=None, regime_repo=None,
+    screened_universe_repo=None, adversarial_provider=None, adversarial_repo=None,
+):
     settings = Settings(_env_file=None)
     symbols = [a.symbol for a in assets]
 
@@ -276,11 +374,15 @@ def _make_service(assets, series_by_symbol, judge_repo=None, outcome_repo=None, 
         prompt_template_repo=prompt_repo or FakePromptTemplateRepoForReplay(),
         judge_decision_repo=judge_repo or FakeJudgeDecisionRepoForReplay(),
         decision_outcome_repo=outcome_repo or FakeDecisionOutcomeRepoForReplay(),
+        regime_repo=regime_repo or FakeMarketRegimeRepoForReplay(),
+        screened_universe_repo=screened_universe_repo or FakeScreenedUniverseRepoForReplay(),
         cost_guard=FakeCostGuardForReplay(),
         assessment_providers=[FakeAssessmentProviderForReplay(symbols)],
         judge_provider=FakeJudgeProviderForReplay(symbols),
         historical_series_fetcher=series_fetcher,
         funding_rate_fetcher=funding_fetcher,
+        adversarial_provider=adversarial_provider,
+        adversarial_repo=adversarial_repo,
     )
 
 
@@ -324,6 +426,96 @@ def test_replay_produces_backfilled_decisions_and_outcomes():
     # backfilled row invisible to the daily/monthly cap check.
     real_now = datetime.now(UTC)
     assert all(abs((r.created_at - real_now).total_seconds()) < 60 for r in judge_repo.inserted)
+
+
+def test_replay_without_adversarial_opt_in_never_calls_adversarial_provider():
+    # Default (adversarial_provider/adversarial_repo both None, matching
+    # every real backfilled decision made before 2026-09-13) -- 3f must not
+    # run at all, and no cost from it should appear.
+    assets = _assets()
+    end_date = datetime(2026, 3, 1, tzinfo=UTC)
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    service = _make_service(assets, series_by_symbol)
+    result = service.run(end_date - timedelta(days=10), end_date - timedelta(days=9))
+    assert len(result.days) == 2
+    assert all(d.decisions_stored == 3 for d in result.days)
+    # Assessment (0.14) + Judge (0.15) per day only -- no adversarial cost.
+    assert all(d.cost == pytest.approx(Decimal("0.29")) for d in result.days)
+
+
+def test_replay_with_adversarial_opt_in_persists_real_3f_research_per_day():
+    assets = _assets()
+    end_date = datetime(2026, 3, 1, tzinfo=UTC)
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    symbols = [a.symbol for a in assets]
+    adversarial_repo = FakeAdversarialRepoForReplay()
+
+    service = _make_service(
+        assets, series_by_symbol,
+        adversarial_provider=FakeAdversarialProviderForReplay(symbols),
+        adversarial_repo=adversarial_repo,
+    )
+    start = end_date - timedelta(days=10)
+    end = end_date - timedelta(days=9)  # a real 2-day window
+    result = service.run(start, end)
+
+    assert len(result.days) == 2
+    assert all(d.decisions_stored == 3 for d in result.days)  # 3f didn't block the Judge stage
+
+    # One real AdversarialResearchRecord per (day, symbol) -- 2 days x 3 symbols.
+    assert len(adversarial_repo.inserted) == 6
+    for record in adversarial_repo.inserted:
+        assert record.run_id.startswith("BACKFILL-")
+        assert record.bull_case["asset"] in symbols
+        assert record.bear_case["asset"] == record.bull_case["asset"]
+        assert record.scenarios["asset"] == record.bull_case["asset"]
+        assert record.estimated_cost > 0
+
+    # Real added cost (bull 0.05 + bear 0.05 + scenario 0.08 = 0.18/day) on
+    # top of the existing assessment (0.14) + Judge (0.15) per day.
+    assert all(d.cost == pytest.approx(Decimal("0.47")) for d in result.days)
+
+
+def test_replay_persists_regime_snapshot_and_screened_universe_now_joinable():
+    """Regression test for a real persistence gap (README's Phase 3g/3h
+    findings): _build_regime/_build_day_universe already compute a real
+    regime classification and real composite factor scores in-memory for
+    prompt-building, but neither used to be written to a joinable row --
+    leaving regime_at_decision/composite_factor_score permanently
+    unavailable for every backfilled decision. Now both must actually be
+    persisted, and every stored decision/outcome must reference the real
+    regime id that was inserted (not None)."""
+    assets = _assets()
+    end_date = datetime(2026, 3, 1, tzinfo=UTC)
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    judge_repo = FakeJudgeDecisionRepoForReplay()
+    outcome_repo = FakeDecisionOutcomeRepoForReplay()
+    regime_repo = FakeMarketRegimeRepoForReplay()
+    screened_universe_repo = FakeScreenedUniverseRepoForReplay()
+
+    service = _make_service(
+        assets, series_by_symbol, judge_repo=judge_repo, outcome_repo=outcome_repo,
+        regime_repo=regime_repo, screened_universe_repo=screened_universe_repo,
+    )
+    start = end_date - timedelta(days=10)
+    end = end_date - timedelta(days=8)  # a 3-day window
+
+    service.run(start, end)
+
+    # One real regime snapshot actually inserted per replayed day.
+    assert len(regime_repo.inserted) == 3
+    # One real screened_universe batch (one row per tracked asset) per day.
+    assert len(screened_universe_repo.inserted_batches) == 3
+    assert all(row.composite_factor_score is not None for batch in screened_universe_repo.inserted_batches for row in batch)
+
+    # Every stored decision/outcome references a REAL regime id (the fake
+    # repo's own "regime-N" id), never None.
+    assert judge_repo.inserted
+    assert all(r.regime_id is not None for r in judge_repo.inserted)
+    assert all(o.regime_at_decision is not None for o in outcome_repo.inserted)
+    # And the specific id used matches one this run actually inserted.
+    inserted_regime_ids = {f"regime-{i}" for i in range(1, len(regime_repo.inserted) + 1)}
+    assert all(r.regime_id in inserted_regime_ids for r in judge_repo.inserted)
 
 
 class RealisticLedgerCostGuard:
@@ -382,6 +574,7 @@ def test_regression_incident_both_bugs_covered_together():
         llm_analysis_repo=FakeAsOfBackendForReplay(), asset_status_repo=FakeAsOfBackendForReplay(),
         signal_source_repo=FakeSignalSourceRepoForReplay(), prompt_template_repo=FakePromptTemplateRepoForReplay(),
         judge_decision_repo=judge_repo, decision_outcome_repo=FakeDecisionOutcomeRepoForReplay(),
+        regime_repo=FakeMarketRegimeRepoForReplay(), screened_universe_repo=FakeScreenedUniverseRepoForReplay(),
         cost_guard=realistic_guard,
         assessment_providers=[FakeAssessmentProviderForReplay(symbols)], judge_provider=FakeJudgeProviderForReplay(symbols),
         historical_series_fetcher=lambda asset: series_by_symbol.get(asset.symbol),
@@ -442,6 +635,7 @@ def test_replay_local_budget_tracking_stops_even_when_db_ledger_is_blind():
         llm_analysis_repo=FakeAsOfBackendForReplay(), asset_status_repo=FakeAsOfBackendForReplay(),
         signal_source_repo=FakeSignalSourceRepoForReplay(), prompt_template_repo=FakePromptTemplateRepoForReplay(),
         judge_decision_repo=FakeJudgeDecisionRepoForReplay(), decision_outcome_repo=FakeDecisionOutcomeRepoForReplay(),
+        regime_repo=FakeMarketRegimeRepoForReplay(), screened_universe_repo=FakeScreenedUniverseRepoForReplay(),
         cost_guard=BlindCostGuard(),
         assessment_providers=[FakeAssessmentProviderForReplay(symbols)], judge_provider=FakeJudgeProviderForReplay(symbols),
         historical_series_fetcher=lambda asset: series_by_symbol.get(asset.symbol),
@@ -479,6 +673,7 @@ def test_replay_stops_early_when_cost_cap_hit():
         llm_analysis_repo=FakeAsOfBackendForReplay(), asset_status_repo=FakeAsOfBackendForReplay(),
         signal_source_repo=FakeSignalSourceRepoForReplay(), prompt_template_repo=FakePromptTemplateRepoForReplay(),
         judge_decision_repo=FakeJudgeDecisionRepoForReplay(), decision_outcome_repo=FakeDecisionOutcomeRepoForReplay(),
+        regime_repo=FakeMarketRegimeRepoForReplay(), screened_universe_repo=FakeScreenedUniverseRepoForReplay(),
         cost_guard=OneShotCostGuard(),
         assessment_providers=[FakeAssessmentProviderForReplay(symbols)], judge_provider=FakeJudgeProviderForReplay(symbols),
         historical_series_fetcher=lambda asset: series_by_symbol.get(asset.symbol),
@@ -512,6 +707,7 @@ def test_replay_discloses_unavailable_sources_never_fabricates_them():
         llm_analysis_repo=FakeAsOfBackendForReplay(), asset_status_repo=FakeAsOfBackendForReplay(),
         signal_source_repo=FakeSignalSourceRepoForReplay(), prompt_template_repo=FakePromptTemplateRepoForReplay(),
         judge_decision_repo=FakeJudgeDecisionRepoForReplay(), decision_outcome_repo=FakeDecisionOutcomeRepoForReplay(),
+        regime_repo=FakeMarketRegimeRepoForReplay(), screened_universe_repo=FakeScreenedUniverseRepoForReplay(),
         cost_guard=FakeCostGuardForReplay(),
         assessment_providers=[FakeAssessmentProviderForReplay(symbols)], judge_provider=CapturingJudgeProvider(symbols),
         historical_series_fetcher=lambda asset: series_by_symbol.get(asset.symbol),

@@ -15,7 +15,7 @@ from app.database.repository import (
     PromptTemplateRepository,
     ScreenedUniverseRepository,
 )
-from app.llm.assessment_agreement import compute_model_agreement
+from app.llm.assessment_agreement import compute_model_agreement, compute_return_dispersion
 from app.llm.assessment_context import (
     SYSTEM_PROMPT_TEMPLATE,
     build_assessment_context,
@@ -132,11 +132,12 @@ class AssessmentService:
             provider_results[provider.name] = provider_result
 
         agreement_by_symbol = _compute_agreement_by_symbol(provider_results)
+        return_dispersion_by_symbol = _compute_return_dispersion_by_symbol(provider_results)
 
         for provider_name, provider_result in provider_results.items():
             stored = self._persist(
                 run_id, provider_result, symbol_to_asset, prompt_template_id,
-                context.as_of, agreement_by_symbol,
+                context.as_of, agreement_by_symbol, return_dispersion_by_symbol,
             )
             result.stored_by_provider[provider_name] = stored
             logger.info(
@@ -149,7 +150,7 @@ class AssessmentService:
 
     def _persist(
         self, run_id, provider_result, symbol_to_asset, prompt_template_id,
-        data_cutoff_timestamp, agreement_by_symbol,
+        data_cutoff_timestamp, agreement_by_symbol, return_dispersion_by_symbol,
     ) -> int:
         assessments = provider_result.batch.assessments
         if not assessments:
@@ -190,6 +191,7 @@ class AssessmentService:
                 risk_level=item.risk.level,
                 market_regime=item.market_regime,
                 model_agreement=agreement_by_symbol.get(item.asset, 1.0),
+                expected_return_dispersion_30d=return_dispersion_by_symbol.get(item.asset),
                 overall_assessment=item.overall_assessment,
                 thesis=item.thesis,
                 # This asset's own slice, not the whole batch response — one
@@ -217,4 +219,15 @@ def _compute_agreement_by_symbol(provider_results: dict) -> dict[str, float]:
     return {
         symbol: compute_model_agreement(directions)
         for symbol, directions in directions_by_symbol.items()
+    }
+
+
+def _compute_return_dispersion_by_symbol(provider_results: dict) -> dict[str, float | None]:
+    returns_by_symbol: dict[str, list[float]] = defaultdict(list)
+    for provider_result in provider_results.values():
+        for item in provider_result.batch.assessments:
+            returns_by_symbol[item.asset].append(item.expected_return.return_30d)
+    return {
+        symbol: compute_return_dispersion(returns)
+        for symbol, returns in returns_by_symbol.items()
     }

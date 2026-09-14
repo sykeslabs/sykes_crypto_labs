@@ -6,7 +6,7 @@ from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.database.models import Asset
-from app.llm.assessment_agreement import compute_model_agreement
+from app.llm.assessment_agreement import compute_model_agreement, compute_return_dispersion
 from app.llm.assessment_context import (
     AssetContext,
     AssessmentContext,
@@ -84,6 +84,39 @@ def test_agreement_empty_is_zero():
 
 def test_agreement_even_split():
     assert compute_model_agreement(["BULLISH", "BEARISH"]) == pytest.approx(0.5)
+
+
+# --- return dispersion (continuous complement to model_agreement) ----------
+
+def test_dispersion_identical_returns_is_zero():
+    assert compute_return_dispersion([0.05, 0.05, 0.05]) == pytest.approx(0.0)
+
+
+def test_dispersion_reflects_real_spread():
+    # Real population stdev of [0.05, 0.05, -0.35]: mean=-0.0833..,
+    # differences squared summed/3, sqrt -- computed independently here
+    # rather than re-deriving the implementation's own formula.
+    import statistics
+    values = [0.05, 0.05, -0.35]
+    expected = statistics.pstdev(values)
+    assert compute_return_dispersion(values) == pytest.approx(expected)
+
+
+def test_dispersion_distinguishes_tight_from_wide_majority_splits():
+    # Two 2-1 majority splits that compute_model_agreement scores IDENTICALLY
+    # (both 0.667) but that clearly differ in real disagreement magnitude --
+    # the whole point of this continuous complement.
+    tight = compute_return_dispersion([0.05, 0.06, -0.02])
+    wide = compute_return_dispersion([0.05, 0.06, -0.45])
+    assert tight < wide
+
+
+def test_dispersion_single_value_is_none():
+    assert compute_return_dispersion([0.05]) is None
+
+
+def test_dispersion_empty_is_none():
+    assert compute_return_dispersion([]) is None
 
 
 # --- sanity check (reuses 3b's anomaly detection) ---------------------------
@@ -411,6 +444,35 @@ def test_service_computes_agreement_across_providers():
     assert all(r.model_agreement == pytest.approx(0.5) for r in assessment_repo.inserted)
 
 
+def test_service_computes_return_dispersion_across_providers():
+    btc = _asset("BTC", "a1")
+    top = [_screened("BTC", "a1")]
+    low_return = dict(VALID_ASSESSMENT, asset="BTC", expected_return={"7d": 0.03, "30d": 0.05, "90d": 0.08})
+    high_return = dict(VALID_ASSESSMENT, asset="BTC", expected_return={"7d": 0.03, "30d": -0.15, "90d": 0.08})
+
+    from app.llm.assessment_provider import AssessmentProviderResult
+    from app.llm.schemas import TokenUsage
+
+    p1 = FakeAssessmentProvider("claude", AssessmentProviderResult(
+        provider="claude", model="m1", batch=AssessmentBatch(assessments=[low_return]),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10),
+        estimated_cost=Decimal("0.01"), raw_response={}, error=None,
+    ))
+    p2 = FakeAssessmentProvider("openai", AssessmentProviderResult(
+        provider="openai", model="m2", batch=AssessmentBatch(assessments=[high_return]),
+        token_usage=TokenUsage(prompt_tokens=10, completion_tokens=10),
+        estimated_cost=Decimal("0.01"), raw_response={}, error=None,
+    ))
+    assessment_repo = FakeAssessmentRepo()
+
+    service = _make_service(top, [btc], [p1, p2], assessment_repo=assessment_repo)
+    service.run("RUN-1")
+
+    import statistics
+    expected = statistics.pstdev([0.05, -0.15])
+    assert all(r.expected_return_dispersion_30d == pytest.approx(expected) for r in assessment_repo.inserted)
+
+
 def test_service_one_provider_failure_does_not_block_others():
     btc = _asset("BTC", "a1")
     top = [_screened("BTC", "a1")]
@@ -448,7 +510,7 @@ def test_service_registers_prompt_template_with_correct_stage():
     service = _make_service(top, [btc], [provider], prompt_repo=prompt_repo)
     service.run("RUN-1")
 
-    assert prompt_repo.calls == [("market_assessment", "3d", "v1")]
+    assert prompt_repo.calls == [("market_assessment", "3d", "v2")]
 
 
 def test_service_unknown_asset_symbol_skipped_gracefully():

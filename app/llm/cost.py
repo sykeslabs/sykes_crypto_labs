@@ -1,5 +1,5 @@
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 from supabase import Client
@@ -47,6 +47,29 @@ PRICING_PER_1K_TOKENS: dict[str, tuple[Decimal, Decimal]] = {
     "google/gemini-3.5-flash": (Decimal("0.0015"), Decimal("0.009")),
 }
 DEFAULT_PRICING = (Decimal("0.005"), Decimal("0.015"))
+
+# The "re-verify periodically" note above was previously just a comment --
+# nothing actually checked whether anyone had. This is the last real date
+# PRICING_PER_1K_TOKENS was edited (from git history at the time this
+# freshness check was added), used as an honest baseline rather than a
+# guessed one; bump it by hand whenever the table is next actually
+# re-verified against OpenRouter's current rates.
+PRICING_LAST_VERIFIED = date(2026, 9, 10)
+PRICING_STALENESS_WARNING_DAYS = 90
+
+
+def pricing_staleness_note() -> str | None:
+    """Returns a disclosed warning string once PRICING_PER_1K_TOKENS is more
+    than PRICING_STALENESS_WARNING_DAYS old, else None -- makes staleness
+    visible (dashboard Cost/spend, startup log) instead of silent."""
+    days = (datetime.now(UTC).date() - PRICING_LAST_VERIFIED).days
+    if days > PRICING_STALENESS_WARNING_DAYS:
+        return (
+            f"LLM pricing table (PRICING_PER_1K_TOKENS) last verified "
+            f"{PRICING_LAST_VERIFIED.isoformat()} ({days} days ago) -- "
+            "re-verify against OpenRouter's current rates."
+        )
+    return None
 
 
 def compute_cost(model: str, prompt_tokens: int, completion_tokens: int) -> Decimal:

@@ -35,8 +35,20 @@ def build_research_context(
     regime_repo,
     evidence_repo,
     assessment_repo,
+    as_of: datetime | None = None,
 ) -> ResearchContext:
-    as_of = datetime.now(UTC)
+    # Optional override for replay, which needs the historical cutoff date,
+    # not "now" -- purely additive, matching the exact same pattern already
+    # used by build_assessment_context/build_judge_context. A real bug
+    # found live (2026-09-13): this previously always hardcoded "now" here,
+    # which would have rendered "As of: <today's real date>" directly into
+    # the bull/bear/scenario prompts even when researching a historical
+    # cutoff -- a textual anachronism that would have actively invited the
+    # exact foreknowledge/leakage behavior this project tests for, not
+    # merely failed to prevent it. Never triggered before this fix because
+    # 3f had never been wired into replay at all (see
+    # app/benchmarks/replay.py's own history).
+    as_of = as_of or datetime.now(UTC)
     regime = regime_repo.get_latest()
 
     assessments_by_asset: dict[str, list[ModelMarketAssessmentRecord]] = {}

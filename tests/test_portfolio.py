@@ -1,17 +1,26 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import pytest
+
 from app.config.settings import Settings
 from app.judge.schemas import JudgeDecisionRecord
 from app.portfolio.construction import PortfolioConstructionService, risk_adjusted_alpha
 from app.risk.engine import SizedDecision
 
 
-def _sized(asset_id, symbol, current, final, is_new=False):
+def _sized(asset_id, symbol, current, final, is_new=False, previous_system_target=None):
+    # previous_system_target defaults to `current` (no manual/external
+    # drift) -- _classify/_apply_replacement_capacity_limit are judged
+    # against the strategy's own previous target, not real holdings (see
+    # RiskEngine._strategy_turnover_delta's docstring for why), so tests
+    # that aren't specifically about a drift scenario keep the two equal.
+    if previous_system_target is None:
+        previous_system_target = current
     return SizedDecision(
         asset_id=asset_id, symbol=symbol, decision="BUY", original_decision="BUY",
-        confidence=0.7, current_allocation=current, final_allocation=final,
-        vol_scalar=1.0, agreement_scalar=1.0, is_new_position=is_new,
+        confidence=0.7, current_allocation=current, previous_system_target=previous_system_target,
+        final_allocation=final, vol_scalar=1.0, agreement_scalar=1.0, is_new_position=is_new,
     )
 
 
@@ -30,9 +39,14 @@ def _decision_record(asset_id, expected_alpha=0.05, risk_score=0.4):
 class FakePositionRepo:
     def __init__(self):
         self.upserted = []
+        self._by_asset = {}
 
     def upsert(self, position):
         self.upserted.append(position)
+        self._by_asset[position.asset_id] = position
+
+    def get_all(self):
+        return dict(self._by_asset)
 
 
 class FakeAllocationChangeRepo:
@@ -136,6 +150,50 @@ def test_replacement_blocked_when_advantage_insufficient():
     assert action_by_symbol["NEW"].action == "HOLD_CASH"  # blocked: stays at 0 allocation
 
 
+def test_apply_records_previous_system_target_and_real_holdings_separately():
+    # Real bug fixed 2026-09-14: previous_allocation used to be real
+    # holdings; it must now be the strategy's own previous target, with
+    # real holdings kept alongside (actual_allocation_before) for audit
+    # only. Reproduces the exact shape of the real incident: real holdings
+    # (0.30) far exceed the strategy's own previous target (0.10).
+    position_repo = FakePositionRepo()
+    change_repo = FakeAllocationChangeRepo()
+    settings = Settings(_env_file=None, max_concurrent_positions=99)
+    service = PortfolioConstructionService(settings, position_repo, change_repo)
+
+    d = _sized("a1", "BTC", current=0.30, final=0.12, previous_system_target=0.10)
+    by_asset = {"a1": _decision_record("a1")}
+    ids = {"a1": "dec-a1"}
+
+    service.apply("RUN-1", [d], by_asset, ids)
+
+    assert len(change_repo.inserted) == 1
+    change = change_repo.inserted[0]
+    assert change.previous_allocation == pytest.approx(0.10)  # strategy's own previous target
+    assert change.new_allocation == pytest.approx(0.12)
+    assert change.actual_allocation_before == pytest.approx(0.30)  # real holdings, audit only
+    assert change.baseline_semantics == "system_target"
+    assert position_repo.upserted[0].current_allocation == pytest.approx(0.12)
+
+
+def test_apply_no_write_when_strategy_target_unchanged_despite_real_holdings_drift():
+    # If the strategy's OWN target doesn't change, nothing should be
+    # persisted -- even if real holdings differ wildly from both.
+    position_repo = FakePositionRepo()
+    change_repo = FakeAllocationChangeRepo()
+    settings = Settings(_env_file=None, max_concurrent_positions=99)
+    service = PortfolioConstructionService(settings, position_repo, change_repo)
+
+    d = _sized("a1", "BTC", current=0.30, final=0.10, previous_system_target=0.10)  # final == previous target
+    by_asset = {"a1": _decision_record("a1")}
+    ids = {"a1": "dec-a1"}
+
+    service.apply("RUN-1", [d], by_asset, ids)
+
+    assert change_repo.inserted == []
+    assert position_repo.upserted == []
+
+
 def test_no_replacement_needed_under_capacity():
     service = _service(max_concurrent_positions=10)
     a = _sized("a1", "BTC", 0.0, 0.05, is_new=True)
@@ -145,3 +203,127 @@ def test_no_replacement_needed_under_capacity():
 
     actions = service.apply("RUN-1", [a, b], by_asset, ids)
     assert {a.action for a in actions} == {"INITIATE"}
+
+
+def test_replacement_capacity_judged_against_strategy_target_not_real_holdings():
+    # A real, substantial manually-held position (0.40!) that the strategy
+    # has never targeted must be bucketed as a "new candidate" competing
+    # for capacity, NOT as a protected "existing_held" position just
+    # because you personally already own a lot of it. `genuinely_targeted`
+    # (previous_system_target > 0) is the only member of the real
+    # existing_held bucket, and gets correctly replaced by a stronger new
+    # candidate -- real holdings size plays no role in this decision.
+    service = _service(max_concurrent_positions=2, min_replacement_alpha_advantage=0.01)
+    manually_held_never_targeted = _sized(
+        "manual", "MANUAL", current=0.40, final=0.40, previous_system_target=0.0,
+    )
+    genuinely_targeted = _sized("held", "HELD", current=0.0, final=0.05, previous_system_target=0.05)
+    new_strong_candidate = _sized("strong", "STRONG", current=0.0, final=0.05, is_new=True)
+
+    by_asset = {
+        "manual": _decision_record("manual", expected_alpha=0.01, risk_score=0.5),
+        "held": _decision_record("held", expected_alpha=0.02, risk_score=0.5),
+        "strong": _decision_record("strong", expected_alpha=0.20, risk_score=0.5),
+    }
+    ids = {"manual": "dec-manual", "held": "dec-held", "strong": "dec-strong"}
+
+    actions = service.apply(
+        "RUN-1", [manually_held_never_targeted, genuinely_targeted, new_strong_candidate], by_asset, ids,
+    )
+    action_by_symbol = {a.symbol: a for a in actions}
+
+    # STRONG (a genuine new candidate) replaces HELD (the only real
+    # existing_held member, previous_system_target > 0) -- MANUAL, despite
+    # real holdings of 0.40, is a "new candidate" from the strategy's own
+    # point of view and is correctly treated as opening a fresh position,
+    # not as an already-held one immune to replacement.
+    assert action_by_symbol["STRONG"].action == "INITIATE"
+    assert action_by_symbol["HELD"].action == "REMOVE"
+    assert action_by_symbol["MANUAL"].action == "INITIATE"  # previous_system_target 0 -> 0.40
+
+
+# --- End-to-end, multi-run regression: no repeated double-charging ------------
+#
+# The single most important property of the 2026-09-14 fix, per its own
+# audit: an UNRESOLVED gap between real holdings and the strategy's own
+# target must be observable repeatedly (real risk gating keeps seeing the
+# truth every run) WITHOUT being repeatedly charged as new strategy
+# turnover each time the Judge revisits that asset. These tests run the
+# REAL PortfolioConstructionService.apply() across multiple simulated runs,
+# feeding each run's own persisted portfolio_positions state forward into
+# the next (exactly as app/main.py does via a fresh
+# `portfolio_position_repo.get_all()` call each run), never resetting
+# state by hand between runs.
+
+def test_persistent_external_gap_is_not_repeatedly_charged_across_multiple_runs():
+    # System target = 10% BTC. Real holdings = 30% (a persistent, never-
+    # resolving manual-trade gap). The Judge keeps recommending exactly the
+    # same 10% target every run (it never changes its mind). Replayed 4
+    # times: the real external 20pp gap must be visible every time (via
+    # `actual_allocation_before`) but NEVER counted as strategy turnover,
+    # and NO write should occur after the very first run (nothing about
+    # the strategy's own target ever changes).
+    position_repo = FakePositionRepo()
+    change_repo = FakeAllocationChangeRepo()
+    settings = Settings(_env_file=None, max_concurrent_positions=99)
+    service = PortfolioConstructionService(settings, position_repo, change_repo)
+
+    REAL_HOLDINGS = 0.30  # persistent, never resolves
+    STRATEGY_TARGET = 0.10  # the Judge's own recommendation, unchanged every run
+
+    for run_number in range(1, 5):
+        previous_system_target = position_repo.get_all().get("a1")
+        previous_system_target = previous_system_target.current_allocation if previous_system_target else 0.0
+        d = _sized(
+            "a1", "BTC", current=REAL_HOLDINGS, final=STRATEGY_TARGET,
+            previous_system_target=previous_system_target,
+        )
+        by_asset = {"a1": _decision_record("a1")}
+        ids = {"a1": f"dec-run{run_number}"}
+        service.apply(f"RUN-{run_number}", [d], by_asset, ids)
+
+    # Exactly ONE real strategy-turnover event across all 4 runs (the
+    # initial 0.0 -> 0.10 bootstrap on run 1) -- runs 2-4 are genuine no-ops
+    # on the strategy's own bookkeeping, despite the persistent real gap.
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].previous_allocation == pytest.approx(0.0)
+    assert change_repo.inserted[0].new_allocation == pytest.approx(0.10)
+    assert change_repo.inserted[0].actual_allocation_before == pytest.approx(0.30)
+    # Total counted strategy turnover across all 4 runs = 10pp, NOT 4x20pp
+    # (the real external gap) or 4x10pp (double-counting the bootstrap).
+    total_counted_turnover = sum(
+        abs(c.new_allocation - c.previous_allocation) for c in change_repo.inserted
+    )
+    assert total_counted_turnover == pytest.approx(0.10)
+
+
+def test_genuine_strategy_churn_is_counted_independently_across_runs():
+    # 10% -> 20% -> 15% -> 25%: the strategy genuinely changes its mind 3
+    # times in a row (real holdings stay irrelevant/matching throughout --
+    # no manual drift in this scenario). Each real strategy move must be
+    # counted independently; total turnover = 10 + 5 + 10 = 25pp, not
+    # netted to the 15pp difference between the first and last target.
+    position_repo = FakePositionRepo()
+    change_repo = FakeAllocationChangeRepo()
+    settings = Settings(_env_file=None, max_concurrent_positions=99)
+    service = PortfolioConstructionService(settings, position_repo, change_repo)
+
+    targets = [0.10, 0.20, 0.15, 0.25]
+    # Seed the initial 10% target (run 0, bootstrap) before the 3 genuine
+    # churn steps under test.
+    seed = _sized("a1", "BTC", current=targets[0], final=targets[0], previous_system_target=0.0)
+    service.apply("RUN-0", [seed], {"a1": _decision_record("a1")}, {"a1": "dec-0"})
+    change_repo.inserted.clear()  # only count the 3 genuine churn steps below
+
+    for i in range(1, len(targets)):
+        previous_system_target = position_repo.get_all()["a1"].current_allocation
+        d = _sized(
+            "a1", "BTC", current=targets[i], final=targets[i],
+            previous_system_target=previous_system_target,
+        )
+        service.apply(f"RUN-{i}", [d], {"a1": _decision_record("a1")}, {"a1": f"dec-{i}"})
+
+    assert len(change_repo.inserted) == 3
+    deltas = [abs(c.new_allocation - c.previous_allocation) for c in change_repo.inserted]
+    assert deltas == pytest.approx([0.10, 0.05, 0.10])  # 10->20, 20->15, 15->25
+    assert sum(deltas) == pytest.approx(0.25)  # NOT netted to |0.25 - 0.10| = 0.15

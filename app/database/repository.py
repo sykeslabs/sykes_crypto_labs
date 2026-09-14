@@ -17,7 +17,7 @@ from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.schemas import MarketSnapshot
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
-from app.portfolio.schemas import HoldingsLedgerEntry, PortfolioAllocationChange, PortfolioPosition
+from app.portfolio.schemas import HoldingsLedgerEntry, PortfolioAllocationChange, PortfolioPosition, TurnoverCapEvent
 
 
 class AssetRepository:
@@ -92,6 +92,17 @@ class AssetRepository:
             .execute()
         )
         return Asset.model_validate(response.data[0])
+
+    def update_in_asset(self, asset_id: str, in_asset: bool) -> None:
+        """Real reconciliation write, missing since Phase 5a/5b: `in_asset`
+        was previously only ever set once, at asset-creation time, and
+        never updated again as real holdings changed -- a confirmed-stale
+        column found live (e.g. an asset with `in_asset=true` and zero real
+        transactions ever recorded). Called from `POST /holdings` after
+        every real transaction, keyed off the actual current aggregated
+        position, not inferred from `transaction_type` alone (a SELL can
+        still leave a real partial position open)."""
+        self._client.table("assets").update({"in_asset": in_asset}).eq("id", asset_id).execute()
 
 
 class MarketSnapshotRepository:
@@ -433,8 +444,9 @@ class MarketRegimeRepository:
     def __init__(self, client: Client) -> None:
         self._client = client
 
-    def insert(self, snapshot: MarketRegimeSnapshot) -> None:
-        self._client.table("market_regime_snapshots").insert(snapshot.to_row()).execute()
+    def insert(self, snapshot: MarketRegimeSnapshot) -> str:
+        response = self._client.table("market_regime_snapshots").insert(snapshot.to_row()).execute()
+        return response.data[0]["id"]
 
     def get_latest(self) -> MarketRegimeSnapshot | None:
         response = (
@@ -581,6 +593,15 @@ class PromptTemplateRepository:
             .execute()
         )
         return inserted.data[0]["id"]
+
+    def get_all(self) -> dict[str, dict]:
+        """id -> {name, stage, version} for every template ever recorded --
+        lets a caller resolve a judge_decisions.prompt_template_id back to a
+        real version string (e.g. to segment calibration stats by prompt
+        version rather than silently pooling decisions made under a
+        superseded/buggy prompt with the current one)."""
+        response = self._client.table("prompt_templates").select("id,name,stage,version").execute()
+        return {row["id"]: row for row in response.data}
 
 
 class ModelMarketAssessmentRepository:
@@ -836,16 +857,52 @@ class PortfolioAllocationChangeRepository:
         self._client.table("portfolio_allocation_changes").insert(change.to_row()).execute()
 
     def get_turnover_since(self, since: datetime) -> float:
+        """Only sums rows written under the current `"system_target"`
+        baseline semantics -- real historical rows from before the
+        2026-09-14 turnover-baseline fix (tagged `"actual_holdings"`) are
+        deliberately excluded, not because they're being reset/discarded
+        (they remain in the table, exactly as recorded, real historical
+        fact under their own real semantics), but because they measured a
+        fundamentally different, now-proven-incorrect quantity (distance
+        from real holdings, not from the strategy's own previous target)
+        -- summing them into the NEW budget would mix two non-comparable
+        definitions and unfairly charge future runs for a mismeasured
+        historical artifact. See RiskEngine._strategy_turnover_delta's
+        docstring for the real incident and backtest evidence."""
         response = (
             self._client.table("portfolio_allocation_changes")
             .select("previous_allocation, new_allocation")
             .gte("changed_at", since.isoformat())
+            .eq("baseline_semantics", "system_target")
             .execute()
         )
         return sum(
             abs(float(row["new_allocation"]) - float(row["previous_allocation"]))
             for row in response.data
         )
+
+
+class TurnoverCapEventRepository:
+    """Persists/reads `turnover_cap_events` -- a real, dashboard-visible
+    record of every run where MAX_WEEKLY_TURNOVER capped at least one
+    proposed position change (found live 2026-09-14 as a completely
+    invisible-after-the-fact stdout-only warning before this)."""
+
+    def __init__(self, client: Client) -> None:
+        self._client = client
+
+    def insert(self, event: TurnoverCapEvent) -> None:
+        self._client.table("turnover_cap_events").insert(event.to_row()).execute()
+
+    def get_recent(self, limit: int = 20) -> list[TurnoverCapEvent]:
+        response = (
+            self._client.table("turnover_cap_events")
+            .select("*")
+            .order("occurred_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [TurnoverCapEvent.model_validate(row) for row in response.data]
 
 
 class HoldingsLedgerRepository:

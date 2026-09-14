@@ -19,11 +19,13 @@ from app.api.dependencies import (
     get_judge_decision_repo,
     get_market_snapshot_repo,
     get_portfolio_position_repo,
+    get_prompt_template_repo,
     get_reasoning_audit_repo,
     get_regime_repo,
     get_screened_universe_repo,
     get_settings_dependency,
     get_signal_source_repo,
+    get_turnover_cap_event_repo,
 )
 from app.api.main import app
 from app.benchmarks.schemas import (
@@ -46,6 +48,17 @@ def _bypass_auth():
     app.dependency_overrides[verify_api_key] = lambda: None
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _default_prompt_template_repo():
+    # Calibration summary's by-prompt-version breakdown resolves each
+    # decision's prompt_template_id through this repo -- default to "no
+    # templates recorded" so tests that don't care about prompt-version
+    # segmentation (prompt_template_id=None on _judge_decision's default)
+    # don't need their own fake.
+    app.dependency_overrides[get_prompt_template_repo] = lambda: type("R", (), {"get_all": lambda self: {}})()
+    yield
 
 
 @pytest.fixture(autouse=True)
@@ -431,6 +444,27 @@ def test_get_portfolio_state_regime_label_none_when_regime_at_decision_is_null(c
     assert response.json()[0]["regime_label"] is None
 
 
+def test_get_recent_turnover_cap_events(client):
+    from app.portfolio.schemas import TurnoverCapEvent
+
+    event = TurnoverCapEvent(
+        run_id="RUN-1", occurred_at=datetime.now(UTC), turnover_used_this_week=0.30000000000000004,
+        max_weekly_turnover=0.3, remaining_budget=0.0, fully_blocked=True, capped_symbols=["ETH", "NEAR", "SOL"],
+    )
+
+    class FakeTurnoverCapEventRepo:
+        def get_recent(self, limit=20):
+            return [event]
+
+    app.dependency_overrides[get_turnover_cap_event_repo] = lambda: FakeTurnoverCapEventRepo()
+    response = client.get("/portfolio/turnover-cap-events/recent")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["fully_blocked"] is True
+    assert body[0]["capped_symbols"] == ["ETH", "NEAR", "SOL"]
+
+
 # --- calibration -----------------------------------------------------------------
 
 def test_get_calibration_summary_reports_null_when_no_directional_data(client):
@@ -450,6 +484,12 @@ def test_get_calibration_summary_reports_null_when_no_directional_data(client):
     assert body["hit_rate"] is None
     assert body["directional_sample_size"] == 0
     assert "not computable" in body["by_regime_note"].lower()
+    assert body["hit_rate_backfilled"] is None
+    assert body["hit_rate_live"] is None
+    assert body["by_prompt_version"] == []
+    assert "no live" in body["held_out_window_note"].lower()
+    assert body["embargo_gap_days"] is None
+    assert body["pct_live_within_own_horizon_of_training_end"] is None
 
 
 def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisions(client):
@@ -481,6 +521,112 @@ def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisio
     assert body["directional_sample_size"] == 2
     assert body["hit_rate"] == pytest.approx(0.5)
     assert body["resolved_backfilled_count"] == 2
+    # Both outcomes are backfilled -- the combined figure above should
+    # exactly match the backfilled-only figure, and live should be empty,
+    # not silently blended.
+    assert body["directional_sample_size_backfilled"] == 2
+    assert body["hit_rate_backfilled"] == pytest.approx(0.5)
+    assert body["directional_sample_size_live"] == 0
+    assert body["hit_rate_live"] is None
+
+
+def test_get_calibration_summary_segments_backfilled_and_live_and_by_prompt_version(client):
+    outcome_backfilled = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=True,
+    )
+    outcome_live = DecisionOutcome(
+        decision_id="d2", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=-0.03, outcome_label="HIT_STOP",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    decision_backfilled = _judge_decision("d1")
+    decision_backfilled.prompt_template_id = "tmpl-v1"
+    decision_live = _judge_decision("d2")
+    decision_live.prompt_template_id = "tmpl-v2"
+    decisions = {"d1": decision_backfilled, "d2": decision_live}
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [outcome_backfilled, outcome_live]
+
+    class FakeJudgeRepo:
+        def get_by_id(self, decision_id):
+            return decisions.get(decision_id)
+
+    class FakePromptTemplateRepo:
+        def get_all(self):
+            return {"tmpl-v1": {"id": "tmpl-v1", "version": "v1"}, "tmpl-v2": {"id": "tmpl-v2", "version": "v2"}}
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
+    app.dependency_overrides[get_prompt_template_repo] = lambda: FakePromptTemplateRepo()
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    # Combined pools both (1 correct, 1 wrong); backfilled/live each isolate
+    # their own single decision instead of being blended into one figure.
+    assert body["directional_sample_size"] == 2
+    assert body["hit_rate"] == pytest.approx(0.5)
+    assert body["directional_sample_size_backfilled"] == 1
+    assert body["hit_rate_backfilled"] == pytest.approx(1.0)
+    assert body["directional_sample_size_live"] == 1
+    assert body["hit_rate_live"] == pytest.approx(0.0)
+
+    # By-prompt-version breakdown surfaces both real versions separately.
+    versions = {b["version"]: b for b in body["by_prompt_version"]}
+    assert set(versions) == {"v1", "v2"}
+    assert versions["v1"]["resolved_count"] == 1
+    assert versions["v2"]["resolved_count"] == 1
+
+    # A resolved live decision now exists -- the note must say so, not
+    # claim (falsely) that every live decision is still unresolved.
+    assert "1 of 1 live" in body["held_out_window_note"]
+    assert "no meaningful embargo" in body["held_out_window_note"].lower()
+
+    # Both decision_timestamps were captured moments apart in this same test
+    # (backfilled first, then live) -- a real, tiny, non-negative gap, not a
+    # negative/overlapping one (see the dedicated overlap test below for that).
+    assert body["embargo_gap_days"] == pytest.approx(0.0, abs=0.01)
+    # The live decision's timestamp is a fraction of a second after the
+    # backfilled one, well within its own 30-day horizon.
+    assert body["pct_live_within_own_horizon_of_training_end"] == pytest.approx(1.0)
+
+
+def test_get_calibration_summary_computes_negative_embargo_gap_when_windows_overlap(client):
+    training_end = datetime(2026, 6, 1, tzinfo=UTC)
+    holdout_start = datetime(2026, 5, 27, tzinfo=UTC)  # 5 real days BEFORE training_end -- overlap, not embargo
+    outcome_backfilled = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=training_end, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=True,
+    )
+    outcome_live = DecisionOutcome(
+        decision_id="d2", asset_id="a1", decision_timestamp=holdout_start, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=-0.03, outcome_label="HIT_STOP",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    decisions = {"d1": _judge_decision("d1"), "d2": _judge_decision("d2")}
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [outcome_backfilled, outcome_live]
+
+    class FakeJudgeRepo:
+        def get_by_id(self, decision_id):
+            return decisions.get(decision_id)
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert body["embargo_gap_days"] == pytest.approx(-5.0)
+    # holdout_start is BEFORE training_end, so the live decision is well
+    # within its own 30-day horizon of the training-window boundary.
+    assert body["pct_live_within_own_horizon_of_training_end"] == pytest.approx(1.0)
+    assert "overlap" in body["held_out_window_note"].lower()
 
 
 def test_get_recent_calibration_runs(client):
@@ -540,6 +686,25 @@ def test_get_cost_summary_reports_by_table_breakdown_and_note(client):
     assert len(body["daily"]["by_table"]) == 2
     judge_row = next(t for t in body["daily"]["by_table"] if t["table"] == "judge_decisions")
     assert judge_row["call_count"] == 3
+
+
+def test_get_cost_summary_reports_pricing_and_fee_rate_staleness(client, monkeypatch):
+    from datetime import UTC, timedelta
+
+    class FakeCostLedgerRepo:
+        def get_cost_and_count_by_table_since(self, since):
+            return {}
+
+    stale_date = (datetime.now(UTC) - timedelta(days=200)).date()
+    monkeypatch.setattr("app.llm.cost.PRICING_LAST_VERIFIED", stale_date)
+    monkeypatch.setattr("app.trading.fill_simulator.FEE_RATES_LAST_VERIFIED", stale_date)
+    settings = Settings(_env_file=None, max_daily_llm_cost=Decimal("12"), max_monthly_llm_cost=Decimal("30"))
+    app.dependency_overrides[get_cost_ledger_repo] = lambda: FakeCostLedgerRepo()
+    app.dependency_overrides[get_settings_dependency] = lambda: settings
+    response = client.get("/cost/summary")
+    body = response.json()
+    assert "200 days ago" in body["pricing_staleness_note"]
+    assert "200 days ago" in body["fee_rate_staleness_note"]
 
 
 def test_get_cost_by_day_reports_every_real_day_table_bucket(client):

@@ -27,6 +27,7 @@ pipeline produces one decision per run, not a maker-style quote.
 """
 
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Literal
 
 Side = Literal["BUY", "SELL"]
@@ -41,6 +42,29 @@ MAKER_FEE_RATE_BY_EXCHANGE: dict[Exchange, float] = {
     "BINANCE": 0.001,
     "COINBASE": 0.004,
 }
+
+# The module docstring's "re-verify periodically" note was previously just a
+# comment -- nothing actually checked whether anyone had. Last real date
+# these rates were edited (from git history at the time this freshness
+# check was added); bump it by hand whenever they're next actually
+# re-verified against each exchange's real published fee schedule.
+FEE_RATES_LAST_VERIFIED = date(2026, 9, 6)
+FEE_RATES_STALENESS_WARNING_DAYS = 90
+
+
+def fee_rate_staleness_note() -> str | None:
+    """Returns a disclosed warning string once TAKER_FEE_RATE_BY_EXCHANGE/
+    MAKER_FEE_RATE_BY_EXCHANGE are more than FEE_RATES_STALENESS_WARNING_DAYS
+    old, else None -- same pattern as `llm/cost.py`'s pricing_staleness_note."""
+    days = (datetime.now(UTC).date() - FEE_RATES_LAST_VERIFIED).days
+    if days > FEE_RATES_STALENESS_WARNING_DAYS:
+        return (
+            f"Exchange fee-rate tables (TAKER_FEE_RATE_BY_EXCHANGE/"
+            f"MAKER_FEE_RATE_BY_EXCHANGE) last verified "
+            f"{FEE_RATES_LAST_VERIFIED.isoformat()} ({days} days ago) -- "
+            "re-verify against each exchange's current published fee schedule."
+        )
+    return None
 
 # A simple, commonly-used square-root market-impact functional form (real,
 # order-size-relative-to-volume scaling of realized volatility) — kept

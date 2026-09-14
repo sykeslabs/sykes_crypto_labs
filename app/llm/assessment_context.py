@@ -164,6 +164,17 @@ appropriate caution rather than reasoning confidently from a number that \
 may be a feed glitch. Base your analysis only on data given — do not \
 reference events after the stated cutoff.
 
+If you find yourself asserting a narrative, risk, or trend (e.g. \
+regulatory pressure, exchange delistings, a specific catalyst) that is NOT \
+directly supported by the evidence given in this prompt — even if it feels \
+like general market knowledge — do not present it as a current, active \
+fact. Either omit it, or explicitly mark it in your reasoning as an \
+unverified belief (not confirmed by this run's evidence), and do not let \
+it materially drive your direction, confidence, or risk score. A claim you \
+cannot trace to the evidence actually provided here may be an artifact of \
+your own training data rather than something genuinely happening as of \
+the stated cutoff.
+
 Prompt version: {prompt_version}\
 """
 

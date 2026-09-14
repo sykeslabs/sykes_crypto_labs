@@ -156,6 +156,18 @@ def record_holding(
         transaction_type=entry.transaction_type,
     )
     ledger_repo.insert(record)
+
+    if asset_id is not None:
+        # Keeps assets.in_asset genuinely in sync with real holdings going
+        # forward (a confirmed-stale column before this fix -- it was
+        # previously only ever set once, at asset-creation time). Keyed off
+        # the real aggregated position after this transaction, not
+        # transaction_type alone, since a SELL can still leave a real
+        # partial position open.
+        aggregated_after = aggregate_current_holdings(ledger_repo.get_all_history())
+        currently_held_after = next((h.quantity for h in aggregated_after if h.asset_id == asset_id), 0.0)
+        asset_repo.update_in_asset(asset_id, currently_held_after > 0)
+
     return HoldingsEntryView(
         id=record.id, asset_id=record.asset_id, symbol=symbol, quantity=record.quantity,
         cost_basis_usd=record.cost_basis_usd, recorded_at=record.recorded_at,

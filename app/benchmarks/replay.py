@@ -31,6 +31,7 @@ from app.benchmarks.replay_fakes import (
     AsOfLLMAnalysisRepo,
     InMemoryAllocationChangeRepo,
     InMemoryPortfolioPositionRepo,
+    StaticAdversarialRepo,
     StaticAssessmentRepo,
     StaticEvidenceRepo,
     StaticRegimeRepo,
@@ -42,13 +43,16 @@ from app.config import Settings
 from app.database.evidence_provenance import DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE
 from app.database.models import Asset
 from app.database.repository import (
+    AdversarialResearchRepository,
     AssetRepository,
     AssetStatusRepository,
     DecisionOutcomeRepository,
     JudgeDecisionRepository,
     LLMAnalysisRepository,
+    MarketRegimeRepository,
     NewsRepository,
     PromptTemplateRepository,
+    ScreenedUniverseRepository,
     SignalSourceRepository,
 )
 from app.judge.context import SYSTEM_PROMPT_TEMPLATE as JUDGE_SYSTEM_PROMPT_TEMPLATE
@@ -56,12 +60,24 @@ from app.judge.context import build_judge_context
 from app.judge.context import render_prompt as render_judge_prompt
 from app.judge.provider import OpenRouterJudgeProvider
 from app.judge.schemas import JudgeDecisionRecord
+from app.llm.adversarial_context import (
+    BEAR_SYSTEM_PROMPT_TEMPLATE,
+    BULL_SYSTEM_PROMPT_TEMPLATE,
+    SCENARIO_SYSTEM_PROMPT_TEMPLATE,
+    build_research_context,
+    compute_template_hash,
+    render_bear_prompt,
+    render_bull_prompt,
+    render_scenario_prompt,
+)
+from app.llm.adversarial_schemas import AdversarialResearchRecord, BearBatch, BullBatch, ScenarioBatch
 from app.llm.assessment_context import SYSTEM_PROMPT_TEMPLATE as ASSESSMENT_SYSTEM_PROMPT_TEMPLATE
 from app.llm.assessment_context import build_assessment_context
 from app.llm.assessment_context import render_prompt as render_assessment_prompt
 from app.llm.assessment_provider import OpenRouterAssessmentProvider
 from app.llm.assessment_schemas import ModelMarketAssessmentRecord
 from app.llm.cost import CostGuard
+from app.llm.structured_provider import OpenRouterStructuredProvider
 from app.market_data.evidence_schemas import EvidenceObservation
 from app.market_data.factors import compute_composite_factor_scores
 from app.market_data.regime import classify_risk_regime, compute_breadth_pct, compute_halving_cycle_days, moving_average
@@ -75,6 +91,7 @@ logger = logging.getLogger("crypto_ai_portfolio.benchmarks")
 
 PROMPT_TEMPLATE_NAME_ASSESSMENT = "market_assessment"
 PROMPT_TEMPLATE_NAME_JUDGE = "judge_decision"
+PROMPT_TEMPLATE_NAME_ADVERSARIAL = "adversarial_research"
 
 # Task 1's evidence-feasibility classification, made concrete: everything
 # 3c would normally supply EXCEPT Binance's genuinely historical funding-rate
@@ -110,11 +127,24 @@ OBSERVED_ASSESSMENT_COST_PER_DAY = Decimal("0.42")
 OBSERVED_JUDGE_COST_PER_DAY = Decimal("0.155")
 OBSERVED_COST_PER_REPLAYED_DAY = OBSERVED_ASSESSMENT_COST_PER_DAY + OBSERVED_JUDGE_COST_PER_DAY
 
+# Observed live per-day total across 9 real `adversarial_research` runs
+# (bull + bear + scenario, one full 3f cycle each) — mean of the real
+# summed estimated_cost per run_id, ranging $0.22-$0.41 -- used only when
+# --with-adversarial opts a replay run into also including 3f (see
+# HistoricalReplayService's own adversarial_provider/adversarial_repo
+# params, both None -- 3f disabled -- by default, matching every other
+# real backfilled decision made before 2026-09-13, which never included 3f
+# at all, a real previously-undisclosed gap; see the dashboard's own TODO).
+OBSERVED_ADVERSARIAL_COST_PER_DAY = Decimal("0.30")
 
-def estimate_replay_cost(num_days: int) -> Decimal:
+
+def estimate_replay_cost(num_days: int, include_adversarial: bool = False) -> Decimal:
     """Same sizing methodology 3d/3e used before merging: observed
     live cost per batched call x expected call volume."""
-    return OBSERVED_COST_PER_REPLAYED_DAY * num_days
+    per_day = OBSERVED_COST_PER_REPLAYED_DAY
+    if include_adversarial:
+        per_day += OBSERVED_ADVERSARIAL_COST_PER_DAY
+    return per_day * num_days
 
 
 @dataclass
@@ -155,11 +185,15 @@ class HistoricalReplayService:
         prompt_template_repo: PromptTemplateRepository,
         judge_decision_repo: JudgeDecisionRepository,
         decision_outcome_repo: DecisionOutcomeRepository,
+        regime_repo: MarketRegimeRepository,
+        screened_universe_repo: ScreenedUniverseRepository,
         cost_guard: CostGuard,
         assessment_providers: list[OpenRouterAssessmentProvider],
         judge_provider: OpenRouterJudgeProvider,
         historical_series_fetcher,
         funding_rate_fetcher,
+        adversarial_provider: OpenRouterStructuredProvider | None = None,
+        adversarial_repo: AdversarialResearchRepository | None = None,
     ) -> None:
         self._settings = settings
         self._asset_repo = asset_repo
@@ -170,6 +204,24 @@ class HistoricalReplayService:
         self._prompt_template_repo = prompt_template_repo
         self._judge_decision_repo = judge_decision_repo
         self._decision_outcome_repo = decision_outcome_repo
+        # 3f, opt-in only (both None by default -- unchanged behavior for
+        # every existing caller, and matches every real backfilled decision
+        # made before 2026-09-13, none of which ever included 3f at all: a
+        # real, previously undisclosed gap -- see the dashboard's own TODO).
+        # When both are given, 3f is genuinely run per replayed day and
+        # persisted for real, the same as every other backfilled table.
+        self._adversarial_provider = adversarial_provider
+        self._adversarial_repo = adversarial_repo
+        self._adversarial_enabled = adversarial_provider is not None and adversarial_repo is not None
+        # Previously a real persistence gap (see README's Phase 3g/3h
+        # findings): _build_regime/_build_day_universe below already
+        # compute a real regime classification and real composite factor
+        # scores in-memory for prompt-building, but neither was ever
+        # written to a joinable row for a backfilled decision -- blocking
+        # the by-regime calibration breakdown and the evidence-value
+        # ranking's most theoretically important candidate feature.
+        self._regime_repo = regime_repo
+        self._screened_universe_repo = screened_universe_repo
         self._cost_guard = cost_guard
         self._assessment_providers = assessment_providers
         self._judge_provider = judge_provider
@@ -234,12 +286,21 @@ class HistoricalReplayService:
             version=self._settings.judge_prompt_version,
             template_hash=_hash(JUDGE_SYSTEM_PROMPT_TEMPLATE),
         )
+        prompt_template_id_adversarial = None
+        if self._adversarial_enabled:
+            prompt_template_id_adversarial = self._prompt_template_repo.get_or_create(
+                name=PROMPT_TEMPLATE_NAME_ADVERSARIAL, stage="3f",
+                version=self._settings.adversarial_prompt_version,
+                template_hash=compute_template_hash(
+                    BULL_SYSTEM_PROMPT_TEMPLATE, BEAR_SYSTEM_PROMPT_TEMPLATE, SCENARIO_SYSTEM_PROMPT_TEMPLATE,
+                ),
+            )
 
         for cutoff in _daily_cutoffs(start_date, end_date):
             day_result = self._replay_one_day(
                 cutoff, active_assets, assets_by_id, series_by_asset, funding_by_asset,
                 risk_engine, portfolio_service, portfolio_position_repo, allocation_change_repo,
-                prompt_template_id_assessment, prompt_template_id_judge,
+                prompt_template_id_assessment, prompt_template_id_judge, prompt_template_id_adversarial,
             )
             result.days.append(day_result)
             result.total_cost += day_result.cost
@@ -254,7 +315,7 @@ class HistoricalReplayService:
     def _replay_one_day(
         self, cutoff, active_assets, assets_by_id, series_by_asset, funding_by_asset,
         risk_engine, portfolio_service, portfolio_position_repo, allocation_change_repo,
-        prompt_template_id_assessment, prompt_template_id_judge,
+        prompt_template_id_assessment, prompt_template_id_judge, prompt_template_id_adversarial=None,
     ) -> ReplayDayResult:
         day_result = ReplayDayResult(date=cutoff.date().isoformat())
         day_run_id = f"BACKFILL-{cutoff.date().isoformat()}"
@@ -271,6 +332,12 @@ class HistoricalReplayService:
             return day_result
 
         regime = self._build_regime(cutoff, active_assets, screened_by_asset, series_by_asset)
+        # Persist both real, already-computed values instead of only using
+        # them in-memory for prompt-building -- makes regime_at_decision and
+        # composite_factor_score genuinely joinable for this day's decisions,
+        # the same way a live run's own screening/regime rows already are.
+        regime_id = self._regime_repo.insert(regime)
+        self._screened_universe_repo.insert_many(list(screened_by_asset.values()))
         snapshot_repo = StaticSnapshotRepo({
             asset_id: self._build_snapshot_history(cutoff, asset_id, series_by_asset.get(asset_id))
             for asset_id in assets_by_id
@@ -327,6 +394,7 @@ class HistoricalReplayService:
                     expected_return_90d=item.expected_return.return_90d,
                     risk_score=item.risk.score, risk_level=item.risk.level, market_regime=item.market_regime,
                     model_agreement=1.0,  # overwritten below once every provider's response is in
+                    expected_return_dispersion_30d=None,  # overwritten below once every provider's response is in
                     overall_assessment=item.overall_assessment, thesis=item.thesis,
                     key_drivers=[d.model_dump() for d in item.key_drivers],
                     key_risks=[d.model_dump() for d in item.key_risks],
@@ -339,11 +407,33 @@ class HistoricalReplayService:
             return day_result
         _assign_model_agreement(assessment_records)
 
+        adversarial_repo_for_day = None
+        if self._adversarial_enabled:
+            adversarial_repo_for_day = self._run_adversarial_research(
+                day_run_id, cutoff, candidates, assets_by_id, regime, evidence_repo,
+                assessment_records, prompt_template_id_adversarial, day_result,
+            )
+            if day_result.skipped_cost_cap:
+                return day_result
+
+        # Replay's simulated portfolio has no separate "real holdings"
+        # concept -- its own in-memory current_allocation IS the strategy's
+        # previous target, by construction (see the identical rationale at
+        # this file's RiskEngine.size_one call site below) -- so the same
+        # value is passed as both the Judge's "actual holdings" and "last
+        # strategy target" context fields.
+        simulated_positions = portfolio_position_repo.get_all()
+        simulated_current_allocations = {
+            asset_id: position.current_allocation for asset_id, position in simulated_positions.items()
+        }
+
         judge_context = build_judge_context(
             day_run_id, self._settings, candidates, assets_by_id,
             StaticRegimeRepo(regime), evidence_repo, StaticAssessmentRepo(assessment_records),
             as_of_llm_repo, self._news_repo, as_of_status_repo,
             portfolio_position_repo, self._signal_source_repo, as_of=cutoff,
+            adversarial_repo=adversarial_repo_for_day,
+            current_allocations=simulated_current_allocations,
         )
         judge_context.unavailable_sources = sorted(set(judge_context.unavailable_sources) | set(EVIDENCE_UNAVAILABLE_FOR_REPLAY))
         if not judge_context.assets:
@@ -390,7 +480,7 @@ class HistoricalReplayService:
                 key_risks=item.key_risks, invalidation_conditions=item.invalidation_conditions,
                 requires_review=item.requires_review, thesis=item.thesis,
                 macro_sensitivity=item.macro_sensitivity,
-                regime_id=None, prompt_template_id=prompt_template_id_judge,
+                regime_id=regime_id, prompt_template_id=prompt_template_id_judge,
                 estimated_cost=per_item_cost, is_backfilled=True,
             )
             decision_id = self._judge_decision_repo.insert(record)
@@ -402,7 +492,7 @@ class HistoricalReplayService:
             outcome = DecisionOutcome(
                 decision_id=decision_id, asset_id=ac.asset.id, decision_timestamp=cutoff,
                 horizon_days=item.investment_horizon_days, target_return=target_return, stop_return=stop_return,
-                outcome_label="UNRESOLVED", regime_at_decision=None, judge_confidence=item.confidence,
+                outcome_label="UNRESOLVED", regime_at_decision=regime_id, judge_confidence=item.confidence,
                 in_holdout_window=False, is_backfilled=True,
             )
             self._decision_outcome_repo.insert(outcome)
@@ -427,7 +517,16 @@ class HistoricalReplayService:
                     if record.asset_id in current_positions else 0.0
                 )
                 factors = factors_by_asset.get(record.asset_id)
-                sized = risk_engine.size_one(record, symbol, factors.volatility_30d if factors else None, current_allocation)
+                # Replay's simulated portfolio has no separate "real
+                # holdings" concept -- its own in-memory current_allocation
+                # IS the strategy's previous target, by construction, so
+                # the same value is passed for both parameters (unlike the
+                # live path, where these are genuinely different -- see
+                # RiskEngine._strategy_turnover_delta's docstring).
+                sized = risk_engine.size_one(
+                    record, symbol, factors.volatility_30d if factors else None,
+                    current_allocation, current_allocation,
+                )
                 sized_decisions.append(sized)
                 decisions_by_asset[record.asset_id] = record
                 decision_ids_by_asset[record.asset_id] = record.id
@@ -444,6 +543,95 @@ class HistoricalReplayService:
             portfolio_service.apply(day_run_id, sized_decisions, decisions_by_asset, decision_ids_by_asset)
 
         return day_result
+
+    def _run_adversarial_research(
+        self, day_run_id, cutoff, candidates, assets_by_id, regime, evidence_repo,
+        assessment_records, prompt_template_id_adversarial, day_result,
+    ) -> StaticAdversarialRepo | None:
+        """3f: bull -> bear -> scenario, run against this simulated day's own
+        reconstructed context -- mirrors AdversarialService.run()'s real
+        sequential logic (same per-stage budget-gated checks), just driven
+        by replay's in-memory static repos instead of live DB reads, so the
+        already-shipped, live-verified prompt/parsing logic
+        (build_research_context/render_bull_prompt/render_bear_prompt/
+        render_scenario_prompt) runs completely unmodified.
+
+        Returns None on any real failure or budget cutoff -- day_result's
+        own cost/skipped_cost_cap are updated directly so the caller can
+        bail out the same way every other stage does; None here just means
+        this simulated day's Judge context is built without 3f, never a
+        fabricated empty-but-successful result."""
+        allowed, reason = self._check_budget()
+        if not allowed:
+            day_result.skipped_cost_cap = True
+            return None
+
+        research_context = build_research_context(
+            day_run_id, candidates, assets_by_id,
+            StaticRegimeRepo(regime), evidence_repo, StaticAssessmentRepo(assessment_records),
+            as_of=cutoff,
+        )
+        if not research_context.assets:
+            return None
+
+        system_prompt, user_prompt = render_bull_prompt(research_context, self._settings.adversarial_prompt_version)
+        bull_result = self._adversarial_provider.call(system_prompt, user_prompt, BullBatch)
+        day_result.cost += bull_result.estimated_cost
+        self._local_spent += bull_result.estimated_cost
+        if bull_result.error is not None or bull_result.parsed is None:
+            return None
+        bull_batch: BullBatch = bull_result.parsed
+
+        allowed, reason = self._check_budget()
+        if not allowed:
+            day_result.skipped_cost_cap = True
+            return None
+        system_prompt, user_prompt = render_bear_prompt(research_context, bull_batch, self._settings.adversarial_prompt_version)
+        bear_result = self._adversarial_provider.call(system_prompt, user_prompt, BearBatch)
+        day_result.cost += bear_result.estimated_cost
+        self._local_spent += bear_result.estimated_cost
+        if bear_result.error is not None or bear_result.parsed is None:
+            return None
+        bear_batch: BearBatch = bear_result.parsed
+
+        allowed, reason = self._check_budget()
+        if not allowed:
+            day_result.skipped_cost_cap = True
+            return None
+        system_prompt, user_prompt = render_scenario_prompt(research_context, bull_batch, bear_batch, self._settings.adversarial_prompt_version)
+        scenario_result = self._adversarial_provider.call(system_prompt, user_prompt, ScenarioBatch)
+        day_result.cost += scenario_result.estimated_cost
+        self._local_spent += scenario_result.estimated_cost
+        if scenario_result.error is not None or scenario_result.parsed is None:
+            return None
+        scenario_batch: ScenarioBatch = scenario_result.parsed
+
+        symbol_to_asset = {ac.asset.symbol: ac.asset for ac in research_context.assets}
+        bull_by_asset = {c.asset: c for c in bull_batch.cases}
+        bear_by_asset = {c.asset: c for c in bear_batch.cases}
+        scenario_by_asset = {s.asset: s for s in scenario_batch.scenarios}
+        symbols_with_all_three = set(bull_by_asset) & set(bear_by_asset) & set(scenario_by_asset)
+        total_adv_cost = bull_result.estimated_cost + bear_result.estimated_cost + scenario_result.estimated_cost
+        per_item_cost = total_adv_cost / len(symbols_with_all_three) if symbols_with_all_three else Decimal("0")
+
+        now = datetime.now(UTC)
+        records_by_asset_id: dict[str, AdversarialResearchRecord] = {}
+        for symbol in symbols_with_all_three:
+            asset = symbol_to_asset.get(symbol)
+            if asset is None:
+                continue
+            record = AdversarialResearchRecord(
+                run_id=day_run_id, asset_id=asset.id, prompt_template_id=prompt_template_id_adversarial,
+                bull_case=bull_by_asset[symbol].model_dump(),
+                bear_case=bear_by_asset[symbol].model_dump(),
+                bull_rebuttal=None,
+                scenarios=scenario_by_asset[symbol].model_dump(),
+                estimated_cost=per_item_cost, created_at=now,
+            )
+            self._adversarial_repo.insert(record)
+            records_by_asset_id[asset.id] = record
+
+        return StaticAdversarialRepo(records_by_asset_id)
 
     def _build_day_universe(
         self, cutoff: datetime, active_assets: list[Asset], series_by_asset: dict[str, HistoricalSeries]
@@ -599,14 +787,18 @@ def _daily_cutoffs(start_date: datetime, end_date: datetime) -> list[datetime]:
 def _assign_model_agreement(records: list[ModelMarketAssessmentRecord]) -> None:
     from collections import defaultdict
 
-    from app.llm.assessment_agreement import compute_model_agreement
+    from app.llm.assessment_agreement import compute_model_agreement, compute_return_dispersion
 
     by_asset: dict[str, list[str]] = defaultdict(list)
+    returns_by_asset: dict[str, list[float]] = defaultdict(list)
     for r in records:
         by_asset[r.asset_id].append(r.overall_assessment)
+        returns_by_asset[r.asset_id].append(r.expected_return_30d)
     agreement_by_asset = {asset_id: compute_model_agreement(v) for asset_id, v in by_asset.items()}
+    dispersion_by_asset = {asset_id: compute_return_dispersion(v) for asset_id, v in returns_by_asset.items()}
     for r in records:
         r.model_agreement = agreement_by_asset[r.asset_id]
+        r.expected_return_dispersion_30d = dispersion_by_asset[r.asset_id]
 
 
 def _hash(text: str) -> str:
@@ -615,13 +807,27 @@ def _hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def make_historical_series_fetcher(binance_client, coinbase_client, days: int):
+def make_historical_series_fetcher(binance_client, coinbase_client, days: int, end_time: datetime | None = None):
     """Real fetcher: one call per asset (Binance primary, Coinbase fallback
     — same source-selection order 3b's live screening uses), covering the
-    whole replay window's date range at once rather than per-replay-day."""
+    whole replay window's date range at once rather than per-replay-day.
+
+    `end_time` (default `None`, meaning "now") anchors Binance's paginated
+    fetch to the replay window's own end date rather than the real current
+    date -- a real bug found live (2026-09-12): the previous unpaginated,
+    un-anchored `fetch_daily_ohlcv_with_timestamps(symbol, days)` always
+    fetched the most recent `days` candles ending TODAY, so any replay
+    window older than roughly `days` before the real current date got a
+    `series_by_asset` with zero overlap with the requested cutoff dates --
+    `HistoricalSeries.as_of(cutoff)` then silently returned no data, every
+    asset's `factors.price` came back `None`, and the day produced zero
+    candidates with no error at all (see README/dashboard TODO). Coinbase's
+    fallback (used only for the handful of assets with no Binance pair) is
+    NOT anchored the same way -- a smaller, disclosed residual gap, same
+    precedent as scripts/run_stress_test.py's own Coinbase fallback."""
 
     def fetch(asset: Asset) -> HistoricalSeries | None:
-        rows = binance_client.fetch_daily_ohlcv_with_timestamps(asset.symbol, days)
+        rows = binance_client.fetch_daily_ohlcv_paginated(asset.symbol, days, end_time=end_time)
         source = "BINANCE"
         if rows is None:
             rows = coinbase_client.fetch_daily_ohlcv_with_timestamps(asset.symbol, days)

@@ -7,7 +7,8 @@ from app.api.auth import verify_api_key
 from app.api.dependencies import get_cost_ledger_repo, get_settings_dependency
 from app.api.schemas import CostDayTableBreakdown, CostSummary, CostTableBreakdown, CostWindowReport
 from app.config import Settings
-from app.llm.cost import CostLedgerRepository
+from app.llm.cost import CostLedgerRepository, pricing_staleness_note
+from app.trading.fill_simulator import fee_rate_staleness_note
 
 # "Since the beginning" for the /by-day endpoint's default (no `since` given)
 # -- this project's "None means unlimited" convention (see /news/recent,
@@ -50,6 +51,8 @@ def get_cost_summary(
     return CostSummary(
         daily=_window_report(repo, day_start, settings.max_daily_llm_cost),
         monthly=_window_report(repo, month_start, settings.max_monthly_llm_cost),
+        pricing_staleness_note=pricing_staleness_note(),
+        fee_rate_staleness_note=fee_rate_staleness_note(),
     )
 
 

@@ -68,6 +68,7 @@ class FakeAssetRepo:
     def __init__(self, assets=None):
         self._assets = {a.id: a for a in (assets or [])}
         self.created = []
+        self.update_in_asset_calls: list[tuple[str, bool]] = []
 
     def get_by_id(self, asset_id):
         return self._assets.get(asset_id)
@@ -93,6 +94,10 @@ class FakeAssetRepo:
 
     def get_active_assets(self):
         return list(self._assets.values())
+
+    def update_in_asset(self, asset_id, in_asset):
+        self.update_in_asset_calls.append((asset_id, in_asset))
+        self._assets[asset_id].in_asset = in_asset
 
 
 class FakeAssetStatusRepo:
@@ -325,6 +330,70 @@ def test_sell_of_cash_line_is_never_validated_against_a_position(client):
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
     response = client.post("/holdings", json={"asset_symbol": "CASH", "quantity": 100.0, "transaction_type": "SELL"})
     assert response.status_code == 201
+
+
+# --- assets.in_asset sync (real reconciliation fix, 2026-09-13) ----------------
+# assets.in_asset was previously only ever set once, at asset-creation time,
+# and never updated again as real holdings changed (confirmed live via
+# "S"/Sonic: in_asset=true with zero real transactions ever recorded).
+# POST /holdings now recomputes the real aggregated position after every
+# transaction and keeps in_asset genuinely in sync.
+
+def test_buy_on_previously_zero_position_asset_sets_in_asset_true(client):
+    fake_asset_repo = FakeAssetRepo([Asset(
+        id="a1", symbol="LINK", name="LINK", coingecko_id="link",
+        active=True, in_asset=False, created_at=datetime.now(UTC),
+    )])
+    fake_ledger = FakeHoldingsLedgerRepo()
+    app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
+
+    response = client.post("/holdings", json={"asset_symbol": "LINK", "quantity": 10.0, "transaction_type": "BUY"})
+    assert response.status_code == 201
+    assert fake_asset_repo.update_in_asset_calls == [("a1", True)]
+    assert fake_asset_repo._assets["a1"].in_asset is True
+
+
+def test_sell_that_fully_closes_position_sets_in_asset_false(client):
+    seed = [_tx("a1", 5.0, cost_basis=50.0, minutes_ago=60)]
+    fake_asset_repo = FakeAssetRepo([Asset(
+        id="a1", symbol="SONIC", name="Sonic", coingecko_id="sonic",
+        active=True, in_asset=True, created_at=datetime.now(UTC),
+    )])
+    fake_ledger = FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
+
+    response = client.post("/holdings", json={"asset_symbol": "SONIC", "quantity": 5.0, "transaction_type": "SELL"})
+    assert response.status_code == 201
+    assert fake_asset_repo.update_in_asset_calls == [("a1", False)]
+    assert fake_asset_repo._assets["a1"].in_asset is False
+
+
+def test_partial_sell_leaving_a_real_position_open_keeps_in_asset_true(client):
+    # A SELL alone must never be assumed to fully close a position --
+    # keyed off the real aggregated quantity after the transaction, not
+    # transaction_type alone.
+    seed = [_tx("a1", 10.0, cost_basis=100.0, minutes_ago=60)]
+    fake_asset_repo = FakeAssetRepo([_asset(asset_id="a1", symbol="BTC")])  # in_asset=True already
+    fake_ledger = FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
+
+    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 4.0, "transaction_type": "SELL"})
+    assert response.status_code == 201
+    assert fake_asset_repo.update_in_asset_calls == [("a1", True)]
+
+
+def test_cash_entries_never_touch_in_asset(client):
+    fake_asset_repo = FakeAssetRepo()
+    fake_ledger = FakeHoldingsLedgerRepo()
+    app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
+
+    response = client.post("/holdings", json={"asset_symbol": "CASH", "quantity": 1000.0})
+    assert response.status_code == 201
+    assert fake_asset_repo.update_in_asset_calls == []
 
 
 # --- append-only, transactional (Phase 5b) -------------------------------------

@@ -88,6 +88,56 @@ class BinanceClient:
             for row in rows
         ]
 
+    def fetch_daily_ohlcv_paginated(
+        self, symbol: str, total_days: int, end_time: datetime | None = None,
+    ) -> list[tuple[datetime, float, float]] | None:
+        """Same (date, close, volume) shape as `fetch_daily_ohlcv_with_timestamps`,
+        oldest first, but pages backward past the `/klines` endpoint's real
+        1000-candle-per-call cap using `endTime` -- lets a caller reach
+        further back than one call allows (e.g. stress-testing against
+        BTC's real 2022 drawdown, previously unreachable at exactly that
+        cap -- see README/dashboard TODO). Stops once `total_days` candles
+        are collected, or once the exchange returns fewer rows than
+        requested for a page (the symbol's own real listing date has been
+        reached) -- never invents data past either real boundary.
+
+        `end_time` (default `None`, meaning "now", the original behavior)
+        anchors the LATEST candle fetched -- without it, every call is
+        implicitly "the most recent `total_days` days ending today", which
+        silently produces no data at all for a historical window once real
+        wall-clock time has moved far enough past it (a real bug found
+        live: `HistoricalReplayService`'s own historical-series fetcher
+        used the unpaginated, un-anchored `fetch_daily_ohlcv_with_timestamps`
+        and returned zero candidates -- not an error, just silently empty --
+        for any replay window older than its own trailing-lookback buffer
+        relative to the real current date; see README/dashboard TODO)."""
+        all_rows: list[tuple[datetime, float, float]] = []
+        end_time_ms: int | None = int(end_time.timestamp() * 1000) if end_time is not None else None
+        with httpx.Client(timeout=15.0) as client:
+            while len(all_rows) < total_days:
+                page_limit = min(1000, total_days - len(all_rows))
+                params = {"symbol": f"{symbol}USDT", "interval": "1d", "limit": page_limit}
+                if end_time_ms is not None:
+                    params["endTime"] = end_time_ms
+                response = client.get(f"{self._base_url}/api/v3/klines", params=params)
+                if response.status_code == 400:
+                    break  # no such pair -- return whatever real pages were already collected, if any
+                response.raise_for_status()
+                page_rows = response.json()
+                if not page_rows:
+                    break
+
+                page = [
+                    (datetime.fromtimestamp(row[0] / 1000, tz=UTC), float(row[4]), float(row[5]))
+                    for row in page_rows
+                ]
+                all_rows = page + all_rows  # this page is strictly older than what's already collected
+                end_time_ms = page_rows[0][0] - 1  # just before this page's earliest open_time
+                if len(page_rows) < page_limit:
+                    break  # exchange had fewer real candles than requested -- real history start reached
+
+        return all_rows or None
+
     def fetch_historical_funding_rates(self, symbol: str, limit: int = 1000) -> list[dict]:
         """Real historical funding-rate observations (not today's rate
         backdated) for 3e.1's replay — genuinely point-in-time reconstructable,

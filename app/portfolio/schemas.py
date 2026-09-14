@@ -18,8 +18,29 @@ class PortfolioPosition(BaseModel):
 
 class PortfolioAllocationChange(BaseModel):
     """One row of `portfolio_allocation_changes` — an append-only log of
-    every allocation change, so MAX_WEEKLY_TURNOVER can sum real changes over
-    a trailing window (current state alone can't answer that)."""
+    every STRATEGY target change, so MAX_WEEKLY_TURNOVER can sum real
+    strategy-driven changes over a trailing window (current state alone
+    can't answer that).
+
+    `previous_allocation`/`new_allocation` are the system's own target
+    (portfolio_positions.current_allocation) before/after this event --
+    NOT real holdings. `actual_allocation_before` is the real,
+    ground-truth holdings-based allocation at the same moment, kept
+    alongside for audit visibility only (never summed into turnover). A
+    real bug fixed 2026-09-14: before this, `previous_allocation` WAS real
+    holdings, so a manual `/holdings` trade that moved real holdings away
+    from the system's own last target got counted as strategy turnover the
+    next time the Judge revisited that asset -- see
+    `RiskEngine._strategy_turnover_delta`'s docstring for the full real
+    incident and backtest evidence.
+
+    `baseline_semantics` disambiguates rows written under the OLD (real
+    holdings) vs NEW (system target) meaning of `previous_allocation` --
+    existing rows from before 2026-09-14 are annotated `"actual_holdings"`
+    (their real, unchanged original meaning; never rewritten), every new
+    row is `"system_target"`. Never delete or renumber old rows to make the
+    turnover history look cleaner -- they are genuine historical fact under
+    their own real semantics."""
 
     id: str | None = None
     asset_id: str
@@ -27,6 +48,8 @@ class PortfolioAllocationChange(BaseModel):
     decision_id: str | None
     previous_allocation: float
     new_allocation: float
+    actual_allocation_before: float | None = None
+    baseline_semantics: str = "system_target"
     changed_at: datetime
 
     def to_row(self) -> dict:
@@ -36,7 +59,45 @@ class PortfolioAllocationChange(BaseModel):
             "decision_id": self.decision_id,
             "previous_allocation": self.previous_allocation,
             "new_allocation": self.new_allocation,
+            "actual_allocation_before": self.actual_allocation_before,
+            "baseline_semantics": self.baseline_semantics,
             "changed_at": self.changed_at.isoformat(),
+        }
+
+
+class TurnoverCapEvent(BaseModel):
+    """One row of `turnover_cap_events` -- a real, persisted, dashboard-
+    visible record of every run where MAX_WEEKLY_TURNOVER capped at least
+    one proposed position change. Found live 2026-09-14: before this,
+    `RiskEngine.apply_turnover_cap` capping every proposed change (e.g. a
+    full revert when the week's real turnover was already at/over budget)
+    was only ever logged via a stdout `logger.warning` -- never persisted
+    anywhere, never surfaced on the dashboard, and this project has no log
+    file at all (see app/logging_config.py), so a fully-blocked run was
+    completely invisible after the fact. `fully_blocked=True` means EVERY
+    proposed change this run was reverted (remaining_budget was ~0);
+    `False` means some changes still went through at a scaled-down size.
+    `capped_symbols` names exactly which assets had a proposed change
+    reduced or reverted this run."""
+
+    id: str | None = None
+    run_id: str
+    occurred_at: datetime
+    turnover_used_this_week: float
+    max_weekly_turnover: float
+    remaining_budget: float
+    fully_blocked: bool
+    capped_symbols: list[str]
+
+    def to_row(self) -> dict:
+        return {
+            "run_id": self.run_id,
+            "occurred_at": self.occurred_at.isoformat(),
+            "turnover_used_this_week": self.turnover_used_this_week,
+            "max_weekly_turnover": self.max_weekly_turnover,
+            "remaining_budget": self.remaining_budget,
+            "fully_blocked": self.fully_blocked,
+            "capped_symbols": self.capped_symbols,
         }
 
 

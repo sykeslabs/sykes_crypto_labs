@@ -1,9 +1,12 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from app.trading.fill_simulator import (
     OrderBookLevel,
     OrderBookSnapshot,
     estimate_fill_volatility_scaled,
+    fee_rate_staleness_note,
     round_trip_cost_pct,
     walk_order_book,
 )
@@ -15,6 +18,20 @@ def _book() -> OrderBookSnapshot:
         asks=[OrderBookLevel(100, 1), OrderBookLevel(101, 2), OrderBookLevel(102, 5)],
         source="BINANCE",
     )
+
+
+def test_fee_rate_staleness_note_is_none_when_recently_verified(monkeypatch):
+    monkeypatch.setattr("app.trading.fill_simulator.FEE_RATES_LAST_VERIFIED", datetime.now(UTC).date())
+    assert fee_rate_staleness_note() is None
+
+
+def test_fee_rate_staleness_note_warns_once_stale(monkeypatch):
+    stale_date = (datetime.now(UTC) - timedelta(days=200)).date()
+    monkeypatch.setattr("app.trading.fill_simulator.FEE_RATES_LAST_VERIFIED", stale_date)
+    note = fee_rate_staleness_note()
+    assert note is not None
+    assert "200 days ago" in note
+    assert stale_date.isoformat() in note
 
 
 def test_walk_order_book_buy_within_top_level_has_zero_slippage():

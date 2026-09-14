@@ -39,7 +39,20 @@ class AssetJudgeContext:
     phase2_analyses: list[LLMAnalysisRecord] = field(default_factory=list)
     news_summaries: list[str] = field(default_factory=list)
     status: str | None = None
-    current_allocation: float = 0.0
+    # Real, ground-truth holdings-based allocation (from holdings_ledger via
+    # compute_current_allocations) -- what the portfolio ACTUALLY holds right
+    # now. See PortfolioAllocationChange/RiskEngine for the same distinction
+    # elsewhere in the codebase.
+    actual_allocation: float = 0.0
+    # The strategy's own last recorded target (portfolio_positions.
+    # current_allocation) -- what the system last DECIDED, whether or not
+    # that decision was ever actually executed as a real trade. Renamed from
+    # the old `current_allocation` (2026-09-14 investigation): that name was
+    # actively misleading here, since real holdings can diverge from it for
+    # weeks at a time (no automated execution exists -- real holdings only
+    # change via manual /holdings entries). See app/risk/engine.py's
+    # `previous_system_target` for the identical concept used elsewhere.
+    previous_system_target: float = 0.0
     adversarial: AdversarialResearchRecord | None = None
 
 
@@ -91,6 +104,7 @@ def build_judge_context(
     signal_source_repo: SignalSourceRepository,
     as_of: datetime | None = None,
     adversarial_repo: AdversarialResearchRepository | None = None,
+    current_allocations: dict[str, float] | None = None,
 ) -> JudgeContext:
     # Optional override for 3e.1's replay, which needs the historical
     # cutoff date, not "now" — purely additive; every existing call site
@@ -116,6 +130,13 @@ def build_judge_context(
     )
 
     positions = portfolio_position_repo.get_all()
+    # Real, ground-truth holdings (2026-09-14 investigation fix) -- the
+    # caller computes this the same way main.py's sizing loop does (via
+    # holdings_ledger + compute_current_allocations), passed in rather than
+    # recomputed here to avoid a second, divergent implementation. Empty
+    # dict (e.g. tests, or callers that don't yet have it) degrades to 0.0
+    # per asset, same fallback `positions.get(asset.id)` already uses below.
+    current_allocations = current_allocations or {}
 
     # Per PHASE3E_PROMPT.md task 1: "unavailable sources must appear as
     # UNAVAILABLE, not silently omitted." Disclosed once, run-wide (not
@@ -215,7 +236,8 @@ def build_judge_context(
             news_summaries=news_summaries,
             adversarial=adversarial,
             status=status_entry.status if status_entry else None,
-            current_allocation=position.current_allocation if position else 0.0,
+            actual_allocation=current_allocations.get(asset.id, 0.0),
+            previous_system_target=position.current_allocation if position else 0.0,
         ))
 
     return JudgeContext(
@@ -240,9 +262,18 @@ freshness and decay-half-life so you can weigh how stale each reading is), \
 3d's independent multi-model assessments (already computed model_agreement \
 across those models), 3f's adversarial bull/bear research and bull/base/bear \
 scenarios (when available), Phase 2's own prior LLM analyses, recent news, \
-and current portfolio status/allocation. Every asset shares the SAME market \
-regime AND the same macro/global-liquidity/regulatory-calendar backdrop \
-(3f) this run.
+and portfolio status. Every asset shares the SAME market regime AND the \
+same macro/global-liquidity/regulatory-calendar backdrop (3f) this run.
+
+For each asset you are given TWO distinct allocation numbers — they can \
+differ, sometimes by a lot, and the gap itself is meaningful:
+- "Actual holdings" is the REAL, current position, ground-truth as of now.
+- "Last strategy target" is what this system itself last decided for this \
+asset — it may not equal actual holdings if that decision was never fully \
+carried out. A large gap tells you a past recommendation didn't take \
+effect in reality; reason from ACTUAL HOLDINGS for anything about real \
+portfolio risk or concentration, and treat the target only as a record of \
+prior intent.
 
 Non-negotiables:
 - `confidence` must be YOUR OWN judgment, never an average of model \
@@ -288,6 +319,16 @@ composite_factor_score, surface that tension explicitly in \
 `key_evidence`/`contradictory_evidence` — do not silently prefer one.
 - A dated regulatory/policy event near this asset's decision horizon \
 belongs in `invalidation_conditions`, same treatment as a token unlock.
+- If any evidence given to you (an assessment's thesis, adversarial \
+research, or your own reasoning) asserts a narrative, risk, or trend that \
+is NOT directly supported by the actual evidence provided this run — even \
+if it reads as general market knowledge — treat it as an unverified prior, \
+not a confirmed fact. Do not let it materially drive `decision`, \
+`confidence`, or `risk_score`; surface it explicitly in \
+`contradictory_evidence` instead of silently absorbing it. A claim with no \
+traceable evidentiary basis in this run's own context may be an artifact \
+of an underlying model's training data, not something genuinely occurring \
+as of this decision's timestamp.
 
 Respond with ONLY a single JSON object (no markdown fences, no commentary):
 
@@ -366,7 +407,9 @@ def render_prompt(context: JudgeContext, prompt_version: str) -> tuple[str, str]
         lines.append(f"## {ac.asset.symbol} ({ac.asset.name})")
         lines.append(
             f"Portfolio status: {ac.status or 'UNKNOWN'} | "
-            f"Current allocation: {ac.current_allocation:.2%}"
+            f"Actual holdings (real, ground truth): {ac.actual_allocation:.2%} | "
+            f"Last strategy target (this system's own prior decision, may not "
+            f"be reflected in actual holdings): {ac.previous_system_target:.2%}"
         )
         lines.append(
             f"Composite factor score (3b, deterministic, non-narrative): "

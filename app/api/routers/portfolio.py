@@ -9,6 +9,7 @@ from app.api.dependencies import (
     get_market_snapshot_repo,
     get_portfolio_position_repo,
     get_regime_repo,
+    get_turnover_cap_event_repo,
 )
 from app.api.schemas import PortfolioStateEntry
 from app.database.repository import (
@@ -17,11 +18,12 @@ from app.database.repository import (
     MarketRegimeRepository,
     MarketSnapshotRepository,
     PortfolioPositionRepository,
+    TurnoverCapEventRepository,
 )
 from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.live_price import fetch_live_price
-from app.portfolio.schemas import PortfolioPosition
+from app.portfolio.schemas import PortfolioPosition, TurnoverCapEvent
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"], dependencies=[Depends(verify_api_key)])
 
@@ -30,6 +32,18 @@ router = APIRouter(prefix="/portfolio", tags=["portfolio"], dependencies=[Depend
 def get_positions(repo: PortfolioPositionRepository = Depends(get_portfolio_position_repo)) -> list[PortfolioPosition]:
     """Raw current holdings, exactly as stored."""
     return list(repo.get_all().values())
+
+
+@router.get("/turnover-cap-events/recent", response_model=list[TurnoverCapEvent])
+def get_recent_turnover_cap_events(
+    limit: int = 20, repo: TurnoverCapEventRepository = Depends(get_turnover_cap_event_repo),
+) -> list[TurnoverCapEvent]:
+    """Every real run where MAX_WEEKLY_TURNOVER capped at least one
+    proposed position change, newest first -- found live 2026-09-14 as a
+    completely invisible-after-the-fact stdout-only warning before this
+    (see TurnoverCapEvent's own docstring). `fully_blocked=true` means
+    EVERY proposed change that run was reverted, not just scaled down."""
+    return repo.get_recent(limit=limit)
 
 
 @router.get("/state", response_model=list[PortfolioStateEntry])

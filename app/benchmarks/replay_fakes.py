@@ -56,6 +56,22 @@ class StaticAssessmentRepo:
         return self._assessments
 
 
+class StaticAdversarialRepo:
+    """In-memory adversarial-research (3f) lookup, scoped to exactly one
+    replayed day's own freshly-computed records -- avoids the real
+    `AdversarialResearchRepository.get_latest_by_asset`'s "most recent by
+    real insertion time, across every run" semantics, which would be
+    ambiguous/unsafe to rely on directly while a backfill run is actively
+    inserting new rows for many simulated days in a single real-time
+    session."""
+
+    def __init__(self, records_by_asset_id: dict):
+        self._records_by_asset_id = records_by_asset_id
+
+    def get_latest_by_asset(self, asset_id):
+        return self._records_by_asset_id.get(asset_id)
+
+
 class AsOfLLMAnalysisRepo:
     """Wraps the real repo's point-in-time method behind the same method
     name/signature `build_judge_context` calls on a live repo, so the

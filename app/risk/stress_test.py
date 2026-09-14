@@ -12,15 +12,17 @@ instruction, not a production risk desk's VaR engine):
 
 1. HISTORICAL_WORST_DRAWDOWN — each asset's own REAL historical peak-to-
    trough drawdown, computed by the caller from real fetched exchange OHLCV
-   (see scripts/run_stress_test.py) and passed in as `AssetDrawdownInput`.
+   (see scripts/run_stress_test.py, which now pages Binance's client past
+   its real 1000-candle-per-call cap) and passed in as `AssetDrawdownInput`.
    This single scenario satisfies both the task's "broad ~70% BTC drawdown,
    2022-style" example AND its "at least one scenario using actual
-   historical returns" requirement — real 2022-era history isn't reachable
-   through the existing Binance client (its kline endpoint's `limit`
-   parameter caps at 1000 daily candles counted back from "now," reaching
-   only to late 2023 in this project's actual timeline — see README), so
-   the real computed BTC drawdown here is smaller than the historical 2022
-   figure; this is disclosed, not silently substituted.
+   historical returns" requirement — with pagination, BTC's real reachable
+   history now goes back to its actual 2017-08-17 Binance listing date
+   (live-verified), covering both the 2022 cycle and the even deeper
+   2017-2018 crash (-83.2%, Dec 2017 to Dec 2018 — the real worst drawdown
+   in that window, not a "2022-style" figure specifically). Previously this
+   capped out at ~2.7 reachable years and missed both; see README for the
+   incident and fix.
 2. ALTCOIN_CONTAGION_LUNA_FTX_STYLE — a stated scenario ASSUMPTION (not
    fitted from data): correlations move toward 1, majors and everything else
    assigned different fixed drawdown percentages.
@@ -119,11 +121,10 @@ def historical_worst_drawdown_scenario(
         scenario_name="HISTORICAL_WORST_DRAWDOWN",
         description=(
             "Each asset's own real historical peak-to-trough drawdown, computed "
-            "from real fetched exchange OHLCV (Binance primary, Coinbase "
-            "fallback) over whatever real window is available — up to ~2.7 "
-            "years, limited by the exchange API's per-call candle cap, so this "
-            "does not reach back to the actual 2022 cycle for most assets (see "
-            "README). Assets with no real data (or only stale data) use "
+            "from real fetched exchange OHLCV (Binance primary, paginated back "
+            "to its own real listing date; Coinbase fallback, unpaginated, for "
+            "symbols with no Binance pair) over whatever real window is "
+            "available. Assets with no real data (or only stale data) use "
             f"{FALLBACK_PROXY_SYMBOL}'s own real drawdown as a documented proxy."
         ),
         asset_results=asset_results,

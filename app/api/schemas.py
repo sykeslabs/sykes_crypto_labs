@@ -149,10 +149,29 @@ class PortfolioStateEntry(BaseModel):
     live_price_source: str | None = None
 
 
+class PromptVersionBreakdown(BaseModel):
+    """One (prompt_template_id) slice of the resolved-directional sample --
+    lets a caller see whether the pooled hit_rate below is actually blending
+    decisions made under different (and possibly superseded/buggy) Judge
+    prompt versions, rather than silently pooling them with no visibility."""
+
+    prompt_template_id: str
+    version: str | None
+    resolved_count: int
+    directional_sample_size: int
+    hit_rate: float | None
+
+
 class CalibrationSummary(BaseModel):
-    """Real, live-computed counts and figures — never a merged/averaged
-    single number across backfilled/live or resolved/unresolved. Absent
-    or None fields mean genuinely not-yet-computable, not zero."""
+    """Real, live-computed counts and figures. The top-level hit_rate/
+    brier_score/sharpe_decision_level/deflated_sharpe_ratio fields are the
+    COMBINED figure across backfilled+live (kept for backward compatibility
+    with existing callers) -- the *_backfilled/*_live fields alongside them
+    are the real, disclosed split, since backfilled (simulated replay) and
+    live (real forward-tracked) decisions are not the same statistical
+    object and pooling them with no visible mix ratio would overstate how
+    much of the combined figure is genuinely live evidence. Absent or None
+    fields mean genuinely not-yet-computable, not zero."""
 
     resolved_backfilled_count: int
     resolved_live_count: int
@@ -163,8 +182,30 @@ class CalibrationSummary(BaseModel):
     brier_score: float | None
     sharpe_decision_level: float | None
     deflated_sharpe_ratio: float | None
+    directional_sample_size_backfilled: int
+    hit_rate_backfilled: float | None
+    brier_score_backfilled: float | None
+    sharpe_decision_level_backfilled: float | None
+    deflated_sharpe_ratio_backfilled: float | None
+    directional_sample_size_live: int
+    hit_rate_live: float | None
+    brier_score_live: float | None
+    sharpe_decision_level_live: float | None
+    deflated_sharpe_ratio_live: float | None
+    by_prompt_version: list[PromptVersionBreakdown]
     by_regime_note: str
     held_out_window_note: str
+    # Quantifies README's Phase 3g "no embargo" finding as a real, live-
+    # updating number instead of only a one-time historical observation.
+    # embargo_gap_days: (earliest live decision) minus (latest backfilled
+    # decision), in days -- negative means the two windows overlap in
+    # wall-clock time. pct_live_within_own_horizon_of_training_end: of all
+    # live decisions, the fraction still within their OWN horizon's
+    # distance from the training-window boundary (Phase 3g's exact
+    # criterion for "too close to the training boundary to be a clean
+    # test") -- should trend toward 0% as real calendar time passes.
+    embargo_gap_days: float | None = None
+    pct_live_within_own_horizon_of_training_end: float | None = None
 
 
 class CostTableBreakdown(BaseModel):
@@ -200,3 +241,5 @@ class CostSummary(BaseModel):
         "live provider-billing balance -- the two are not guaranteed to match "
         "(see README's Phase 3f OpenRouter account-vs-key-limit finding)."
     )
+    pricing_staleness_note: str | None = None
+    fee_rate_staleness_note: str | None = None

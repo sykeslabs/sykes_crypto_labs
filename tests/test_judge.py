@@ -7,6 +7,7 @@ from pydantic import ValidationError
 from app.config.settings import Settings
 from app.database.models import Asset, SignalSource
 from app.judge.context import JudgeContext, AssetJudgeContext, build_judge_context, render_prompt
+from app.portfolio.schemas import PortfolioPosition
 from app.judge.provider import OpenRouterJudgeProvider
 from app.judge.schemas import JudgeDecisionBatch, JudgeDecisionItem, JudgeDecisionRecord
 from app.judge.service import JudgeService
@@ -176,7 +177,7 @@ class FakeSignalSourceRepoForContext:
         return self._sources
 
 
-def _build_context(candidates, assets_by_id, assessments, regime=None, positions=None, sources=None):
+def _build_context(candidates, assets_by_id, assessments, regime=None, positions=None, sources=None, current_allocations=None):
     settings = Settings(_env_file=None)
     return build_judge_context(
         "RUN-1", settings, candidates, assets_by_id,
@@ -184,6 +185,7 @@ def _build_context(candidates, assets_by_id, assessments, regime=None, positions
         FakeAssessmentRepoForContext(assessments), FakeLLMAnalysisRepoForContext(),
         FakeNewsRepoForContext(), FakeAssetStatusRepoForContext(),
         FakePortfolioPositionRepoForContext(positions), FakeSignalSourceRepoForContext(sources),
+        current_allocations=current_allocations,
     )
 
 
@@ -214,6 +216,48 @@ def test_context_discloses_unavailable_sources():
     assert context.unavailable_sources == ["Glassnode"]
 
 
+# --- actual holdings vs. system target (2026-09-14 investigation fix) -------
+# Real incident: the Judge's own "current allocation" context field was
+# silently the system's own last TARGET (portfolio_positions.
+# current_allocation), never real holdings -- so a manual trade the system
+# didn't know about (or a strategy target the user never executed) could
+# diverge from reality by double digits for weeks (see the live replay:
+# BTC was told 16.32% when real holdings were 33.83%). These two concepts
+# must now be genuinely distinct fields, both reaching the prompt.
+
+def test_context_keeps_actual_holdings_and_system_target_distinct():
+    btc = _asset("BTC", "a1")
+    candidates = [_screened("BTC", "a1")]
+    positions = {"a1": PortfolioPosition(asset_id="a1", current_allocation=0.05)}
+    context = _build_context(
+        candidates, {"a1": btc}, [_assessment("a1")],
+        positions=positions, current_allocations={"a1": 0.30},
+    )
+    ac = context.assets[0]
+    assert ac.actual_allocation == pytest.approx(0.30)
+    assert ac.previous_system_target == pytest.approx(0.05)
+
+
+def test_context_defaults_actual_holdings_to_zero_when_not_supplied():
+    # No new caller forgot to update -- an absent/empty current_allocations
+    # degrades to 0.0 per asset (the same fallback already used for a
+    # never-targeted asset), not a crash.
+    btc = _asset("BTC", "a1")
+    candidates = [_screened("BTC", "a1")]
+    context = _build_context(candidates, {"a1": btc}, [_assessment("a1")])
+    assert context.assets[0].actual_allocation == 0.0
+
+
+def test_context_defaults_system_target_to_zero_for_never_targeted_asset():
+    btc = _asset("BTC", "a1")
+    candidates = [_screened("BTC", "a1")]
+    context = _build_context(
+        candidates, {"a1": btc}, [_assessment("a1")], current_allocations={"a1": 0.22},
+    )
+    assert context.assets[0].previous_system_target == 0.0
+    assert context.assets[0].actual_allocation == pytest.approx(0.22)
+
+
 # --- prompt rendering --------------------------------------------------------
 
 def test_render_prompt_includes_regime_agreement_and_unavailable_sources():
@@ -232,6 +276,26 @@ def test_render_prompt_includes_regime_agreement_and_unavailable_sources():
     assert "0.667" in user_prompt
     assert "NO_TRADE" in system_prompt
     assert "macro_sensitivity" in system_prompt
+
+
+def test_render_prompt_shows_actual_holdings_and_system_target_as_distinct_labeled_values():
+    context = JudgeContext(
+        run_id="RUN-1", as_of=datetime.now(UTC), regime=None, regime_id=None,
+        unavailable_sources=[],
+        assets=[AssetJudgeContext(
+            asset=_asset(), screened=_screened(), snapshot=None,
+            assessments=[_assessment()], model_agreement=1.0,
+            actual_allocation=0.3383, previous_system_target=0.1632,
+        )],
+    )
+    _, user_prompt = render_prompt(context, "v1")
+    assert "Actual holdings" in user_prompt
+    assert "33.83%" in user_prompt
+    assert "Last strategy target" in user_prompt
+    assert "16.32%" in user_prompt
+    # Real bug being regressed against: the old wording rendered a single
+    # unqualified "Current allocation" line -- must not reappear.
+    assert "Current allocation:" not in user_prompt
 
 
 def test_render_prompt_includes_full_term_structure_curve_not_one_point():
@@ -522,9 +586,13 @@ class FakeJudgeProvider:
         self.model = result.model
         self._result = result
         self.called = False
+        self.last_system_prompt = None
+        self.last_user_prompt = None
 
     def decide(self, system_prompt, user_prompt):
         self.called = True
+        self.last_system_prompt = system_prompt
+        self.last_user_prompt = user_prompt
         return self._result
 
 
@@ -547,6 +615,7 @@ def _judge_provider_result(decisions_payload, cost=Decimal("0.05"), error=None):
 def _make_service(
     top_candidates, assets, assessments, provider, prompt_repo=None,
     judge_decision_repo=None, decision_outcome_repo=None, cost_guard=None, regime=None,
+    positions=None,
 ):
     settings = Settings(_env_file=None)
     return JudgeService(
@@ -559,7 +628,7 @@ def _make_service(
         llm_analysis_repo=FakeLLMAnalysisRepoForContext(),
         news_repo=FakeNewsRepoForContext(),
         asset_status_repo=FakeAssetStatusRepoForContext(),
-        portfolio_position_repo=FakePortfolioPositionRepoForContext(),
+        portfolio_position_repo=FakePortfolioPositionRepoForContext(positions),
         signal_source_repo=FakeSignalSourceRepoForContext(),
         prompt_template_repo=prompt_repo or FakePromptTemplateRepo(),
         judge_decision_repo=judge_decision_repo or FakeJudgeDecisionRepo(),
@@ -666,6 +735,23 @@ def test_service_provider_failure_reported():
     assert result.stored == 0
 
 
+def test_service_threads_real_current_allocations_into_the_actual_llm_prompt():
+    # End-to-end regression for the 2026-09-14 fix: current_allocations
+    # passed into .run() must reach the ACTUAL rendered prompt sent to the
+    # provider, distinct from the system's own recorded target.
+    btc = _asset("BTC", "a1")
+    top = [_screened("BTC", "a1")]
+    assessments = [_assessment("a1")]
+    provider = FakeJudgeProvider(_judge_provider_result([VALID_DECISION]))
+    positions = {"a1": PortfolioPosition(asset_id="a1", current_allocation=0.1632)}
+
+    service = _make_service(top, [btc], assessments, provider, positions=positions)
+    service.run("RUN-1", current_allocations={"a1": 0.3383})
+
+    assert "33.83%" in provider.last_user_prompt
+    assert "16.32%" in provider.last_user_prompt
+
+
 def test_service_registers_prompt_template_with_correct_stage():
     btc = _asset("BTC", "a1")
     top = [_screened("BTC", "a1")]
@@ -676,7 +762,7 @@ def test_service_registers_prompt_template_with_correct_stage():
     service = _make_service(top, [btc], assessments, provider, prompt_repo=prompt_repo)
     service.run("RUN-1")
 
-    assert prompt_repo.calls == [("judge_decision", "3e", "v2")]
+    assert prompt_repo.calls == [("judge_decision", "3e", "v3")]
 
 
 # --- OpenRouterJudgeProvider (HTTP + retry) -----------------------------------

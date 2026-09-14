@@ -4,11 +4,12 @@ allocation snapshot — this script demonstrates the ad hoc/current path;
 `app.risk.stress_test`'s functions accept any allocation dict, so a caller
 with a historical snapshot source can reuse them directly).
 
-Fetches each asset's real historical OHLCV (Binance primary, Coinbase
-fallback — same clients 3e.1's replay already verified live) to compute
-HISTORICAL_WORST_DRAWDOWN inputs; ALTCOIN_CONTAGION_LUNA_FTX_STYLE needs no
-fetch (a stated assumption). Zero LLM cost — purely deterministic market-data
-fetches and arithmetic.
+Fetches each asset's real historical OHLCV (Binance primary, paginated past
+its real 1000-candle-per-call cap to reach as far back as real listing
+history allows; Coinbase fallback, unpaginated, for the few symbols with no
+Binance USDT pair) to compute HISTORICAL_WORST_DRAWDOWN inputs;
+ALTCOIN_CONTAGION_LUNA_FTX_STYLE needs no fetch (a stated assumption). Zero
+LLM cost — purely deterministic market-data fetches and arithmetic.
 
 Usage:
     python scripts/run_stress_test.py
@@ -24,7 +25,14 @@ from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.risk.stress_test import AssetDrawdownInput, run_all_scenarios
 
-MAX_DAYS = 1000  # Binance kline endpoint's real per-call candle cap
+# Previously capped at 1000 (Binance's real per-call candle limit), which
+# meant this never reached back further than ~2.7 years -- missing BTC's
+# real 2022 (and, as it turns out, the even deeper 2017-2018) drawdown
+# entirely. BinanceClient.fetch_daily_ohlcv_paginated pages backward past
+# that cap; 3500 real days comfortably reaches BTC's actual 2017-08-17
+# Binance listing date (live-verified), so this is now a real fix, not a
+# bigger guess.
+MAX_DAYS = 3500
 STALE_THRESHOLD_DAYS = 30
 
 
@@ -38,9 +46,11 @@ def compute_max_drawdown(closes: list[float]) -> float:
 
 
 def fetch_drawdown_input(binance: BinanceClient, coinbase: CoinbaseClient, symbol: str) -> AssetDrawdownInput:
-    rows = binance.fetch_daily_ohlcv_with_timestamps(symbol, MAX_DAYS)
+    rows = binance.fetch_daily_ohlcv_paginated(symbol, MAX_DAYS)
     if rows is None:
-        rows = coinbase.fetch_daily_ohlcv_with_timestamps(symbol, MAX_DAYS)
+        # Coinbase fallback is unchanged (not paginated) -- only reached for
+        # the handful of symbols with no Binance USDT pair at all.
+        rows = coinbase.fetch_daily_ohlcv_with_timestamps(symbol, 1000)
     if not rows:
         return AssetDrawdownInput(symbol=symbol, max_drawdown=None)
 

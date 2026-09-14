@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import get_args
 
@@ -14,7 +14,7 @@ from app.database.evidence_provenance import (
 )
 from app.database.models import AssetStatusHistory, SignalSource
 from app.judge.decisions import DecisionValue
-from app.llm.cost import COST_TRACKED_TABLES, CostGuard, CostLedgerRepository
+from app.llm.cost import COST_TRACKED_TABLES, CostGuard, CostLedgerRepository, pricing_staleness_note
 
 # --- DecisionValue ---------------------------------------------------------
 
@@ -181,6 +181,20 @@ class FakeSupabaseClient:
 
     def table(self, name):
         return _FakeTableQuery(list(self._tables.get(name, [])))
+
+
+def test_pricing_staleness_note_is_none_when_recently_verified(monkeypatch):
+    monkeypatch.setattr("app.llm.cost.PRICING_LAST_VERIFIED", datetime.now(UTC).date())
+    assert pricing_staleness_note() is None
+
+
+def test_pricing_staleness_note_warns_once_stale(monkeypatch):
+    stale_date = (datetime.now(UTC) - timedelta(days=200)).date()
+    monkeypatch.setattr("app.llm.cost.PRICING_LAST_VERIFIED", stale_date)
+    note = pricing_staleness_note()
+    assert note is not None
+    assert "200 days ago" in note
+    assert stale_date.isoformat() in note
 
 
 def test_cost_tracked_tables_registers_llm_analyses():

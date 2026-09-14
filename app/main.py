@@ -23,6 +23,7 @@ from app.database.repository import (
     PromptTemplateRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
+    TurnoverCapEventRepository,
 )
 from app.judge.provider import OpenRouterJudgeProvider
 from app.judge.service import JudgeService
@@ -58,6 +59,7 @@ from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
 from app.portfolio.construction import PortfolioConstructionService
 from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
+from app.portfolio.schemas import TurnoverCapEvent
 from app.risk.correlation import compute_daily_returns
 from app.risk.engine import RiskEngine
 
@@ -334,6 +336,7 @@ def main() -> int:
         portfolio_position_repo = PortfolioPositionRepository(client)
         allocation_change_repo = PortfolioAllocationChangeRepository(client)
         holdings_ledger_repo = HoldingsLedgerRepository(client)
+        turnover_cap_event_repo = TurnoverCapEventRepository(client)
 
         judge_service = JudgeService(
             settings=settings,
@@ -360,40 +363,59 @@ def main() -> int:
                 timeout_seconds=settings.llm_request_timeout_seconds,
             ),
         )
-        judge_result = judge_service.run(run_id)
+        assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
+
+        # Phase 5a: current_allocation now comes SOLELY from real,
+        # ground-truth holdings_ledger entries (quantity * real current
+        # price, plus an explicit cash line) -- never from
+        # portfolio_positions, which is retired as an input and only
+        # written going forward as Portfolio Construction's own derived
+        # bookkeeping (see doc/phases.md's Phase 5a section). Real prices
+        # are looked up for every asset with a real holdings entry, not
+        # just this run's candidates, so the total portfolio value used
+        # to compute fractions is correct even for a long-term hold
+        # that isn't a TOP_CANDIDATE this run.
+        #
+        # Phase 5b: holdings_ledger is now genuinely transactional --
+        # multiple BUY/SELL rows per asset sum into the current
+        # position (see aggregate_current_holdings) rather than only
+        # the latest row per asset counting.
+        #
+        # Computed BEFORE the Judge runs (2026-09-14 investigation fix) so
+        # build_judge_context can give the Judge these same real numbers --
+        # previously this was computed only after the Judge decided, so the
+        # Judge's own "current allocation" context field silently meant the
+        # system's stale target instead of real holdings. See
+        # app/judge/context.py's `actual_allocation` docstring.
+        latest_holdings = aggregate_current_holdings(holdings_ledger_repo.get_all_history())
+        price_lookup_ids = {a.id for a in assets_by_id.values()} | {
+            h.asset_id for h in latest_holdings if h.asset_id is not None
+        }
+        price_by_asset_id: dict[str, float] = {}
+        for aid in price_lookup_ids:
+            snapshot = snapshot_repo.get_latest_snapshot(aid)
+            if snapshot is not None:
+                price_by_asset_id[aid] = float(snapshot.price)
+        current_allocations = compute_current_allocations(latest_holdings, price_by_asset_id)
+        logger.info("Current allocations (from real holdings_ledger, ground truth): %s", current_allocations)
+
+        judge_result = judge_service.run(run_id, current_allocations)
         logger.info("Judge finished: %s", judge_result.summary)
         judge_failed = bool(judge_result.failed) and judge_result.stored == 0
 
         if judge_result.decisions:
             risk_engine = RiskEngine(settings)
-            assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
 
-            # Phase 5a: current_allocation now comes SOLELY from real,
-            # ground-truth holdings_ledger entries (quantity * real current
-            # price, plus an explicit cash line) -- never from
-            # portfolio_positions, which is retired as an input and only
-            # written going forward as Portfolio Construction's own derived
-            # bookkeeping (see doc/phases.md's Phase 5a section). Real prices
-            # are looked up for every asset with a real holdings entry, not
-            # just this run's candidates, so the total portfolio value used
-            # to compute fractions is correct even for a long-term hold
-            # that isn't a TOP_CANDIDATE this run.
-            #
-            # Phase 5b: holdings_ledger is now genuinely transactional --
-            # multiple BUY/SELL rows per asset sum into the current
-            # position (see aggregate_current_holdings) rather than only
-            # the latest row per asset counting.
-            latest_holdings = aggregate_current_holdings(holdings_ledger_repo.get_all_history())
-            price_lookup_ids = {a.id for a in assets_by_id.values()} | {
-                h.asset_id for h in latest_holdings if h.asset_id is not None
+            # The system's OWN last recorded target per asset (0.0 if never
+            # targeted before) -- the real turnover baseline (see
+            # RiskEngine._strategy_turnover_delta's docstring). Deliberately
+            # separate from `current_allocations` above: that's real,
+            # ground-truth holdings, used for risk gating; this is the
+            # strategy's own bookkeeping, used for turnover accounting.
+            previous_system_targets = {
+                asset_id: position.current_allocation
+                for asset_id, position in portfolio_position_repo.get_all().items()
             }
-            price_by_asset_id: dict[str, float] = {}
-            for aid in price_lookup_ids:
-                snapshot = snapshot_repo.get_latest_snapshot(aid)
-                if snapshot is not None:
-                    price_by_asset_id[aid] = float(snapshot.price)
-            current_allocations = compute_current_allocations(latest_holdings, price_by_asset_id)
-            logger.info("Current allocations (from real holdings_ledger, ground truth): %s", current_allocations)
 
             sized_decisions = []
             decisions_by_asset = {}
@@ -406,10 +428,12 @@ def main() -> int:
                 symbol = asset.symbol if asset else decision.asset_id
                 screened = screened_universe_repo.get_latest_for_symbol(symbol) if asset else None
                 current_allocation = current_allocations.get(decision.asset_id, 0.0)
+                previous_system_target = previous_system_targets.get(decision.asset_id, 0.0)
                 sized = risk_engine.size_one(
                     decision, symbol,
                     screened.volatility_30d if screened else None,
                     current_allocation,
+                    previous_system_target,
                 )
                 sized_decisions.append(sized)
                 decisions_by_asset[decision.asset_id] = decision
@@ -432,10 +456,24 @@ def main() -> int:
             turnover_used = allocation_change_repo.get_turnover_since(
                 datetime.now(UTC) - timedelta(days=7)
             )
+            remaining_turnover_budget = risk_engine.remaining_turnover_budget(turnover_used)
             risk_engine.apply_turnover_cap(sized_decisions, turnover_used)
             turnover_capped = [d.symbol for d in sized_decisions if d.turnover_capped]
             if turnover_capped:
                 logger.warning("Turnover-capped this run: %s", turnover_capped)
+                # Real, persisted, dashboard-visible record -- before this
+                # fix (2026-09-14), a fully-blocked run was only ever
+                # logged here, to stdout, with no log file and no
+                # dashboard visibility at all (see TurnoverCapEvent's own
+                # docstring for the real incident this closes).
+                turnover_cap_event_repo.insert(TurnoverCapEvent(
+                    run_id=run_id, occurred_at=datetime.now(UTC),
+                    turnover_used_this_week=turnover_used,
+                    max_weekly_turnover=settings.max_weekly_turnover,
+                    remaining_budget=remaining_turnover_budget,
+                    fully_blocked=remaining_turnover_budget <= 0,
+                    capped_symbols=turnover_capped,
+                ))
 
             portfolio_service = PortfolioConstructionService(
                 settings=settings,

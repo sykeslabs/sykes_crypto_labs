@@ -67,11 +67,19 @@ class PortfolioConstructionService:
             action_type = self._classify(d)
             actions.append(PortfolioAction(
                 asset_id=d.asset_id, symbol=d.symbol, action=action_type,
-                previous_allocation=d.current_allocation, new_allocation=d.final_allocation,
+                previous_allocation=d.previous_system_target, new_allocation=d.final_allocation,
                 decision_id=decision_ids_by_asset.get(d.asset_id),
             ))
 
-            if d.final_allocation != d.current_allocation:
+            # Real bug fixed 2026-09-14: this used to compare/record against
+            # `d.current_allocation` (real, ground-truth holdings) -- so a
+            # manual `/holdings` trade that moved real holdings away from
+            # the system's own last target got recorded (and counted
+            # against MAX_WEEKLY_TURNOVER) as if the STRATEGY had changed
+            # its mind. `previous_system_target` is the system's own
+            # bookkeeping baseline; `actual_allocation_before` is kept
+            # alongside, for real audit visibility, never for turnover math.
+            if d.final_allocation != d.previous_system_target:
                 self._position_repo.upsert(PortfolioPosition(
                     asset_id=d.asset_id,
                     current_allocation=d.final_allocation,
@@ -80,7 +88,9 @@ class PortfolioConstructionService:
                 self._allocation_change_repo.insert(PortfolioAllocationChange(
                     asset_id=d.asset_id, run_id=run_id,
                     decision_id=decision_ids_by_asset.get(d.asset_id),
-                    previous_allocation=d.current_allocation, new_allocation=d.final_allocation,
+                    previous_allocation=d.previous_system_target, new_allocation=d.final_allocation,
+                    actual_allocation_before=d.current_allocation,
+                    baseline_semantics="system_target",
                     changed_at=now,
                 ))
 
@@ -91,13 +101,17 @@ class PortfolioConstructionService:
         return actions
 
     def _classify(self, d: SizedDecision) -> PortfolioActionType:
-        if d.final_allocation == d.current_allocation:
-            return "HOLD" if d.current_allocation > 0 else "HOLD_CASH"
-        if d.current_allocation == 0 and d.final_allocation > 0:
+        """Classifies against the system's own previous target, not real
+        holdings -- "did the STRATEGY initiate/remove/grow/shrink its own
+        position," the same distinction the turnover fix above makes (see
+        RiskEngine._strategy_turnover_delta's docstring)."""
+        if d.final_allocation == d.previous_system_target:
+            return "HOLD" if d.previous_system_target > 0 else "HOLD_CASH"
+        if d.previous_system_target == 0 and d.final_allocation > 0:
             return "INITIATE"
         if d.final_allocation == 0:
             return "REMOVE"
-        return "INCREASE" if d.final_allocation > d.current_allocation else "REDUCE"
+        return "INCREASE" if d.final_allocation > d.previous_system_target else "REDUCE"
 
     def _apply_replacement_capacity_limit(
         self, sized_decisions: list[SizedDecision], decisions_by_asset: dict[str, JudgeDecisionRecord]
@@ -122,12 +136,17 @@ class PortfolioConstructionService:
         if overflow <= 0:
             return
 
+        # Capacity/replacement is a STRATEGY bookkeeping concept (how many
+        # positions is the strategy itself trying to hold), so it's judged
+        # against previous_system_target, not real holdings -- an asset you
+        # hold manually but the strategy has never targeted is still a
+        # genuine "new candidate" from the strategy's own point of view.
         new_candidates = sorted(
-            (d for d in sized_decisions if d.current_allocation == 0 and d.final_allocation > 0),
+            (d for d in sized_decisions if d.previous_system_target == 0 and d.final_allocation > 0),
             key=alpha_of, reverse=True,
         )
         existing_held = sorted(
-            (d for d in sized_decisions if d.current_allocation > 0 and d.final_allocation > 0),
+            (d for d in sized_decisions if d.previous_system_target > 0 and d.final_allocation > 0),
             key=alpha_of,
         )
 

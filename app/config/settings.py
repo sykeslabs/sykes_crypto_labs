@@ -69,12 +69,18 @@ class Settings(BaseSettings):
     coinmarketcap_base_url: str = "https://pro-api.coinmarketcap.com"
     coinbase_base_url: str = "https://api.exchange.coinbase.com"
     binance_base_url: str = "https://api.binance.com"
-    # 30, not the suggested range's upper end of 50 — CoinGecko's free-tier
-    # per-asset historical endpoint rate-limits after ~5 rapid calls, and
-    # every other per-asset call (Coinbase/Binance klines, CMC quotes) adds
-    # runtime; keeping the universe modest keeps a screening run fast and
-    # reliable rather than racing free-tier limits every run.
-    screening_universe_size: int = 30
+    # Raised 30 -> 50 (2026-09-13): the original reasoning above (CoinGecko's
+    # free-tier per-asset historical endpoint rate-limiting after ~5 rapid
+    # calls) no longer applies -- today's screening pipeline gets
+    # volatility/drawdown from Binance/Coinbase klines instead (verified
+    # live: 14 sequential klines calls completed in 3.7s with zero
+    # rate-limiting), and CoinGecko/CoinMarketCap universe calls are single
+    # batched requests regardless of size. Raising this mainly means more
+    # sequential Binance/Coinbase OHLCV calls (longer real run time, not
+    # more real dollar cost -- LLM spend is gated by top_candidates_size,
+    # unchanged at 10) -- a real, verified decision, not the old
+    # conservative default carried over out of habit.
+    screening_universe_size: int = 50
     top_candidates_size: int = 10
 
     # Derivatives / on-chain evidence (Phase 3c, used only with --with-derivatives)
@@ -110,14 +116,23 @@ class Settings(BaseSettings):
     # GEMINI_MODEL (get_assessment_models() below) so this stage needs zero
     # new required config while staying independently overridable.
     openrouter_assessment_models: str | None = None
-    assessment_prompt_version: str = "v1"
+    # v2 (2026-09-12): added an explicit instruction to flag/discount any
+    # claim not traceable to this run's own evidence as an unverified prior
+    # rather than a confirmed fact -- a direct mitigation for a confirmed
+    # LLM parametric-knowledge-leakage finding (see README/dashboard TODO:
+    # a real backfilled decision cited a real 2025 narrative as active in
+    # 2024, then admitted in its own output that it wasn't evidence-backed).
+    assessment_prompt_version: str = "v2"
 
     # Judge (Phase 3e, used only with --with-judge). A single synthesizing
     # model — unlike 3d's independent ensemble, the Judge is one reasoning
     # step over already-independent evidence (including 3d's ensemble
     # itself). Defaults to reusing CLAUDE_MODEL unless overridden.
     judge_model: str | None = None
-    judge_prompt_version: str = "v2"
+    # v3 (2026-09-12): same unverified-prior mitigation as
+    # assessment_prompt_version v2 above, applied to the Judge's own
+    # synthesis step too.
+    judge_prompt_version: str = "v3"
 
     # Risk Engine (Phase 3e, used only with --with-judge). Deterministic,
     # configurable hard gates over the Judge's unconstrained output — see
@@ -125,15 +140,53 @@ class Settings(BaseSettings):
     # a paper system, not backtested-optimal values.
     max_single_asset_allocation: float = 0.15
     max_new_position_size: float = 0.05
+    # POLICY (real bug fixed + pre-production-audited 2026-09-14/15, see
+    # app/risk/engine.py's RiskEngine._strategy_turnover_delta docstring for
+    # the full incident): turnover is measured from the previous SYSTEM
+    # TARGET to the new system target, never from real holdings. Actual
+    # holdings remain the sole source of truth for real portfolio risk and
+    # position state (every real gating decision -- is_new_position, the
+    # rebalance-confidence bar, WATCH's "hold what you actually have" --
+    # still uses them, unchanged) -- but an externally-caused change in
+    # actual holdings (a manual `/holdings` trade, a price move) is NOT
+    # strategy turnover and is never charged against this budget.
+    #
+    # This 30% figure is a circuit breaker against excessive STRATEGY
+    # TARGET CHURN -- a real transaction-cost analysis (147 resolved
+    # decisions, 2026-09-14) found average net-of-costs drag of only
+    # ~0.26pp/decision, too small to justify a cost-optimization-based cap
+    # at any particular size. Do NOT read 30%/7-days as empirically
+    # optimal: a 2026-09-15 backtest across 7/14/30-day windows and
+    # multiple budgets found this project's ~10 days of real history
+    # insufficient to distinguish between them, and an earlier ~30-day/
+    # 60-75% hypothesis was tested and found WORSE for the one real
+    # incident it was meant to address -- this value is kept because no
+    # evidence yet supports changing it, not because it's been validated
+    # as correct.
     max_weekly_turnover: float = 0.30
     min_buy_confidence: float = 0.55
     min_rebalance_confidence: float = 0.50
     min_sell_confidence: float = 0.50
+    # A new candidate must beat the weakest existing holding's own
+    # risk_adjusted_alpha by at least this margin before it's allowed to
+    # replace it (app/portfolio/construction.py's replacement rule) --
+    # a hysteresis/switching-cost buffer, not a backtested-optimal value:
+    # without it, a candidate only marginally better than an existing
+    # holding would keep displacing it every run, generating real turnover/
+    # fee cost (see app/trading/fill_simulator.py) for a negligible expected
+    # alpha gain. 0.03 (3 percentage points of risk_adjusted_alpha) is a
+    # documented convention, chosen the same way COMPOSITE_FACTOR_WEIGHTS
+    # was (app/market_data/factors.py) -- not fit or backtested against
+    # real turnover-adjusted outcomes. Sensitivity-test once enough resolved
+    # decisions exist across enough replacement events to compare this
+    # value against alternatives (see the dashboard's own TODO).
     min_replacement_alpha_advantage: float = 0.03
     # Portfolio Construction's replacement rule (task 3) only has teeth once
     # there's a real capacity limit — otherwise every new candidate could
     # just be added indefinitely. A conservative starting cap, not a
-    # backtested-optimal value.
+    # backtested-optimal value. Same documented-convention-not-backtested
+    # status as min_replacement_alpha_advantage above -- see the dashboard's
+    # own TODO.
     max_concurrent_positions: int = 8
     # Baseline daily-return stdev used as the reference point for the
     # inverse-volatility position-sizing scalar (task 2) — an asset at
