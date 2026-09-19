@@ -7,6 +7,7 @@ from app.api.dependencies import (
     get_coinbase_client,
     get_decision_outcome_repo,
     get_market_snapshot_repo,
+    get_portfolio_allocation_change_repo,
     get_portfolio_position_repo,
     get_regime_repo,
     get_turnover_cap_event_repo,
@@ -17,13 +18,14 @@ from app.database.repository import (
     DecisionOutcomeRepository,
     MarketRegimeRepository,
     MarketSnapshotRepository,
+    PortfolioAllocationChangeRepository,
     PortfolioPositionRepository,
     TurnoverCapEventRepository,
 )
 from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.live_price import fetch_live_price
-from app.portfolio.schemas import PortfolioPosition, TurnoverCapEvent
+from app.portfolio.schemas import PortfolioAllocationChange, PortfolioPosition, TurnoverCapEvent
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"], dependencies=[Depends(verify_api_key)])
 
@@ -43,6 +45,18 @@ def get_recent_turnover_cap_events(
     completely invisible-after-the-fact stdout-only warning before this
     (see TurnoverCapEvent's own docstring). `fully_blocked=true` means
     EVERY proposed change that run was reverted, not just scaled down."""
+    return repo.get_recent(limit=limit)
+
+
+@router.get("/allocation-changes/recent", response_model=list[PortfolioAllocationChange])
+def get_recent_allocation_changes(
+    limit: int = 50, repo: PortfolioAllocationChangeRepository = Depends(get_portfolio_allocation_change_repo),
+) -> list[PortfolioAllocationChange]:
+    """Every real recorded change to the system's own recommended target
+    allocation, newest first -- `previous_allocation`/`new_allocation` are
+    the strategy's own target (never real holdings; see
+    PortfolioAllocationChange's own docstring), `actual_allocation_before`
+    is real holdings at that same moment, kept for audit visibility only."""
     return repo.get_recent(limit=limit)
 
 

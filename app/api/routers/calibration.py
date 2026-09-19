@@ -20,6 +20,7 @@ from app.database.repository import (
     EvidenceValueReportRepository,
     JudgeDecisionRepository,
     PromptTemplateRepository,
+    compute_duplicate_group_decision_ids,
 )
 from app.api.schemas import CalibrationSummary, PromptVersionBreakdown
 
@@ -155,8 +156,39 @@ def get_calibration_summary(
     # of re-fetching per (combined, backfilled, live, per-version) slice.
     decision_by_outcome_id = {o.decision_id: judge_repo.get_by_id(o.decision_id) for o in resolved}
 
+    # B2 (2026-09-16): same-UTC-day duplicate live Judge decisions (see
+    # doc/history.md's Phase 5j section for the real 2026-09-05/06
+    # incident) are excluded from every directional/calibration statistic
+    # below -- hit_rate/brier_score/sharpe/DSR, combined and per-slice, and
+    # by_prompt_version's per-template figures, via this one shared filter
+    # in pairs_for(). Computed from the FULL live decision population, not
+    # just resolved_live above, so group membership is correct and stable
+    # even for a group with unresolved members (e.g. NEAR/2026-09-06) --
+    # never recomputed differently as outcomes resolve. Deliberately does
+    # NOT change resolved_backfilled_count/resolved_live_count/
+    # unresolved_*_count below: those are raw audit counts of how many
+    # decision_outcomes rows exist in each state, a distinct operational
+    # statistic from calibration sample composition -- see doc/decisions.md.
+    #
+    # limit=None (2026-09-16 fix): duplicate-group membership must be
+    # computed from the COMPLETE live decision population, never an
+    # arbitrary recent-N slice -- a capped fetch could see only some
+    # members of an old duplicate group (the rest pushed out of the
+    # window by newer decisions) and wrongly conclude it isn't a
+    # duplicate at all. Real per-request cost is negligible at this
+    # project's actual scale (165 live decisions today); this is about
+    # removing a correctness dependency on data volume, not performance.
+    all_live_decisions = judge_repo.get_recent(limit=None, is_backfilled=False)
+    excluded_decision_ids = compute_duplicate_group_decision_ids(
+        (d.id, d.asset_id, d.created_at, d.is_backfilled) for d in all_live_decisions
+    )
+
     def pairs_for(outcomes: list[DecisionOutcome]) -> list[tuple[DecisionOutcome, object]]:
-        return [(o, decision_by_outcome_id.get(o.decision_id)) for o in outcomes]
+        return [
+            (o, decision_by_outcome_id.get(o.decision_id))
+            for o in outcomes
+            if o.decision_id not in excluded_decision_ids
+        ]
 
     combined = _directional_stats(pairs_for(resolved))
     backfilled_stats = _directional_stats(pairs_for(resolved_backfilled))
@@ -225,6 +257,7 @@ def get_calibration_summary(
         resolved_live_count=len(resolved_live),
         unresolved_backfilled_count=len(unresolved_backfilled),
         unresolved_live_count=len(unresolved_live),
+        excluded_duplicate_group_decision_count=len(excluded_decision_ids),
         directional_sample_size=combined["directional_sample_size"],
         hit_rate=combined["hit_rate"],
         brier_score=combined["brier_score"],

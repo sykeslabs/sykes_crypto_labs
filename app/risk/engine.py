@@ -32,6 +32,38 @@ AGREEMENT_SCALAR_FLOOR = 0.3
 TURNOVER_EPSILON = 1e-9
 
 
+def is_cap_compliance_correction(d: "SizedDecision", max_single_asset_allocation: float) -> bool:
+    """A2: true when a BUY/HOLD/SELL decision (never WATCH/NO_TRADE -- that's
+    A1's own, separate territory; see `_strategy_turnover_delta`) reduces a
+    genuinely oversized `previous_system_target` down to, or below,
+    `MAX_SINGLE_ASSET_ALLOCATION`. Real incident this closes: RiskEngine
+    repeatedly computed a fully cap-compliant target for an oversized asset
+    (BTC, real live history 2026-09-16/09-17) only for the ordinary
+    turnover-cap mechanism to block or scale it right back above cap, with
+    no guaranteed convergence -- see doc/decisions.md's A2 entry for the
+    full forensic analysis and the reasoning behind this exemption.
+
+    Deliberately never looks at `current_allocation` (real holdings) -- this
+    is a target-management fix only, not an execution-engine concern (real
+    holdings above cap with an already-compliant target, e.g. a manual
+    trade never executed down, is a separate, unrelated gap). SELL-to-zero
+    from an oversized target is deliberately included: no distinct "exit"
+    category exists anywhere else in this project, and inventing one here
+    would add a policy concept with no supporting precedent.
+
+    A module-level pure function (not a RiskEngine method) so
+    `PortfolioConstructionService` can classify `change_reason` with the
+    exact same predicate the Risk Engine uses for its turnover exemption --
+    two independently-written but subtly different predicates would be a
+    real, hard-to-notice correctness risk."""
+    return (
+        d.decision not in ("WATCH", "NO_TRADE")
+        and d.previous_system_target > (max_single_asset_allocation + TURNOVER_EPSILON)
+        and d.final_allocation < d.previous_system_target
+        and d.final_allocation <= max_single_asset_allocation
+    )
+
+
 @dataclass
 class SizedDecision:
     asset_id: str
@@ -85,8 +117,21 @@ class RiskEngine:
         if gated_decision == "SELL":
             final_allocation, vol_scalar, agreement_scalar = 0.0, 1.0, 1.0
         elif gated_decision in ("WATCH", "NO_TRADE"):
-            # No change to current exposure — these are not sizing decisions.
-            final_allocation, vol_scalar, agreement_scalar = current_allocation, 1.0, 1.0
+            # No change to REAL current exposure -- these are not sizing
+            # decisions. But the DESIRED TARGET this expresses must still
+            # respect max_single_asset_allocation: a real bug found live
+            # 2026-09-15/16 (see doc/history.md's Phase 5g section) let
+            # real holdings sitting above the cap (from a manual trade, or
+            # a not-yet-fully-executed prior REDUCE) get silently
+            # re-adopted as a compliant-looking target via WATCH/NO_TRADE,
+            # with no cap check at all -- a turnover-costly REDUCE that had
+            # brought a target down to 16.32% was undone for free by the
+            # very next WATCH decision, which snapped the target straight
+            # back to real holdings (33.31%). `current_allocation` (real
+            # holdings) itself is NEVER modified here -- only the target
+            # this decision expresses is bounded.
+            final_allocation = min(current_allocation, s.max_single_asset_allocation)
+            vol_scalar, agreement_scalar = 1.0, 1.0
         else:  # BUY or HOLD-with-a-resize
             vol_scalar = self._volatility_scalar(volatility_30d)
             agreement_scalar = self._agreement_scalar(decision.model_agreement, decision.source_agreement)
@@ -206,8 +251,20 @@ class RiskEngine:
         RISK decision (is_new_position, the rebalance-confidence gate,
         WATCH's "hold what you actually have") via `current_allocation`,
         completely unchanged -- only the TURNOVER BUDGET's own baseline
-        changes here."""
-        if d.decision in ("WATCH", "NO_TRADE"):
+        changes here.
+
+        Also zero for an A2 cap-compliance correction (real bug fixed
+        2026-09-17 onward, see `is_cap_compliance_correction`'s own
+        docstring): a BUY/HOLD/SELL decision that reduces a genuinely
+        oversized `previous_system_target` down to, or below,
+        MAX_SINGLE_ASSET_ALLOCATION is exempted the same way WATCH/NO_TRADE
+        already are -- both are the system correcting itself back within
+        an already-enforced hard constraint, not discretionary strategy
+        churn, which is what this budget is documented to measure (see
+        MAX_WEEKLY_TURNOVER's own settings.py comment)."""
+        if d.decision in ("WATCH", "NO_TRADE") or is_cap_compliance_correction(
+            d, self._settings.max_single_asset_allocation
+        ):
             return 0.0
         return d.final_allocation - d.previous_system_target
 

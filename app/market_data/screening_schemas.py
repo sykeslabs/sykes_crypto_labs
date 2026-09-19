@@ -12,6 +12,17 @@ class ScreenedAsset(BaseModel):
     run_id: str
     computed_at: datetime
     symbol: str
+    # CoinGecko's real display name for this coin -- e.g. "Zcash", not "ZEC".
+    # Transient/in-memory only (not persisted to screened_universe -- the
+    # dashboard's own "Name" column already resolves from `assets` via
+    # /screening/tracked, never from this row): its only real consumer is
+    # `_promote_new_candidates`, which used to fall back to the bare symbol
+    # when creating a brand-new `assets` row, since no real name was ever
+    # threaded through from `_build_universe`'s own already-fetched
+    # CoinGecko `name` field (a real, found-live gap -- see
+    # scripts/reconcile_asset_names.py for the one-time backfill this
+    # produced for assets already created that way).
+    name: str | None = None
     coingecko_id: str | None = None
     coinmarketcap_id: str | None = None
     asset_id: str | None = None

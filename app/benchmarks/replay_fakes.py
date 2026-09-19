@@ -119,8 +119,13 @@ class InMemoryAllocationChangeRepo:
         self._changes.append(change)
 
     def get_turnover_since(self, since: datetime) -> float:
+        # Mirrors app.database.repository.PortfolioAllocationChangeRepository
+        # .get_turnover_since's change_reason="strategy" filter (2026-09-17
+        # fix) -- without it, replay/backtest turnover budgets would
+        # double-count WATCH/NO_TRADE risk-control corrections the same way
+        # the live repository used to.
         return sum(
             abs(c.new_allocation - c.previous_allocation)
             for c in self._changes
-            if c.changed_at >= since
+            if c.changed_at >= since and c.change_reason == "strategy"
         )

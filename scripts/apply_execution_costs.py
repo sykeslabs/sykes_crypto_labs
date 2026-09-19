@@ -38,13 +38,31 @@ from app.trading.fill_simulator import TAKER_FEE_RATE_BY_EXCHANGE, round_trip_co
 # slippage estimate, not treated as this project's real capital.
 ASSUMED_PORTFOLIO_NOTIONAL_USD = 10_000.0
 TRAILING_WINDOW_DAYS = 30
-HISTORICAL_FETCH_DAYS = 1000  # Binance's real per-call candle cap
+HISTORICAL_FETCH_DAYS = 1000  # Binance's real per-call candle cap -- a floor, not a ceiling; see _required_fetch_days
+FETCH_BUFFER_DAYS = 5  # slack beyond the exact oldest-decision boundary
 
 
-def fetch_historical_series(binance: BinanceClient, coinbase: CoinbaseClient, symbol: str, asset_id: str) -> HistoricalSeries | None:
-    rows = binance.fetch_daily_ohlcv_with_timestamps(symbol, HISTORICAL_FETCH_DAYS)
+def _required_fetch_days(oldest_needed: datetime, now: datetime) -> int:
+    """How many days of history to request so the series reaches back past
+    the oldest decision still needing this calculation, with enough extra
+    trailing days for TRAILING_WINDOW_DAYS's own volatility lookback --
+    never less than HISTORICAL_FETCH_DAYS. Fixes a real bug: the old fixed
+    HISTORICAL_FETCH_DAYS=1000 was anchored to today, so any decision older
+    than ~2.7 years before the real current date silently fell out of
+    reach (same bug class already fixed for replay/stress-test -- see
+    BinanceClient.fetch_daily_ohlcv_paginated's own docstring)."""
+    days_since_oldest = (now - oldest_needed).days
+    return max(HISTORICAL_FETCH_DAYS, days_since_oldest + TRAILING_WINDOW_DAYS + FETCH_BUFFER_DAYS)
+
+
+def fetch_historical_series(
+    binance: BinanceClient, coinbase: CoinbaseClient, symbol: str, asset_id: str, total_days: int,
+) -> HistoricalSeries | None:
+    rows = binance.fetch_daily_ohlcv_paginated(symbol, total_days)
     source = "BINANCE"
     if rows is None:
+        # Coinbase's fetch isn't paginated -- same disclosed residual gap,
+        # same precedent as scripts/run_stress_test.py's identical fallback.
         rows = coinbase.fetch_daily_ohlcv_with_timestamps(symbol, HISTORICAL_FETCH_DAYS)
         source = "COINBASE"
     if not rows:
@@ -81,6 +99,16 @@ def main() -> int:
     resolved = outcome_repo.get_resolved_without_net_of_costs(limit=1000)
     print(f"Resolved decision_outcomes missing net_of_costs: {len(resolved)}")
 
+    now = datetime.now(UTC)
+    oldest_decision_by_symbol: dict[str, datetime] = {}
+    for outcome in resolved:
+        asset = assets_by_id.get(outcome.asset_id)
+        if asset is None:
+            continue
+        current = oldest_decision_by_symbol.get(asset.symbol)
+        if current is None or outcome.decision_timestamp < current:
+            oldest_decision_by_symbol[asset.symbol] = outcome.decision_timestamp
+
     series_cache: dict[str, HistoricalSeries | None] = {}
     updated = 0
     skipped_no_series = 0
@@ -93,7 +121,8 @@ def main() -> int:
             continue
 
         if asset.symbol not in series_cache:
-            series_cache[asset.symbol] = fetch_historical_series(binance, coinbase, asset.symbol, asset.id)
+            total_days = _required_fetch_days(oldest_decision_by_symbol[asset.symbol], now)
+            series_cache[asset.symbol] = fetch_historical_series(binance, coinbase, asset.symbol, asset.id, total_days)
         series = series_cache[asset.symbol]
         if series is None:
             skipped_no_series += 1

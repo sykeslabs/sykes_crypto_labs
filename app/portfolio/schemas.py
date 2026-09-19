@@ -40,7 +40,20 @@ class PortfolioAllocationChange(BaseModel):
     (their real, unchanged original meaning; never rewritten), every new
     row is `"system_target"`. Never delete or renumber old rows to make the
     turnover history look cleaner -- they are genuine historical fact under
-    their own real semantics."""
+    their own real semantics.
+
+    `change_reason` disambiguates WHY the target moved -- `"strategy"` for
+    a real sizing decision (BUY/SELL/HOLD, or a capped BUY), `"risk_control"`
+    for a WATCH/NO_TRADE correction (`RiskEngine.size_one`'s
+    `min(current_allocation, max_single_asset_allocation)` clamp). Real bug
+    fixed 2026-09-17: `_strategy_turnover_delta` already treats
+    WATCH/NO_TRADE as zero strategy turnover at decision time, but that
+    exemption was never persisted, so `get_turnover_since` silently
+    re-counted it as real turnover on every later read -- see
+    migrations/0021 for the historical backfill and the full incident.
+    Always set from the already-gated `SizedDecision.decision` at
+    construction time -- never reconstructed later from
+    `judge_decisions.decision` (the raw, pre-confidence-gate value)."""
 
     id: str | None = None
     asset_id: str
@@ -50,6 +63,7 @@ class PortfolioAllocationChange(BaseModel):
     new_allocation: float
     actual_allocation_before: float | None = None
     baseline_semantics: str = "system_target"
+    change_reason: Literal["strategy", "risk_control"] = "strategy"
     changed_at: datetime
 
     def to_row(self) -> dict:
@@ -61,6 +75,7 @@ class PortfolioAllocationChange(BaseModel):
             "new_allocation": self.new_allocation,
             "actual_allocation_before": self.actual_allocation_before,
             "baseline_semantics": self.baseline_semantics,
+            "change_reason": self.change_reason,
             "changed_at": self.changed_at.isoformat(),
         }
 

@@ -53,6 +53,18 @@ class Settings(BaseSettings):
     openai_model: str | None = None
     gemini_model: str | None = None
     llm_request_timeout_seconds: int = 60
+    # Real incident 2026-09-18: Gemini 2.5 Pro (via OpenRouter) entered a
+    # degenerate, repetitive internal "thinking" loop on a real research
+    # call (~1700+ completion tokens of near-duplicate reasoning text,
+    # never reaching an actual answer) and the request eventually failed
+    # with an upstream idle timeout after several minutes, at real cost.
+    # OpenRouter's unified `reasoning.max_tokens` parameter maps directly to
+    # Gemini's native `thinkingBudget` (0-24576 for the 2.5 series; Pro
+    # cannot fully disable thinking the way Flash can with 0). Passed only
+    # for the gemini provider in the research/assessment stages -- an
+    # explicit cap, not a validated-optimal value; revisit if it turns out
+    # too small for genuine reasoning or doesn't actually prevent a repeat.
+    gemini_reasoning_max_tokens: int = 4096
     prompt_version: str = "v1"
     max_daily_llm_cost: Decimal = Decimal("5.00")
     max_monthly_llm_cost: Decimal = Decimal("50.00")

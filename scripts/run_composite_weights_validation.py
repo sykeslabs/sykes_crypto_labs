@@ -29,7 +29,12 @@ from datetime import UTC, datetime
 
 from app.benchmarks.schemas import CalibrationRunRecord
 from app.database.client import get_supabase_client
-from app.database.repository import CalibrationRunRepository, DecisionOutcomeRepository, JudgeDecisionRepository
+from app.database.repository import (
+    CalibrationRunRepository,
+    DecisionOutcomeRepository,
+    JudgeDecisionRepository,
+    compute_duplicate_group_decision_ids,
+)
 from app.market_data.factors import COMPOSITE_FACTOR_WEIGHTS, compute_composite_factor_scores
 
 FACTOR_FIELDS = list(COMPOSITE_FACTOR_WEIGHTS)
@@ -60,16 +65,39 @@ def _pearson(xs: list[float], ys: list[float]) -> float | None:
 def fetch_joinable_directional_examples(client) -> list[dict]:
     """One entry per resolved directional decision that has a real,
     joinable screened_universe peer group -- {label (1=correct/0=wrong),
-    realized_return, current_score, equal_weight_score, momentum_only_score}."""
+    realized_return, current_score, equal_weight_score, momentum_only_score}.
+
+    B2 (2026-09-16): same-UTC-day duplicate LIVE Judge decisions (see
+    doc/history.md's Phase 5j section) are excluded here too, the same way
+    and for the same reason as app/api/routers/calibration.py -- this
+    script reads the identical unfiltered live population and would
+    otherwise silently double-count the same historical duplicate group(s)
+    in its own correlation/mean-score figures."""
     outcome_repo = DecisionOutcomeRepository(client)
     judge_repo = JudgeDecisionRepository(client)
 
     all_outcomes = outcome_repo.get_recent(limit=2000)
     resolved = [o for o in all_outcomes if o.outcome_label != "UNRESOLVED"]
 
+    # Computed from the FULL live decision population (not just resolved
+    # ones), so group membership is correct and stable regardless of which
+    # members have resolved so far -- see compute_duplicate_group_decision_ids's
+    # own docstring. limit=None (2026-09-16 fix): a capped fetch could see
+    # only some members of an old duplicate group and wrongly conclude it
+    # isn't a duplicate at all -- see app/api/routers/calibration.py's
+    # identical fix for the full reasoning.
+    all_live_decisions = judge_repo.get_recent(limit=None, is_backfilled=False)
+    excluded_decision_ids = compute_duplicate_group_decision_ids(
+        (d.id, d.asset_id, d.created_at, d.is_backfilled) for d in all_live_decisions
+    )
+
     examples = []
     skipped_no_screening_row = 0
+    skipped_duplicate_group = 0
     for o in resolved:
+        if o.decision_id in excluded_decision_ids:
+            skipped_duplicate_group += 1
+            continue
         decision = judge_repo.get_by_id(o.decision_id)
         if decision is None or decision.decision not in ("BUY", "SELL"):
             continue
@@ -114,19 +142,20 @@ def fetch_joinable_directional_examples(client) -> list[dict]:
             "is_backfilled": o.is_backfilled,
         })
 
-    return examples, skipped_no_screening_row
+    return examples, skipped_no_screening_row, skipped_duplicate_group
 
 
 def main() -> int:
     client = get_supabase_client()
     calibration_run_repo = CalibrationRunRepository(client)
 
-    examples, skipped_no_screening_row = fetch_joinable_directional_examples(client)
+    examples, skipped_no_screening_row, skipped_duplicate_group = fetch_joinable_directional_examples(client)
     n = len(examples)
     n_backfilled = sum(1 for e in examples if e["is_backfilled"])
     n_live = n - n_backfilled
     print(f"Resolved directional decisions with a joinable screened_universe peer group: {n} ({n_backfilled} backfilled, {n_live} live)")
     print(f"Resolved directional decisions skipped -- no joinable screened_universe row: {skipped_no_screening_row}")
+    print(f"Resolved directional decisions skipped -- same-day live duplicate group (B2): {skipped_duplicate_group}")
     print(
         "(Backfilled decisions are only joinable if made after 2026-09-12's replay.py "
         "persistence fix -- every earlier backfilled decision has no screened_universe row "

@@ -299,6 +299,14 @@ def main() -> int:
                     api_key=api_key,
                     base_url=settings.openrouter_base_url,
                     timeout_seconds=settings.llm_request_timeout_seconds,
+                    # Real incident 2026-09-18: caps Gemini's thinking
+                    # budget -- see settings.py's gemini_reasoning_max_tokens
+                    # comment. Only applied to the gemini provider; every
+                    # other provider's request is unaffected.
+                    extra_request_params=(
+                        {"reasoning": {"max_tokens": settings.gemini_reasoning_max_tokens}}
+                        if name == "gemini" else None
+                    ),
                 )
                 for name, model in assessment_models.items()
             ],
@@ -483,7 +491,7 @@ def main() -> int:
             actions = portfolio_service.apply(run_id, sized_decisions, decisions_by_asset, decision_ids_by_asset)
             logger.info(
                 "Portfolio actions: %s",
-                [(a.symbol, a.action, round(a.new_allocation, 4)) for a in actions],
+                [(a.symbol, a.action, round(a.new_allocation, 4), round(a.actual_allocation_before, 4)) for a in actions],
             )
 
     if args.evaluate_outcomes:
@@ -534,6 +542,11 @@ def main() -> int:
             api_key=settings.openrouter_api_key.get_secret_value(),
             base_url=settings.openrouter_base_url,
             timeout_seconds=settings.llm_request_timeout_seconds,
+            # Real incident 2026-09-18: caps Gemini's thinking budget to
+            # stop the degenerate reasoning loop that previously ran for
+            # several minutes before failing -- see settings.py's own
+            # comment on gemini_reasoning_max_tokens.
+            extra_request_params={"reasoning": {"max_tokens": settings.gemini_reasoning_max_tokens}},
         ),
     ]
 

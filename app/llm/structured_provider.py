@@ -54,12 +54,17 @@ class OpenRouterStructuredProvider:
         api_key: str,
         base_url: str,
         timeout_seconds: float,
+        extra_request_params: dict | None = None,
     ) -> None:
         self.name = name
         self.model = model
         self._api_key = api_key
         self._base_url = base_url
         self._timeout = timeout_seconds
+        # See app/llm/openrouter_client.py's OpenRouterProvider for the real
+        # 2026-09-18 incident this exists for -- optional, no change in
+        # behavior for any caller that doesn't pass it.
+        self._extra_request_params = extra_request_params or {}
 
     def call(self, system_prompt: str, user_prompt: str, response_model: type[T]) -> StructuredCallResult:
         messages = [
@@ -111,7 +116,7 @@ class OpenRouterStructuredProvider:
                     "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json",
                 },
-                json={"model": self.model, "messages": messages, "temperature": 0.4},
+                json={"model": self.model, "messages": messages, "temperature": 0.4, **self._extra_request_params},
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -122,6 +127,23 @@ class OpenRouterStructuredProvider:
                 estimated_cost=Decimal("0"), raw_response=None, error=f"Request failed: {exc}",
             )
 
+        # Real incident 2026-09-18: OpenRouter can return HTTP 200 with an
+        # `{"error": ...}` envelope instead of a real completion (e.g. the
+        # underlying provider rate-limited/filtered/errored) -- previously
+        # this was silently discarded by _extract_content's blanket except,
+        # surfacing only a misleading "Expecting value: line 1 column 1"
+        # JSON-decode error with no way to tell a genuine empty completion
+        # apart from a real, informative upstream error. Checked and logged
+        # explicitly now, before any content extraction is attempted.
+        if isinstance(data, dict) and "error" in data:
+            logger.error(
+                "%s (%s) provider error in response body: %s", self.name, self.model, data["error"],
+            )
+            return StructuredCallResult(
+                provider=self.name, model=self.model, parsed=None, token_usage=None,
+                estimated_cost=Decimal("0"), raw_response=data, error=f"Provider error: {data['error']}",
+            )
+
         usage = data.get("usage") or {}
         token_usage = TokenUsage(
             prompt_tokens=usage.get("prompt_tokens", 0),
@@ -129,11 +151,35 @@ class OpenRouterStructuredProvider:
         )
         cost = compute_cost(self.model, token_usage.prompt_tokens, token_usage.completion_tokens)
 
+        # Real incident 2026-09-18 (Gemini 2.5 Pro): a per-CHOICE error, not
+        # a top-level one -- see OpenRouterProvider's own comment for the
+        # full incident. Real tokens were genuinely billed, so cost/
+        # token_usage from above are kept here, unlike the request-level
+        # failure branch above which has none to report.
+        choices = data.get("choices") or []
+        choice_error = choices[0].get("error") if choices and isinstance(choices[0], dict) else None
+        if choice_error is not None:
+            logger.error(
+                "%s (%s) per-choice provider error: %s", self.name, self.model, choice_error,
+            )
+            return StructuredCallResult(
+                provider=self.name, model=self.model, parsed=None, token_usage=token_usage,
+                estimated_cost=cost, raw_response=data, error=f"Provider error: {choice_error}",
+            )
+
         content = _extract_content(data)
         try:
             parsed_json = json.loads(_JSON_FENCE_RE.sub("", content).strip())
             parsed = response_model.model_validate(parsed_json)
         except (json.JSONDecodeError, ValidationError) as exc:
+            # Full raw response logged here (not just the exception string)
+            # so a genuinely-empty-completion failure is actually
+            # diagnosable after the fact -- previously only the parse
+            # exception text was ever logged, the response body itself was
+            # never captured anywhere.
+            logger.error(
+                "%s (%s) raw response body on parse failure: %s", self.name, self.model, data,
+            )
             return StructuredCallResult(
                 provider=self.name, model=self.model, parsed=None, token_usage=token_usage,
                 estimated_cost=cost, raw_response=data, error=f"Invalid structured output: {exc}",

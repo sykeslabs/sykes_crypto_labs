@@ -1,0 +1,271 @@
+### 8. Documentation is a living part of the project
+
+Documentation is **not a one-time deliverable**. It is a maintained part of the codebase and must evolve together with the project.
+
+From this point forward, **every new prompt/task that changes, adds, removes, or clarifies anything in the project must also consider the impact on the documentation and AI context files.**
+
+Documentation must always reflect the **current state of the repository**, not the state at the time this documentation task was originally performed.
+
+#### Mandatory documentation check for every future task
+
+Before starting work on any future task, first determine:
+
+1. What part of the system does this task affect?
+2. Which documentation describes that part?
+3. Which `CONTEXT.md`, `MEMORY.md`, `SKILLS.md`, `ARCHITECTURE.md`, `DECISIONS.md`, `AGENTS.md`, or other context files may be affected?
+4. Are there existing documented assumptions or architectural constraints that are relevant?
+5. Does the requested change conflict with any existing documented decision?
+
+After completing the implementation, **re-evaluate the documentation**.
+
+If the implementation changes the documented reality of the system, update the relevant documentation **in the same task**.
+
+Do not leave documentation updates for a later task.
+
+---
+
+### 9. Documentation synchronization rules
+
+Whenever a task changes any of the following, update the corresponding documentation:
+
+* architecture
+* components
+* layers
+* agents
+* agent responsibilities
+* prompts/instructions
+* workflows
+* data flows
+* database/schema
+* APIs
+* integrations
+* scripts
+* configuration
+* environment variables
+* models
+* AI/ML logic
+* business/trading logic
+* risk logic
+* portfolio logic
+* UI screens
+* UI sections
+* tables
+* columns
+* input fields
+* actions
+* metrics
+* terminology
+* dependencies
+* deployment
+* scheduled jobs
+* operational procedures
+* error handling
+* security
+* project conventions
+* development workflows
+* important decisions
+
+Also update documentation when a task **clarifies previously ambiguous behavior**, even if no code changes are made.
+
+---
+
+### 10. Keep the documentation internally consistent
+
+There must be a clear hierarchy of information.
+
+The main technical documentation should describe the **authoritative current system**.
+
+The User Guide should describe the **current user-facing behavior**.
+
+AI/context files should provide **efficient context for future agents**, while pointing to the authoritative documentation for detailed information.
+
+Avoid maintaining the same fact independently in multiple places unless there is a clear reason.
+
+If the same information necessarily appears in multiple files, ensure that all copies are updated together.
+
+Never knowingly leave contradictory information in different Markdown files.
+
+---
+
+### 11. Treat context files as operational instructions
+
+The AI/context Markdown files are not merely documentation. They are part of the project's **agent operating context**.
+
+Future agents must be able to use them to understand:
+
+* what the project is
+* how it is structured
+* what rules must be followed
+* what must not be changed casually
+* how the system works
+* why important decisions were made
+* what previous agents learned
+* which conventions are established
+* where relevant functionality is located
+* how to validate changes
+* how documentation must be maintained
+
+Update these files whenever new durable knowledge is discovered.
+
+Do not add short-lived task details to `MEMORY.md` or other long-term context files unless they are likely to remain relevant.
+
+Distinguish clearly between:
+
+* **stable knowledge**
+* **current implementation**
+* **architectural constraints**
+* **historical decisions**
+* **lessons learned**
+* **temporary issues**
+* **open questions**
+
+---
+
+### 12. Update documentation before declaring a task complete
+
+A future task is **not complete** until the agent has performed a documentation impact check.
+
+The completion sequence should therefore be:
+
+**Understand → Implement → Test/Validate → Update Documentation → Update Context → Verify Consistency → Complete**
+
+Do not treat documentation as optional cleanup.
+
+If no documentation update is necessary, explicitly verify that conclusion internally before completing the task.
+
+---
+
+### 13. Detect documentation drift
+
+On every substantial task, compare the current implementation with the relevant documentation.
+
+Look for documentation drift such as:
+
+* documented files that no longer exist
+* undocumented files/components that now exist
+* outdated architecture diagrams
+* outdated agent descriptions
+* outdated workflows
+* outdated UI descriptions
+* obsolete configuration instructions
+* obsolete scripts
+* changed database structures
+* changed API behavior
+* changed model behavior
+* decisions that are no longer valid
+
+Fix discovered drift as part of the current task whenever practical.
+
+If drift is unrelated to the current task but clearly important, record it as an explicit documentation issue rather than silently ignoring it.
+
+---
+
+### 14. Update decisions and reasoning
+
+When a task introduces an important architectural or implementation decision, document it.
+
+For significant decisions, capture:
+
+* date/context
+* decision
+* problem being solved
+* reasoning
+* alternatives considered
+* trade-offs
+* consequences
+* current status
+
+Do not fabricate reasoning after the fact.
+
+If the reasoning is inferred from the implementation or git history, explicitly distinguish **observed facts** from **inferred rationale**.
+
+If a new decision supersedes an old decision:
+
+1. update the authoritative documentation
+2. mark the old decision as superseded
+3. document the new decision and its rationale
+4. update affected context files
+
+Do not simply delete historical decisions when they are useful for understanding why the architecture evolved.
+
+---
+
+### 15. Update the User Guide when behavior changes
+
+Any change to user-visible behavior must trigger a User Guide review.
+
+This includes changes to:
+
+* screens
+* navigation
+* tables
+* columns
+* filters
+* forms
+* inputs
+* buttons
+* actions
+* workflows
+* statuses
+* charts
+* metrics
+* messages
+* warnings
+* permissions
+* expected outputs
+
+The User Guide must describe what the user can **actually do in the current version**, not what the system used to do.
+
+---
+
+### 16. Documentation-first awareness for future prompts
+
+For every future prompt, assume that the documentation may contain important constraints and project knowledge.
+
+Therefore:
+
+**Before modifying the system, read the relevant documentation/context.**
+
+**After modifying the system, update the relevant documentation/context.**
+
+This applies even when the user does not explicitly mention documentation.
+
+The user should not need to say:
+
+> "Please update the documentation."
+
+Documentation maintenance is an inherent part of every development task.
+
+---
+
+### 17. Preserve a single source of truth
+
+Whenever possible, avoid creating multiple competing descriptions of the same system.
+
+Use the following principle:
+
+**Code/configuration = implementation truth**
+
+**Technical documentation = system/architecture truth**
+
+**User Guide = user-facing behavior truth**
+
+**AI context files = agent operating context**
+
+**Decision records = historical decision truth**
+
+If these sources disagree, investigate the discrepancy and resolve it rather than silently choosing one.
+
+When implementation changes intentionally, update the affected documentation and context files immediately.
+
+---
+
+### 18. Final documentation check
+
+Before finishing **every substantial future task**, ask internally:
+
+> "If another AI agent started working on this repository tomorrow, would the documentation and context files correctly describe the system after my changes?"
+
+If the answer is no, update them before completing the task.
+
+The objective is that the repository remains **self-documenting and continuously synchronized with its implementation**, regardless of how many future prompts, agents, or development sessions modify it.

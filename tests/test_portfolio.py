@@ -2,14 +2,16 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from app.config.settings import Settings
 from app.judge.schemas import JudgeDecisionRecord
 from app.portfolio.construction import PortfolioConstructionService, risk_adjusted_alpha
+from app.portfolio.schemas import PortfolioAllocationChange
 from app.risk.engine import SizedDecision
 
 
-def _sized(asset_id, symbol, current, final, is_new=False, previous_system_target=None):
+def _sized(asset_id, symbol, current, final, is_new=False, previous_system_target=None, decision="BUY"):
     # previous_system_target defaults to `current` (no manual/external
     # drift) -- _classify/_apply_replacement_capacity_limit are judged
     # against the strategy's own previous target, not real holdings (see
@@ -18,7 +20,7 @@ def _sized(asset_id, symbol, current, final, is_new=False, previous_system_targe
     if previous_system_target is None:
         previous_system_target = current
     return SizedDecision(
-        asset_id=asset_id, symbol=symbol, decision="BUY", original_decision="BUY",
+        asset_id=asset_id, symbol=symbol, decision=decision, original_decision=decision,
         confidence=0.7, current_allocation=current, previous_system_target=previous_system_target,
         final_allocation=final, vol_scalar=1.0, agreement_scalar=1.0, is_new_position=is_new,
     )
@@ -114,6 +116,185 @@ def test_apply_persists_position_and_logs_change_only_when_allocation_changes():
     assert position_repo.upserted[0].asset_id == "a1"
 
 
+# --- change_reason classification (2026-09-17 turnover-accounting fix) --------
+#
+# Real bug: WATCH/NO_TRADE risk-control corrections (RiskEngine.size_one's
+# min(current_allocation, max_single_asset_allocation) clamp) were persisted
+# indistinguishably from real strategy decisions, so get_turnover_since
+# silently re-counted them as strategy turnover even though
+# _strategy_turnover_delta already exempts them at decision time. Fixed by
+# classifying from d.decision (the already-gated SizedDecision value) at
+# persistence time -- see migrations/0021.
+
+def test_watch_decision_that_changes_allocation_persists_risk_control():
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "BTC", current=0.30, final=0.15, previous_system_target=0.30, decision="WATCH")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "risk_control"
+
+
+def test_no_trade_decision_that_changes_allocation_persists_risk_control():
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "JASMY", current=0.0002, final=0.0, previous_system_target=0.0002, decision="NO_TRADE")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "risk_control"
+
+
+@pytest.mark.parametrize("decision", ["BUY", "SELL"])
+def test_buy_sell_decisions_that_change_allocation_persist_strategy(decision):
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "SOL", current=0.10, final=0.20, previous_system_target=0.10, decision=decision)
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "strategy"
+
+
+def test_capped_buy_that_reduces_allocation_still_persists_strategy_not_risk_control():
+    # A real sizing decision (decision stays "BUY") whose final_allocation is
+    # LOWER than previous_system_target -- e.g. a rebalance-down driven by a
+    # confidence/vol scalar, not a WATCH/NO_TRADE risk-control clamp.
+    # Classification must follow d.decision, never the derived REDUCE/
+    # INCREASE PortfolioActionType from _classify.
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "BTC", current=0.30, final=0.20, previous_system_target=0.30, decision="BUY")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "strategy"
+
+
+def test_confidence_gated_buy_downgraded_to_watch_persists_risk_control_not_strategy():
+    # Reproduces the real 2026-09-17 NEAR row: judge_decisions.decision was
+    # raw "BUY" (confidence 0.50, below MIN_BUY_CONFIDENCE=0.55), but
+    # _apply_confidence_gate downgraded it to WATCH before sizing.
+    # SizedDecision.decision holds the POST-gate value; original_decision
+    # keeps the raw value for audit only. Classification must use .decision.
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = SizedDecision(
+        asset_id="a1", symbol="NEAR", decision="WATCH", original_decision="BUY",
+        confidence=0.50, current_allocation=0.0, previous_system_target=0.0,
+        final_allocation=0.05, vol_scalar=1.0, agreement_scalar=1.0, is_new_position=False,
+    )
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "risk_control"
+
+
+# --- A2 cap-compliance correction (2026-09-17) --------------------------------
+
+def test_a2_oversized_target_reduced_to_cap_via_hold_persists_risk_control():
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "BTC", current=0.333, final=0.15, previous_system_target=0.30, decision="HOLD")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "risk_control"
+
+
+def test_a2_sell_to_zero_from_oversized_target_persists_risk_control():
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "BTC", current=0.333, final=0.0, previous_system_target=0.30, decision="SELL")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert len(change_repo.inserted) == 1
+    assert change_repo.inserted[0].change_reason == "risk_control"
+
+
+@pytest.mark.parametrize("decision,current,previous,final", [
+    ("HOLD", 0.10, 0.10, 0.12),      # ordinary, not oversized -> strategy
+    ("HOLD", 0.333, 0.30, 0.15),     # A2: reduced to exactly cap -> risk_control
+    ("HOLD", 0.333, 0.30, 0.10),     # A2: reduced below cap -> risk_control
+    ("SELL", 0.333, 0.30, 0.0),      # A2: sell-to-zero from oversized -> risk_control
+    ("HOLD", 0.333, 0.30, 0.20),     # still above cap -> strategy (A2 must not fire)
+    ("HOLD", 0.15, 0.15, 0.10),      # previous exactly at cap, not oversized -> strategy
+    ("WATCH", 0.333, 0.30, 0.15),    # A1, unaffected by A2 -> risk_control
+])
+def test_risk_engine_and_construction_predicates_agree_on_classification(decision, current, previous, final):
+    # Guards against the Risk Engine's turnover exemption and Portfolio
+    # Construction's change_reason classification silently drifting apart
+    # into two subtly different A2 predicates -- both must use the exact
+    # same is_cap_compliance_correction function.
+    settings = Settings(_env_file=None, max_concurrent_positions=99)
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(settings, FakePositionRepo(), change_repo)
+    d = _sized("a1", "X", current=current, final=final, previous_system_target=previous, decision=decision)
+
+    from app.risk.engine import RiskEngine
+    engine = RiskEngine(settings)
+    exempt_from_turnover = engine._strategy_turnover_delta(d) == 0.0
+
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+    if change_repo.inserted:
+        persisted_as_risk_control = change_repo.inserted[0].change_reason == "risk_control"
+        assert persisted_as_risk_control == exempt_from_turnover
+
+
+def test_watch_no_op_persists_no_row_at_all_regardless_of_change_reason():
+    change_repo = FakeAllocationChangeRepo()
+    service = PortfolioConstructionService(
+        Settings(_env_file=None, max_concurrent_positions=99), FakePositionRepo(), change_repo,
+    )
+    d = _sized("a1", "BTC", current=0.10, final=0.10, previous_system_target=0.10, decision="WATCH")
+    service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert change_repo.inserted == []
+
+
+# --- PortfolioAllocationChange schema (change_reason field) -------------------
+
+def test_portfolio_allocation_change_reason_defaults_to_strategy():
+    change = PortfolioAllocationChange(
+        asset_id="a1", run_id="RUN-1", decision_id="d1",
+        previous_allocation=0.0, new_allocation=0.05, changed_at=datetime.now(UTC),
+    )
+    assert change.change_reason == "strategy"
+
+
+def test_portfolio_allocation_change_to_row_includes_change_reason():
+    change = PortfolioAllocationChange(
+        asset_id="a1", run_id="RUN-1", decision_id="d1",
+        previous_allocation=0.0, new_allocation=0.05, changed_at=datetime.now(UTC),
+        change_reason="risk_control",
+    )
+    assert change.to_row()["change_reason"] == "risk_control"
+
+
+def test_portfolio_allocation_change_rejects_invalid_change_reason():
+    with pytest.raises(ValidationError):
+        PortfolioAllocationChange(
+            asset_id="a1", run_id="RUN-1", decision_id="d1",
+            previous_allocation=0.0, new_allocation=0.05, changed_at=datetime.now(UTC),
+            change_reason="not_a_real_reason",
+        )
+
+
 def test_replacement_swaps_weak_holding_for_stronger_new_candidate_over_capacity():
     service = _service(max_concurrent_positions=1, min_replacement_alpha_advantage=0.01)
     existing_weak = _sized("weak", "WEAK", current=0.05, final=0.05)  # held, low alpha
@@ -192,6 +373,32 @@ def test_apply_no_write_when_strategy_target_unchanged_despite_real_holdings_dri
 
     assert change_repo.inserted == []
     assert position_repo.upserted == []
+
+
+def test_remove_action_carries_actual_allocation_before_when_a_real_position_existed():
+    # REMOVE fires (previous_system_target > 0 -> final_allocation == 0);
+    # real holdings were genuinely nonzero -- a real position is being
+    # closed, not just bookkeeping.
+    service = _service(max_concurrent_positions=99)
+    d = _sized("a1", "BTC", current=0.20, final=0.0, previous_system_target=0.10)
+    actions = service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert actions[0].action == "REMOVE"
+    assert actions[0].actual_allocation_before == pytest.approx(0.20)
+
+
+def test_remove_action_carries_zero_actual_allocation_when_nothing_was_really_held():
+    # Reproduces the real 2026-09-16 run's BNB/HYPE case: the STRATEGY's own
+    # stale target snaps to zero (REMOVE, per _classify's turnover-
+    # accounting purpose), but real holdings were already 0.0 -- nothing is
+    # actually being sold. `actual_allocation_before` must make this
+    # distinguishable without a separate holdings_ledger join.
+    service = _service(max_concurrent_positions=99)
+    d = _sized("a1", "BNB", current=0.0, final=0.0, previous_system_target=0.00757)
+    actions = service.apply("RUN-1", [d], {"a1": _decision_record("a1")}, {"a1": "dec-a1"})
+
+    assert actions[0].action == "REMOVE"
+    assert actions[0].actual_allocation_before == pytest.approx(0.0)
 
 
 def test_no_replacement_needed_under_capacity():

@@ -55,7 +55,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.benchmarks.schemas import CalibrationRunRecord
 from app.database.client import get_supabase_client
-from app.database.repository import CalibrationRunRepository
+from app.database.repository import CalibrationRunRepository, JudgeDecisionRepository, compute_duplicate_group_decision_ids
 
 HORIZON_DAYS_DEFAULT = 7
 
@@ -167,10 +167,22 @@ def run_phase2_baseline(client, horizon_days: int) -> int:
 
 
 def run_backfill_baseline(client) -> int:
-    decisions = (
-        client.table("judge_decisions").select("id,decision,confidence,prompt_template_id")
-        .eq("is_backfilled", True).execute().data
-    )
+    # Real bug fixed 2026-09-19: this used to be a raw, unpaginated
+    # `client.table("judge_decisions")...execute()` call with no
+    # `.range()` and no `.order()` -- silently subject to the same
+    # server-side ~1000-row cap already found and fixed for
+    # `llm_analyses`/`JudgeDecisionRepository.get_recent()` (see
+    # doc/history.md's Phase 5m section). Dormant today (192 real
+    # backfilled rows), but not future-proof. Now goes through the same
+    # repository method that already paginates via `_fetch_all_paginated`
+    # with a deterministic `created_at DESC, id DESC` order -- converted
+    # to a plain dict here so every existing `d["field"]` access below is
+    # untouched.
+    records = JudgeDecisionRepository(client).get_recent(limit=None, is_backfilled=True)
+    decisions = [
+        {"id": r.id, "decision": r.decision, "confidence": r.confidence, "prompt_template_id": r.prompt_template_id}
+        for r in records
+    ]
     print(f"Found {len(decisions)} backfilled judge_decisions rows.")
     if not decisions:
         print("Nothing to calibrate against yet — run scripts/run_replay.py first.")
@@ -221,14 +233,54 @@ def run_backfill_baseline(client) -> int:
 
 
 def run_live_baseline(client) -> int:
-    decisions = (
-        client.table("judge_decisions").select("id,decision,confidence,regime_id,macro_sensitivity")
-        .eq("is_backfilled", False).execute().data
-    )
+    # Real bug fixed 2026-09-19: this used to be a raw, unpaginated
+    # `client.table("judge_decisions")...execute()` call with no
+    # `.range()` and no `.order()` at all -- the exact same server-side
+    # ~1000-row cap already found and fixed for
+    # `llm_analyses`/`JudgeDecisionRepository.get_recent()` (see
+    # doc/history.md's Phase 5m section) applies here too, and B2's own
+    # whole-group duplicate exclusion (below) depends on receiving the
+    # COMPLETE live population -- a silently truncated fetch could split a
+    # duplicate group across the truncation boundary and let the visible
+    # half through uncaught (see doc/decisions.md's 2026-09-19 entry and
+    # doc/history.md's Phase 5n section for the full forensic analysis).
+    # Dormant today (205 real live rows), but not future-proof. Now goes
+    # through the same repository method
+    # `app/api/routers/calibration.py`/`run_composite_weights_validation.py`
+    # already use, which paginates via `_fetch_all_paginated` with a
+    # deterministic `created_at DESC, id DESC` order -- converted to a
+    # plain dict here so every existing `d["field"]` access below is
+    # untouched. `created_at` is already a real `datetime` on the
+    # repository's model, so the old `datetime.fromisoformat(...)`
+    # round-trip below is no longer needed.
+    records = JudgeDecisionRepository(client).get_recent(limit=None, is_backfilled=False)
+    decisions = [
+        {
+            "id": r.id, "decision": r.decision, "confidence": r.confidence,
+            "regime_id": r.regime_id, "macro_sensitivity": r.macro_sensitivity,
+            "asset_id": r.asset_id, "created_at": r.created_at, "is_backfilled": r.is_backfilled,
+        }
+        for r in records
+    ]
     print(f"Found {len(decisions)} live (non-backfilled) judge_decisions rows.")
     if not decisions:
         print("Nothing to calibrate against yet — run --with-judge at least once.")
         return 0
+
+    # B2 (2026-09-16): same-UTC-day duplicate live Judge decisions (see
+    # doc/history.md's Phase 5j section) are excluded from this baseline
+    # too, the same way and for the same reason as
+    # app/api/routers/calibration.py and run_composite_weights_validation.py.
+    excluded_decision_ids = compute_duplicate_group_decision_ids(
+        (d["id"], d["asset_id"], d["created_at"], d["is_backfilled"])
+        for d in decisions
+    )
+    if excluded_decision_ids:
+        print(
+            f"Excluding {len(excluded_decision_ids)} decision(s) belonging to a same-day "
+            "live duplicate group (B2) from every figure below."
+        )
+    decisions = [d for d in decisions if d["id"] not in excluded_decision_ids]
 
     decision_ids = [d["id"] for d in decisions]
     outcomes = (

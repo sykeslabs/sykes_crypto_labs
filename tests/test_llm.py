@@ -397,3 +397,100 @@ def test_openrouter_provider_handles_http_error_gracefully(monkeypatch):
 
     assert result.error is not None
     assert result.batch is None
+
+
+def test_openrouter_provider_empty_content_is_a_real_diagnosable_error(monkeypatch):
+    # Reproduces the real 2026-09-18 Gemini incident: HTTP 200, a real
+    # choices/message shape, but an empty content string -- json.loads("")
+    # raises "Expecting value: line 1 column 1 (char 0)". Confirms the raw
+    # response is captured on the result (not just the exception string),
+    # so the failure is diagnosable after the fact.
+    def fake_post(*args, **kwargs):
+        return FakeHttpResponse(_chat_payload(""))
+
+    monkeypatch.setattr("app.llm.openrouter_client.httpx.post", fake_post)
+
+    result = _provider().analyze("system", "user")
+
+    assert result.error is not None
+    assert "Invalid structured output" in result.error
+    assert result.batch is None
+    assert result.raw_response is not None  # the empty-content response itself, not discarded
+
+
+def test_openrouter_provider_surfaces_error_envelope_distinctly(monkeypatch):
+    # Real, documented OpenRouter behavior: HTTP 200 with an {"error": ...}
+    # body instead of a real completion (e.g. the underlying provider
+    # rate-limited/filtered/errored). Before this fix, _extract_content's
+    # blanket except swallowed this and produced the same misleading
+    # "Expecting value" JSON-decode error as a genuinely empty completion --
+    # now it must be reported distinctly, with the real upstream reason.
+    def fake_post(*args, **kwargs):
+        return FakeHttpResponse({"error": {"message": "upstream rate limited", "code": 429}})
+
+    monkeypatch.setattr("app.llm.openrouter_client.httpx.post", fake_post)
+
+    result = _provider().analyze("system", "user")
+
+    assert result.error is not None
+    assert "Provider error" in result.error
+    assert "rate limited" in result.error
+    assert result.batch is None
+
+
+def test_openrouter_provider_surfaces_per_choice_error_distinctly(monkeypatch):
+    # Reproduces the real 2026-09-18 Gemini 2.5 Pro incident exactly: HTTP
+    # 200, a normal top-level shape (real usage/cost present), but the
+    # ERROR is nested inside choices[0] (finish_reason="error"), with
+    # message.content=null -- a degenerate reasoning loop that never
+    # reached an answer before an upstream idle timeout. This is a
+    # different shape from both a top-level {"error": ...} envelope and a
+    # genuinely-empty-but-successful completion; it must be reported with
+    # the real upstream reason, and real token usage/cost must still be
+    # reported (tokens were genuinely billed).
+    def fake_post(*args, **kwargs):
+        return FakeHttpResponse({
+            "choices": [{
+                "finish_reason": "error",
+                "error": {"code": 504, "message": "Upstream idle timeout exceeded"},
+                "message": {"role": "assistant", "content": None},
+            }],
+            "usage": {"prompt_tokens": 5581, "completion_tokens": 1718},
+        })
+
+    monkeypatch.setattr("app.llm.openrouter_client.httpx.post", fake_post)
+
+    result = _provider().analyze("system", "user")
+
+    assert result.error is not None
+    assert "Provider error" in result.error
+    assert "idle timeout" in result.error
+    assert result.batch is None
+    # Real tokens were genuinely billed on both the first attempt and the
+    # retry (fake_post returns the same per-choice error both times) --
+    # must be reported, not discarded as if nothing happened.
+    assert result.token_usage.prompt_tokens == 5581 * 2
+    assert result.token_usage.completion_tokens == 1718 * 2
+
+
+def test_openrouter_provider_passes_extra_request_params_through(monkeypatch):
+    # Confirms a caller-supplied extra_request_params dict (e.g. Gemini's
+    # reasoning.max_tokens cap) actually reaches the POST body, and that
+    # omitting it (every other existing caller) changes nothing.
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs["json"])
+        return FakeHttpResponse(_chat_payload(json.dumps({"analyses": [VALID_ANALYSIS]})))
+
+    monkeypatch.setattr("app.llm.openrouter_client.httpx.post", fake_post)
+
+    provider = OpenRouterProvider(
+        name="gemini", model="google/gemini-2.5-pro", api_key="key",
+        base_url="https://openrouter.ai/api/v1", timeout_seconds=10,
+        extra_request_params={"reasoning": {"max_tokens": 4096}},
+    )
+    provider.analyze("system", "user")
+
+    assert calls[0]["reasoning"] == {"max_tokens": 4096}
+    assert calls[0]["model"] == "google/gemini-2.5-pro"  # existing fields untouched

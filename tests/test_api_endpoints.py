@@ -18,6 +18,7 @@ from app.api.dependencies import (
     get_evidence_value_report_repo,
     get_judge_decision_repo,
     get_market_snapshot_repo,
+    get_portfolio_allocation_change_repo,
     get_portfolio_position_repo,
     get_prompt_template_repo,
     get_reasoning_audit_repo,
@@ -84,16 +85,16 @@ def _screened(symbol="BTC", asset_id="a1"):
     )
 
 
-def _judge_decision(decision_id="d1", asset_id="a1"):
+def _judge_decision(decision_id="d1", asset_id="a1", is_backfilled=False, created_at=None):
     return JudgeDecisionRecord(
-        id=decision_id, run_id="RUN-1", asset_id=asset_id, created_at=datetime.now(UTC),
+        id=decision_id, run_id="RUN-1", asset_id=asset_id, created_at=created_at or datetime.now(UTC),
         decision="BUY", confidence=0.6, target_allocation=0.05, expected_return=0.1,
         expected_alpha=0.05, risk_score=0.4, uncertainty=0.3, model_agreement=0.8,
         source_agreement=0.7, investment_horizon_days=30, key_evidence=["e1"],
         contradictory_evidence=[], key_risks=[], invalidation_conditions=[],
         requires_review=False, thesis="A real thesis.", macro_sensitivity="n/a",
         regime_id=None, prompt_template_id=None, estimated_cost=Decimal("0.02"),
-        is_backfilled=False,
+        is_backfilled=is_backfilled,
     )
 
 
@@ -465,6 +466,29 @@ def test_get_recent_turnover_cap_events(client):
     assert body[0]["capped_symbols"] == ["ETH", "NEAR", "SOL"]
 
 
+def test_get_recent_allocation_changes(client):
+    from app.portfolio.schemas import PortfolioAllocationChange
+
+    change = PortfolioAllocationChange(
+        asset_id="a1", run_id="RUN-1", decision_id="d1", previous_allocation=0.1,
+        new_allocation=0.25, actual_allocation_before=0.33, baseline_semantics="system_target",
+        changed_at=datetime.now(UTC),
+    )
+
+    class FakePortfolioAllocationChangeRepo:
+        def get_recent(self, limit=50):
+            return [change]
+
+    app.dependency_overrides[get_portfolio_allocation_change_repo] = lambda: FakePortfolioAllocationChangeRepo()
+    response = client.get("/portfolio/allocation-changes/recent")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["previous_allocation"] == 0.1
+    assert body[0]["new_allocation"] == 0.25
+    assert body[0]["baseline_semantics"] == "system_target"
+
+
 # --- calibration -----------------------------------------------------------------
 
 def test_get_calibration_summary_reports_null_when_no_directional_data(client):
@@ -475,6 +499,9 @@ def test_get_calibration_summary_reports_null_when_no_directional_data(client):
     class FakeJudgeRepo:
         def get_by_id(self, decision_id):
             return None
+
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return []
 
     app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
     app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
@@ -490,6 +517,7 @@ def test_get_calibration_summary_reports_null_when_no_directional_data(client):
     assert "no live" in body["held_out_window_note"].lower()
     assert body["embargo_gap_days"] is None
     assert body["pct_live_within_own_horizon_of_training_end"] is None
+    assert body["excluded_duplicate_group_decision_count"] == 0
 
 
 def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisions(client):
@@ -503,7 +531,14 @@ def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisio
         target_return=0.1, stop_return=-0.1, realized_return=-0.03, outcome_label="HIT_STOP",
         judge_confidence=0.6, is_backfilled=True,
     )
-    decisions = {"d1": _judge_decision("d1"), "d2": _judge_decision("d2")}
+    # Both backfilled -- is_backfilled=True on the decision too (matches
+    # real production data, where an outcome and its own decision are
+    # always tagged together), so B2's live-only duplicate-group check
+    # never considers these two at all.
+    decisions = {
+        "d1": _judge_decision("d1", is_backfilled=True),
+        "d2": _judge_decision("d2", is_backfilled=True),
+    }
 
     class FakeOutcomeRepo:
         def get_recent(self, limit=2000, is_backfilled=None):
@@ -513,6 +548,12 @@ def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisio
         def get_by_id(self, decision_id):
             return decisions.get(decision_id)
 
+        def get_recent(self, limit=2000, is_backfilled=None):
+            values = decisions.values()
+            if is_backfilled is not None:
+                values = [d for d in values if d.is_backfilled == is_backfilled]
+            return list(values)
+
     app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
     app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
     response = client.get("/calibration/summary")
@@ -521,6 +562,7 @@ def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisio
     assert body["directional_sample_size"] == 2
     assert body["hit_rate"] == pytest.approx(0.5)
     assert body["resolved_backfilled_count"] == 2
+    assert body["excluded_duplicate_group_decision_count"] == 0
     # Both outcomes are backfilled -- the combined figure above should
     # exactly match the backfilled-only figure, and live should be empty,
     # not silently blended.
@@ -541,9 +583,9 @@ def test_get_calibration_summary_segments_backfilled_and_live_and_by_prompt_vers
         target_return=0.1, stop_return=-0.1, realized_return=-0.03, outcome_label="HIT_STOP",
         judge_confidence=0.6, is_backfilled=False,
     )
-    decision_backfilled = _judge_decision("d1")
+    decision_backfilled = _judge_decision("d1", is_backfilled=True)
     decision_backfilled.prompt_template_id = "tmpl-v1"
-    decision_live = _judge_decision("d2")
+    decision_live = _judge_decision("d2", is_backfilled=False)
     decision_live.prompt_template_id = "tmpl-v2"
     decisions = {"d1": decision_backfilled, "d2": decision_live}
 
@@ -554,6 +596,12 @@ def test_get_calibration_summary_segments_backfilled_and_live_and_by_prompt_vers
     class FakeJudgeRepo:
         def get_by_id(self, decision_id):
             return decisions.get(decision_id)
+
+        def get_recent(self, limit=2000, is_backfilled=None):
+            values = decisions.values()
+            if is_backfilled is not None:
+                values = [d for d in values if d.is_backfilled == is_backfilled]
+            return list(values)
 
     class FakePromptTemplateRepo:
         def get_all(self):
@@ -573,6 +621,8 @@ def test_get_calibration_summary_segments_backfilled_and_live_and_by_prompt_vers
     assert body["hit_rate_backfilled"] == pytest.approx(1.0)
     assert body["directional_sample_size_live"] == 1
     assert body["hit_rate_live"] == pytest.approx(0.0)
+    # A single live decision for asset a1 today -- not a duplicate group.
+    assert body["excluded_duplicate_group_decision_count"] == 0
 
     # By-prompt-version breakdown surfaces both real versions separately.
     versions = {b["version"]: b for b in body["by_prompt_version"]}
@@ -607,7 +657,10 @@ def test_get_calibration_summary_computes_negative_embargo_gap_when_windows_over
         target_return=0.1, stop_return=-0.1, realized_return=-0.03, outcome_label="HIT_STOP",
         judge_confidence=0.6, is_backfilled=False,
     )
-    decisions = {"d1": _judge_decision("d1"), "d2": _judge_decision("d2")}
+    decisions = {
+        "d1": _judge_decision("d1", is_backfilled=True, created_at=training_end),
+        "d2": _judge_decision("d2", is_backfilled=False, created_at=holdout_start),
+    }
 
     class FakeOutcomeRepo:
         def get_recent(self, limit=2000, is_backfilled=None):
@@ -617,16 +670,189 @@ def test_get_calibration_summary_computes_negative_embargo_gap_when_windows_over
         def get_by_id(self, decision_id):
             return decisions.get(decision_id)
 
+        def get_recent(self, limit=2000, is_backfilled=None):
+            values = decisions.values()
+            if is_backfilled is not None:
+                values = [d for d in values if d.is_backfilled == is_backfilled]
+            return list(values)
+
     app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
     app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
     response = client.get("/calibration/summary")
     body = response.json()
 
     assert body["embargo_gap_days"] == pytest.approx(-5.0)
+    assert body["excluded_duplicate_group_decision_count"] == 0
     # holdout_start is BEFORE training_end, so the live decision is well
     # within its own 30-day horizon of the training-window boundary.
     assert body["pct_live_within_own_horizon_of_training_end"] == pytest.approx(1.0)
     assert "overlap" in body["held_out_window_note"].lower()
+
+
+# --- B2: same-day duplicate live Judge decisions excluded from calibration ---
+
+def test_excluded_duplicate_group_decision_count_has_a_self_documenting_openapi_description():
+    # Issue 2 fix (2026-09-16): the field's meaning must be discoverable
+    # from the OpenAPI/Pydantic schema itself, not only from a Python
+    # source comment invisible to real API consumers.
+    from app.api.schemas import CalibrationSummary
+
+    schema = CalibrationSummary.model_json_schema()
+    field = schema["properties"]["excluded_duplicate_group_decision_count"]
+
+    assert field["type"] == "integer"
+    description = field.get("description")
+    assert description  # non-empty
+    # Must make clear this counts decision ROWS, not groups.
+    assert "row" in description.lower()
+    assert "group" in description.lower()
+
+
+def _fake_judge_repo(decisions: dict):
+    class FakeJudgeRepo:
+        def get_by_id(self, decision_id):
+            return decisions.get(decision_id)
+
+        def get_recent(self, limit=2000, is_backfilled=None):
+            values = decisions.values()
+            if is_backfilled is not None:
+                values = [d for d in values if d.is_backfilled == is_backfilled]
+            return list(values)
+
+    return FakeJudgeRepo()
+
+
+def test_calibration_excludes_entire_live_duplicate_group_end_to_end(client):
+    # Real B2 scenario: BTC has 3 live decisions the same UTC day (only 1
+    # resolved, the other 2 still pending) -- all 3 must be excluded from
+    # every directional/calibration figure, but the raw resolved/unresolved
+    # AUDIT counts (a distinct, deliberately unfiltered statistic) still
+    # reflect every real decision_outcomes row that exists.
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    btc_outcome_resolved = DecisionOutcome(
+        decision_id="btc-1", asset_id="btc-id", decision_timestamp=day, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    btc_outcome_unresolved_a = DecisionOutcome(
+        decision_id="btc-2", asset_id="btc-id", decision_timestamp=day.replace(hour=11), horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=None, outcome_label="UNRESOLVED",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    # ETH: a single, non-duplicate live decision, resolved and directionally correct.
+    eth_outcome = DecisionOutcome(
+        decision_id="eth-1", asset_id="eth-id", decision_timestamp=day, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.02, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    decisions = {
+        "btc-1": _judge_decision("btc-1", asset_id="btc-id", is_backfilled=False, created_at=day),
+        "btc-2": _judge_decision("btc-2", asset_id="btc-id", is_backfilled=False, created_at=day.replace(hour=11)),
+        "eth-1": _judge_decision("eth-1", asset_id="eth-id", is_backfilled=False, created_at=day),
+    }
+    # btc-3: the third member of BTC's duplicate group has no decision_outcomes
+    # row loaded here (mirrors get_recent's real scope over judge_decisions,
+    # independent of outcome resolution) -- group membership must still be
+    # detected correctly since it comes from ALL live decisions, not just
+    # resolved ones.
+    decisions["btc-3"] = _judge_decision("btc-3", asset_id="btc-id", is_backfilled=False, created_at=day.replace(hour=12))
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [btc_outcome_resolved, btc_outcome_unresolved_a, eth_outcome]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    # ETH is the only real directional observation left -- BTC's resolved
+    # decision (btc-1) is excluded entirely despite being real, resolved,
+    # and directionally correct, because it belongs to a 3-member same-day
+    # duplicate group.
+    assert body["directional_sample_size_live"] == 1
+    assert body["hit_rate_live"] == pytest.approx(1.0)
+    assert body["excluded_duplicate_group_decision_count"] == 3
+
+    # Raw audit counts are UNCHANGED -- they still reflect every real
+    # decision_outcomes row (btc-1 resolved, btc-2 unresolved, eth-1
+    # resolved), regardless of duplicate-group membership.
+    assert body["resolved_live_count"] == 2
+    assert body["unresolved_live_count"] == 1
+
+
+def test_calibration_duplicate_exclusion_is_stable_after_the_remaining_row_resolves(client):
+    # Same BTC group as above, but now ALL THREE have resolved. The excluded
+    # set must be identical to when only one had resolved -- membership
+    # depends only on judge_decisions (asset/day/is_backfilled), never on
+    # decision_outcomes' resolution status.
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    outcomes = [
+        DecisionOutcome(
+            decision_id=f"btc-{i}", asset_id="btc-id", decision_timestamp=day.replace(hour=10 + i),
+            horizon_days=30, target_return=0.1, stop_return=-0.1, realized_return=0.05,
+            outcome_label="HIT_TARGET", judge_confidence=0.6, is_backfilled=False,
+        )
+        for i in range(1, 4)
+    ]
+    decisions = {
+        f"btc-{i}": _judge_decision(f"btc-{i}", asset_id="btc-id", is_backfilled=False, created_at=day.replace(hour=10 + i))
+        for i in range(1, 4)
+    }
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return outcomes
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert body["directional_sample_size_live"] == 0  # all 3 still excluded, now that all 3 resolved
+    assert body["excluded_duplicate_group_decision_count"] == 3
+    assert body["resolved_live_count"] == 3  # raw audit count reflects all 3 real resolved rows
+    assert body["unresolved_live_count"] == 0
+
+
+def test_calibration_duplicate_exclusion_applies_before_directional_type_filtering(client):
+    # A same-day duplicate pair where one decision is WATCH (never
+    # directional anyway) and the other is a real resolved BUY -- confirms
+    # the B2 filter and the pre-existing BUY/SELL filter compose correctly:
+    # the BUY sibling is excluded via duplicate-group membership, and WATCH
+    # was never going to count regardless. Neither becomes a directional
+    # observation, for two independent, correct reasons.
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    watch_outcome = DecisionOutcome(
+        decision_id="d1", asset_id="btc-id", decision_timestamp=day, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=None, outcome_label="UNRESOLVED",
+        judge_confidence=0.5, is_backfilled=False,
+    )
+    buy_outcome = DecisionOutcome(
+        decision_id="d2", asset_id="btc-id", decision_timestamp=day.replace(hour=11), horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=False,
+    )
+    watch_decision = _judge_decision("d1", asset_id="btc-id", is_backfilled=False, created_at=day)
+    watch_decision.decision = "WATCH"
+    decisions = {
+        "d1": watch_decision,
+        "d2": _judge_decision("d2", asset_id="btc-id", is_backfilled=False, created_at=day.replace(hour=11)),
+    }
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [watch_outcome, buy_outcome]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert body["directional_sample_size_live"] == 0
+    assert body["excluded_duplicate_group_decision_count"] == 2
+    assert body["resolved_live_count"] == 1  # d2's real resolved row is still counted in the raw audit total
+    assert body["unresolved_live_count"] == 1
 
 
 def test_get_recent_calibration_runs(client):

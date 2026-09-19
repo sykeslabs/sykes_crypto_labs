@@ -1,289 +1,248 @@
 # Architecture
 
-```
-┌────────────────────────────────────────────────────────────────────────────────┐
-│                              EXTERNAL DATA SOURCES                              │
-└────────────────────────────────────────────────────────────────────────────────┘
-        │              │              │              │              │
-        ▼              ▼              ▼              ▼              ▼
-   CoinGecko      CoinMarketCap   Coinbase        Binance        Deribit
-   (Phase 1)      (3b)            (3b)            (3b, 3c)       (3c)
-   aggregated     aggregated      exchange-       exchange-      options IV,
-   price/mcap     price/mcap      native trade    native funding put/call skew,
-                                  price, spread    rate, open      open interest
-                                                    interest, price
-        │              │              │              │              │
-        │              │              │              │              ▼
-        │              │              │              │         ┌─────────┐
-        │              │              │              │         │  xAI /  │
-        │              │              │              │         │  Grok   │──┐
-        │              │              │              │         └─────────┘  │
-        │              │              │              │      (3d model +     │
-        │              │              │              │       3f PlanB/X)    │
-        ▼              ▼                                                     │
-   Etherscan      DefiLlama       RSS News        CoinAnk*      CoinGlass*   │
-   (3c)           (3c)            (Phase 2)       (3f)          (3f)         │
-   on-chain flow, TVL/DeFi        CoinDesk,       long/short    liquidation   │
-   stablecoin     rotation,       CoinTelegraph,  ratio         heatmap       │
-   supply/        stablecoin      Decrypt                                     │
-   velocity/      supply                                                      │
-   reserve proxy                                                              │
-                                                        CryptoBubbles* (3f)    │
-                                                        market-cap bubbles     │
-                                                                               │
-   Farside/SoSoValue (3c)               Polymarket/Kalshi (3c)                │
-   spot BTC/ETH ETF net flows           prediction-market implied probabilities│
-                                                                               │
-   (* = fragile/unofficial, feasibility-gated in 3f)                         │
-        │              │              │              │              │        │
-        └──────┬───────┴──────┬───────┴──────┬───────┴──────┬───────┴────────┘
-               ▼               ▼              ▼              ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │              PROVIDER / INGESTION LAYER                  │
-        │   app/market_data · app/news · per-source 3c/3f modules  │
-        │   - normalizes each response to the evidence-provenance  │
-        │     shape (source, scope, timestamps, decay_half_life)   │
-        │   - never fabricates missing data → UNAVAILABLE/UNKNOWN  │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │             EVIDENCE STORE — Supabase / Postgres          │
-        ├──────────────────────────────────────────────────────────┤
-        │ assets · market_snapshots · news · signal_sources ·        │
-        │ model_market_assessments · market_regime_snapshots ·       │
-        │ decision_outcomes · prompt_templates · llm_analyses ·      │
-        │ calibration_runs                                            │
-        │ (JSONB columns: payload, key_drivers, source_assessment)   │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │      SCREENING, REGIME & FACTOR SCORING (3b)                │
-        │      pure Python, zero LLM cost — market-regime            │
-        │      classifier + composite_factor_score + anomaly flag    │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │              MULTI-MODEL ASSESSMENT (3d)                   │
-        └───────────────────────────┬────────────────────────────┘
-                                     │
-                    ┌────────────────┼────────────────┬──────────────┐
-                    ▼                ▼                ▼              ▼
-              OpenRouter        OpenRouter        OpenRouter    OpenRouter
-              → Claude          → GPT             → Gemini      → Grok (opt.)
-                    │                │                │              │
-                    └────────────────┴────────────────┴──────────────┘
-                                     │
-                        ┌────────────┴────────────┐
-                        ▼                          ▼
-                   CostGuard                  Langfuse (optional)
-                   (hard spend cap,            trace prompt/response/
-                   checked pre-call)           cost/latency, versioned
-                                                against prompt_templates
-                                     │
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │            ADVERSARIAL RESEARCH (3f)                        │
-        └───────────────────────────┬────────────────────────────┘
-                    │                │                │
-                    ▼                ▼                ▼
-              Bull research    Bear research    Scenario modeling
-              (OpenRouter LLM  (OpenRouter LLM  (OpenRouter LLM,
-              call, CostGuard) rebuts bull,     bull/base/bear per
-                                CostGuard)       candidate, CostGuard)
-                    │                │                │
-                    └────────────────┼────────────────┘
-                                     ▼
-                              Macro evidence matrix
-                              (ADP, CPI, PCE, DXY, yields —
-                              manual/API feed, no LLM cost to collect)
-                                     │
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │      JUDGE (3e) — single structured OpenRouter call        │
-        │      wrapped in deterministic weighing logic;              │
-        │      gated by CostGuard, versioned via prompt_templates    │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │      RISK ENGINE (3e) — deterministic Python, no LLM       │
-        ├──────────────────────────────────────────────────────────┤
-        │ env-configured caps: MAX_SINGLE_ASSET_ALLOCATION,           │
-        │ MAX_NEW_POSITION_SIZE, MAX_WEEKLY_TURNOVER,                 │
-        │ MIN_BUY/REBALANCE/SELL_CONFIDENCE                           │
-        │        │                              │                    │
-        │        ▼                              ▼                    │
-        │  volatility-adjusted sizing     correlation-matrix check    │
-        │  (inverse-vol / capped Kelly,   (flags concentrated,        │
-        │  from 3b screening factors)     co-moving exposure)         │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │       PORTFOLIO CONSTRUCTION (3e) — deterministic Python    │
-        │       replacement logic vs. risk_adjusted_alpha threshold   │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   DECISION-OUTCOME LEDGER (3e/3f)                            │
-        │   decision_outcomes table + scheduled/manual evaluation      │
-        │   step, backfilled from market_snapshots (triple-barrier-    │
-        │   style HIT_TARGET/HIT_STOP/TIMED_OUT); rows tagged with      │
-        │   regime_at_decision, judge_confidence, in_holdout_window     │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   STATISTICAL VALIDATION (3g) — the accuracy gate            │
-        ├──────────────────────────────────────────────────────────┤
-        │ Deflated Sharpe / PBO across every 3d–3f prompt & logic      │
-        │ iteration · Brier score + reliability diagrams by regime ·   │
-        │ held-out-window results reported in isolation · Judge        │
-        │ reasoning audit (OpenRouter LLM, CostGuard-gated) ·           │
-        │ go/no-go statement for Phase 4, grounded in the above         │
-        │ (reports/recommends only — does not alter upstream logic)    │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   ADAPTIVE WEIGHTING & STRESS TESTING (3h) — diagnostic only │
-        ├──────────────────────────────────────────────────────────┤
-        │ learned evidence-value ranking, incl. rolling-window/        │
-        │ regime-sliced drift check (checked vs. Judge's implicit      │
-        │ weighting, never fed back in) · portfolio stress test        │
-        │ (historical/scenario drawdown, VaR/CVaR, extends Risk Engine)│
-        │ (reports/flags only — no auto-adjustment without confirmation)│
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   ENTITY-FLOW, CUSTODY/OTC & NETWORK FUNDAMENTALS (3i)       │
-        ├──────────────────────────────────────────────────────────┤
-        │ Nansen/Arkham entity-flow intelligence · custody/OTC desk    │
-        │ balance tracking · active addresses/fees/dev activity ·      │
-        │ wired into the Judge (3e) as new labeled inputs, same        │
-        │ extend-the-input-set pattern 3f used · zero new LLM cost     │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   PAPER TRADING EXECUTION (Phase 4)                          │
-        │   simulated fills, fees, slippage — no live exchange         │
-        └───────────────────────────┬────────────────────────────┘
-                                     ▼
-        ┌──────────────────────────────────────────────────────────┐
-        │   EXCHANGE EXECUTION AGENT (Phase 6, testnet only)           │
-        ├──────────────────────────────────────────────────────────┤
-        │   LangChain/LangGraph agent                                  │
-        │        │                                                     │
-        │        ▼                                                     │
-        │   allow-listed tools: place_order · cancel_order ·            │
-        │   check_balance  →  Testnet/Sandbox exchange API              │
-        │   (Risk Engine re-checked at execution time)                  │
-        └──────────────────────────────────────────────────────────┘
+What the system looks like today. For *why* it got this way, see
+[`history.md`](history.md) (build log) and [`decisions.md`](decisions.md)
+(ADR-style rationale). For what's still open or deliberately deferred, see
+[`todo.md`](todo.md). For the script catalog, see [`scripts.md`](scripts.md).
 
-  Cross-cutting, reads from the Evidence Store (does not write decisions):
-     FastAPI (Phase 5) ── read/query API ──▶ Dashboard (Phase 5)
+## Data flow (built and live today)
+
+```
+EXTERNAL SOURCES
+  CoinGecko · CoinMarketCap · Coinbase · Binance (spot+futures) · Deribit
+  Etherscan · DefiLlama · CFTC (COT) · Upbit · FRED · SEC EDGAR · congress.gov
+  Nansen · GitHub · OpenRouter (Claude/OpenAI/Gemini) · RSS news feeds
+        │
+        ▼
+PROVIDER / INGESTION LAYER  (app/market_data, app/news)
+  one client module per source; normalizes into the shared evidence-
+  provenance shape; never fabricates missing data -> records OK /
+  UNAVAILABLE / NOT_IMPLEMENTED in `signal_sources`, never silently omits
+        │
+        ▼
+EVIDENCE STORE  (Supabase / Postgres, 20 migrations, see below)
+        │
+        ▼
+SCREENING & FACTOR SCORING  (app/market_data/screening_service.py, regime.py,
+  factors.py, anomaly.py) -- deterministic, zero LLM cost. Ranks the open
+  universe, classifies one shared market regime per run, computes
+  composite_factor_score, flags anomalies, auto-promotes new candidates
+  into `assets` (real display name fixed 2026-09-16, see history.md). A
+  held asset that falls outside the top-N-by-market-cap fetch is retrieved
+  directly by coingecko_id (fixed 2026-09-16, see history.md) so the
+  held-symbol Judge-coverage override always has a row to act on
+        │
+        ▼
+MULTI-MODEL ASSESSMENT  (app/llm/assessment_*.py) -- Claude + OpenAI +
+  Gemini via OpenRouter, one call per model per candidate, computes
+  model_agreement (real, deterministic majority-vote fraction)
+        │
+        ▼
+ADVERSARIAL RESEARCH  (app/llm/adversarial_*.py) -- bull -> bear -> scenario
+  cycle per candidate, plus macro evidence matrix (app/market_data/
+  macro_service.py, fred.py, sec_edgar.py, congress_gov.py, upbit.py)
+        │
+        ▼
+JUDGE  (app/judge/) -- one structured OpenRouter call per asset, synthesizes
+  every evidence layer above into BUY/SELL/HOLD/WATCH/NO_TRADE. Given TWO
+  distinct allocation numbers per asset (Phase 5d, 2026-09-15):
+  actual_allocation (real holdings, ground truth) and previous_system_target
+  (the system's own last recommended target) -- see context.py's
+  AssetJudgeContext and render_prompt(). Production Judge decisions are
+  idempotent per asset and UTC decision day (Phase 5i, 2026-09-16): before
+  the LLM call, any candidate that already has a live (is_backfilled=false)
+  decision for today is excluded and logged, never re-decided -- a second
+  same-day attempt for an asset never creates a new judge_decisions/
+  decision_outcomes row and never alters portfolio state. Scoped to live
+  decisions only; replay/backfilled decisions (is_backfilled=true) are
+  structurally unaffected, since 3e.1's replay never calls JudgeService at
+  all (see app/benchmarks/replay.py's own separate persistence path)
+        │
+        ▼
+RISK ENGINE  (app/risk/engine.py) -- deterministic Python, no LLM.
+  size_one() computes final_allocation from current_allocation (real
+  holdings) + previous_system_target (system's own last target), applying
+  MAX_SINGLE_ASSET_ALLOCATION / MAX_NEW_POSITION_SIZE / MIN_*_CONFIDENCE
+  gates and volatility/agreement scalars. MAX_SINGLE_ASSET_ALLOCATION
+  constrains the DESIRED TARGET final_allocation expresses in every branch,
+  including WATCH/NO_TRADE (fixed 2026-09-16, see history.md's Phase 5g
+  section) -- WATCH/NO_TRADE cannot re-adopt real holdings sitting above
+  the cap as a compliant-looking target for free. This never modifies real
+  holdings (current_allocation) itself, and actual holdings can remain
+  above the cap for a real stretch of time regardless, since turnover/
+  execution constraints still govern how fast the portfolio actually moves
+  toward that target. remaining_turnover_budget() and
+  _strategy_turnover_delta() measure weekly turnover against
+  previous_system_target, not real holdings (Phase 5c fix, 2026-09-14 --
+  see history.md; real backtest evidence: 318.30% -> 104.18% apparent
+  turnover). _strategy_turnover_delta() treats WATCH/NO_TRADE as zero
+  strategy turnover, and that exemption is now persisted, not just applied
+  in memory (Phase 5k fix, 2026-09-17, see history.md): every
+  `portfolio_allocation_changes` row carries `change_reason`
+  ("strategy"/"risk_control"), set from the already-gated
+  `SizedDecision.decision` at Portfolio Construction time -- never
+  reconstructed later from `judge_decisions.decision` (the raw, pre-
+  confidence-gate value). `get_turnover_since()` sums `change_reason=
+  "strategy"` rows only.
+
+  **A1 vs A2 (Phase 5l, 2026-09-17 -- see decisions.md/history.md)**:
+  two independent, mutually-exclusive conditions both map to the same
+  `change_reason="risk_control"` exemption. **A1** = `decision in
+  ("WATCH", "NO_TRADE")` -- these are never sizing decisions at all
+  (Phase 5g). **A2** = `is_cap_compliance_correction()` (module-level
+  function, `app/risk/engine.py`) -- a BUY/HOLD/SELL decision (never
+  WATCH/NO_TRADE, that's already A1) whose `final_allocation` brings a
+  genuinely oversized `previous_system_target` (above
+  MAX_SINGLE_ASSET_ALLOCATION, with TURNOVER_EPSILON tolerance -- no new
+  epsilon constant) down to, or below, the cap. Real motivating incident:
+  Risk Engine repeatedly computed a fully cap-compliant HOLD target for
+  BTC (0.15, real live history 2026-09-16/09-17) only for the ordinary
+  turnover-cap mechanism to block or scale it back above cap every time,
+  with no guaranteed convergence -- see decisions.md's A2 entry for the
+  full reasoning (in short: MAX_WEEKLY_TURNOVER is documented, in
+  settings.py, as a circuit breaker against discretionary STRATEGY
+  CHURN -- a forced reduction toward an already-enforced hard cap is not
+  churn). SELL-to-zero from an oversized target is deliberately included
+  (no distinct "exit" category exists anywhere in this project). A2
+  operates on `previous_system_target`/`final_allocation` only -- it never
+  reads `current_allocation` (real holdings), so it cannot be, and does
+  not attempt to be, an execution-engine fix for a separately-oversized
+  real holding whose target is already compliant (e.g. SOL, whose target
+  has been 0.0 since 2026-09-15 while real holdings independently sit
+  above the cap -- an unrelated, already-documented no-execution-engine
+  gap). Both `PortfolioConstructionService` and `RiskEngine` call the
+  exact same `is_cap_compliance_correction()` function, so the two layers
+  cannot silently classify a decision differently (regression-tested in
+  `tests/test_portfolio.py`). No new `change_reason` value, no new
+  turnover budget, no ordering/priority mechanism between simultaneously-
+  qualifying assets -- each is independently exempt.
+  app/risk/correlation.py flags concentrated/co-moving exposure;
+  app/risk/stress_test.py runs two deterministic drawdown scenarios
+  (known gap: reads target allocation, not real holdings -- see todo.md)
+        │
+        ▼
+PORTFOLIO CONSTRUCTION  (app/portfolio/construction.py, holdings.py) --
+  turns Risk-Engine output into concrete decisions against real
+  `holdings_ledger`/`holdings_transactions` ground truth (Phase 5a/5b).
+  Every real change to the system's own target is recorded to
+  `portfolio_allocation_changes` (previous_allocation/new_allocation =
+  target, actual_allocation_before = real holdings at that moment, audit
+  only, change_reason = strategy/risk_control per Phase 5k) -- surfaced on
+  the dashboard since 2026-09-16 (Phase 5e)
+        │
+        ▼
+DECISION-OUTCOME LEDGER  (app/benchmarks/evaluation_service.py,
+  triple_barrier.py) -- backfills realized returns via triple-barrier
+  (HIT_TARGET/HIT_STOP/TIMED_OUT), tags regime/confidence/is_backfilled
+        │
+        ▼
+STATISTICAL VALIDATION  (app/benchmarks/statistical_validation.py,
+  reasoning_audit.py, baseline_comparison.py) -- Deflated Sharpe/PBO, Brier/
+  reliability, held-out-window reporting, Judge reasoning audits. Reports
+  only -- never alters upstream logic. Same-UTC-day duplicate LIVE Judge
+  decisions (is_backfilled=false, >1 per asset/day -- B1 prevents new ones,
+  see Phase 5i) are excluded ENTIRELY (no canonical row chosen) from every
+  directional/calibration statistic here and in
+  scripts/run_composite_weights_validation.py and
+  scripts/calibration_baseline.py's --source live branch
+  (app/database/repository.py's compute_duplicate_group_decision_ids, B2,
+  Phase 5j) -- a pure, query-level classification, computed from
+  judge_decisions alone (never outcome resolution status), so it's stable
+  as outcomes resolve. Raw judge_decisions/decision_outcomes rows,
+  portfolio state, and LLM cost accounting are all untouched by this;
+  resolved/unresolved audit counts remain a deliberately separate,
+  unfiltered statistic (see doc/decisions.md)
+        │
+        ▼
+ADAPTIVE WEIGHTING  (app/benchmarks/evidence_value.py) -- learned evidence-
+  value ranking, diagnostic only, gated on n>=50 resolved decisions
+  (real n has stayed 16-42 -- see todo.md, not yet actionable)
+
+Cross-cutting: FastAPI (app/api/) reads the Evidence Store for the
+dashboard (app/api/static/dashboard.html); CostGuard (app/llm/cost.py)
+checks a hard spend cap before every LLM call from any stage.
 ```
 
-**Additional 3b/3c/3f/3g/3h/3i evidence sources and derived analytics not
-redrawn into the boxes above** (same ingestion layer, same Evidence Store,
-added after the diagram was first drawn — see "Technology stack decisions"
-for the rationale behind each):
-- **3b, derived (no new external source):** BTC dominance and an
-  altcoin-season/breadth index, and BTC's halving-cycle position (days
-  since/until the nearest halving), all computed from market/block data
-  already collected, as additional axes on the market-regime snapshot.
-- **3c, official:** Binance/Deribit dated-futures term structure (basis
-  curve, alongside funding rate and OI, now also expressed as an
-  annualized carry yield), the CFTC's Commitment of Traders report for CME
-  BTC/ETH futures positioning, Glassnode/CryptoQuant on-chain
-  valuation-cycle metrics (MVRV/SOPR/NUPL, LTH/STH cohorts) and
-  BTC-specific miner metrics (hash rate, difficulty, reserves), Messari/
-  TokenUnlocks token unlock & vesting schedules, and the derived
-  volatility risk premium (Deribit implied volatility minus 3b's
-  realized-volatility factor).
-- **3f, official-but-extraction-fragile or feasibility-gated:** a
-  forward-looking scheduled macro-event calendar (FOMC/CPI/PCE/NFP dates,
-  official-source, low-risk); FRED-based
-  global liquidity proxies and cross-asset correlation tracking (official,
-  low-risk access); SEC EDGAR / congress.gov-based regulatory event
-  calendar (official access, unverified per-asset extraction reliability);
-  Santiment/LunarCrush-style aggregate social/narrative sentiment; CoinAnk;
-  CoinGlass; CryptoBubbles; PlanB/X; and a regional exchange price premium
-  (e.g. a Kimchi-premium-style Korean-venue gap), grouped here because
-  reliable, ToS-compliant access to the relevant regional exchange is
-  unverified going in.
-- **3g, methodology check (no new evidence):** a purged/embargoed
-  walk-forward audit alongside the existing point-in-time audit, checking
-  whether the held-out window (and any rolling/regime-sliced split) has an
-  adequate buffer against leakage from autocorrelated evidence — a finding,
-  not a new signal source.
-- **3h, diagnostic-only:** a learned evidence-value ranking (checked
-  against, never fed back into, the live pipeline) — including a
-  rolling-window/regime-sliced variant that checks whether a source's
-  value has drifted over time rather than only its full-history average —
-  and a portfolio stress-test module extending the Risk Engine.
-- **3i, official/paid-tier, evidence-collection:** Nansen/Arkham-class
-  wallet-entity-clustering and "smart money" flow intelligence, known
-  custody/OTC-desk address balance tracking, and network usage (active
-  addresses, fees) plus developer-activity (commit velocity) fundamentals
-  — wired into the Judge as new labeled inputs, the same pattern 3f used.
-- **3j, gated/optional (not scheduled by default):** options gamma
-  exposure/dealer positioning, exchange counterparty/solvency risk
-  (monitoring-only), and retail-demand proxies — implemented only if 3h's
-  evidence-value ranking surfaces a specific named gap.
-- **3k, gated/optional (not scheduled by default):** DeFi lending/borrowing
-  rates, staking yield/validator queue depth (PoS assets only), and
-  stablecoin depeg-risk monitoring (monitoring-only) — same gating
-  discipline as 3j. Order-flow imbalance/LOB microstructure was considered
-  for this list and deliberately excluded; see "Technology stack
-  decisions."
+### Current dashboard sections (`app/api/static/dashboard.html`)
 
-### Component purposes
+TODO · Screened tokens · Market regime · Judge Decisions · Calibration
+summary · LLM prompts & answers · **Portfolio** (merged 2026-09-16: two
+donuts side by side — AI target left, real holdings right, mirrored
+legends — an "AI Portfolio" table and a "My Portfolio" table sharing
+column widths with no-wrap+horizontal-scroll, a turnover-cap banner, a
+holdings entry form + collapsible full transaction history, a Comparison
+table (My vs AI %/USD + deltas), and a collapsible recommended-allocation-
+history table backed by `portfolio_allocation_changes`) · Recent news ·
+Cost / spend · Signal sources.
 
-| Component | Introduced | Purpose |
-|---|---|---|
-| **Provider/ingestion layer** (`app/market_data`, `app/news`, future per-source modules) | Phase 1–3i | Talks to each external API/feed, normalizes its response into the shared evidence-provenance shape, and tags freshness/status — the only layer allowed to touch a raw external API. |
-| **Evidence Store** (Supabase/Postgres) | Phase 1 | Single source of truth for every observation, model output, and decision. Relational, so backtesting and the decision-outcome ledger can join across tables by asset/time; JSONB columns give document-like flexibility for nested, source-specific fields without needing a second database. |
-| **Screening, regime & factor scoring** (3b) | 3b | Deterministic, no-LLM factor computation that ranks/filters the open asset universe into candidates, classifies one shared market regime per run so every downstream stage sees the same label instead of inferring its own, combines the factors into a `composite_factor_score` the Judge can weigh as an independent, purely quantitative check against LLM narrative evidence, and flags anomalous volume/price behavior before an asset can surface as a candidate. |
-| **Multi-model assessment** (`app/llm`, 3d) | Phase 2 / 3d | Sends each candidate's evidence to multiple independent LLMs (Claude, GPT, Gemini, optionally Grok) via OpenRouter, validates strict JSON output, and persists each model's standalone view plus a computed `model_agreement` — evidence, not a decision. |
-| **Adversarial research** (3f) | 3f | Generates an explicitly opposing bull case and bear case per serious candidate, plus scenario modeling and a macro evidence matrix — additional evidence layers for the Judge, not decisions themselves. |
-| **Judge** (`app/judge`, 3e) | 3e | Synthesizes every evidence layer above into one structured recommendation per asset, with confidence explicitly decoupled from model/source agreement, and a `NO_TRADE` outcome always available. |
-| **Risk Engine** (`app/risk`, 3e) | 3e | Deterministic, non-negotiable position-sizing and exposure limits (volatility-adjusted sizing, correlation-concentration checks, hard caps) that the Judge's output cannot override. |
-| **Portfolio Construction** (`app/portfolio`, 3e) | 3e | Turns Risk-Engine-adjusted Judge output plus current holdings/watchlist into concrete increase/hold/reduce/remove/initiate decisions, never forcing full capital deployment. |
-| **Decision-outcome ledger** (3e/3f) | 3e | Records every decision with a resolution horizon and backfills realized returns, giving the system a continuously-updated, ground-truth accuracy measure instead of a one-off backtest. Tags every row with the market regime and Judge confidence in effect at decision time, and marks whether it falls inside the held-out window, so later accuracy claims can be sliced honestly rather than only reported in aggregate. |
-| **Statistical validation** (`app/benchmarks` or a dedicated module, 3g) | 3g | The layer that decides whether an accuracy claim is real: Deflated Sharpe Ratio / probability-of-backtest-overfitting correction across every prompt/logic iteration actually tried, full Brier/reliability calibration reporting by regime, an isolated held-out-window result, and a periodic audit of whether the Judge's stated reasoning follows from its own cited evidence. Produces findings and recommendations only — it does not modify upstream evidence collection or decision logic itself. |
-| **Adaptive weighting & stress testing** (3h) | 3h | Three diagnostic-only additions closing gaps identified against professional practice: a learned, sample-size-honest evidence-value ranking checked against the Judge's implicit weighting (including a rolling-window/regime-sliced drift variant, never fed back into the live pipeline), and a deterministic portfolio stress test (historical/scenario drawdown, VaR/CVaR-style estimate) extending the Risk Engine's existing sizing/correlation checks. Reports and flags only — same non-auto-adjusting standing as 3g. |
-| **Entity-flow, custody/OTC & network fundamentals** (3i) | 3i | Three further evidence sources from the same gap-analysis as 3h: wallet-entity-clustering/"smart money" flow intelligence, custody/OTC desk balance tracking, and network usage/developer-activity fundamentals. Unlike 3h, this is new evidence-collection work wired into the Judge's existing input set (3e), not a diagnostic-only tool. |
-| **CostGuard** (`app/llm/cost.py`) | Phase 2 | Cross-cutting spend cap checked before every LLM call from any stage; skips (not crashes) once a cap is hit. |
-| **Langfuse (optional)** | 3d onward | Cross-cutting, additive tracing of LLM calls (prompt, response, cost, latency) for debugging and comparing prompt versions from `prompt_templates` against real outcomes. Never a dependency of the decision pipeline — Supabase remains authoritative. |
-| **Paper Trading Execution** (`app/trading`) | Phase 4 | Simulates fills for Portfolio Construction's target changes without touching any real exchange. |
-| **FastAPI + Dashboard** | Phase 5 | Read/query API over the Evidence Store (candidates, assessments, decisions, portfolio state, cost reports) for a UI; Pydantic-native, so it reuses the same schemas already defined for Phase 2/3 rather than duplicating them. |
-| **Exchange Execution Agent** (LangChain/LangGraph) | Phase 6 | The only agentic component in the system. Given Portfolio Construction's already-approved target changes (not open-ended instructions) and a small, explicit, allow-listed toolset (place order, cancel order, check balance) against a **testnet** exchange API. Risk Engine constraints are re-checked at execution time; live trading remains gated behind a separate, explicit safety review per the project's development methodology. |
+## What's deliberately not built (see `todo.md`/`decisions.md` for full reasoning)
 
+Live-queried 2026-09-16: of 29 rows in `signal_sources`, 18 are `OK`, 2 are
+`UNAVAILABLE`, 9 are `NOT_IMPLEMENTED`. Real reasons, not silent gaps:
+
+- **Paid-tier deferrals** (client built or a working key exists, not
+  subscribed/upgraded): Glassnode/CryptoQuant on-chain valuation metrics,
+  CoinGlass liquidation heatmap, LunarCrush social sentiment (a real paid
+  key returns HTTP 402 on every endpoint — Individual tier or higher
+  required), xAI/Grok as a 4th assessment model.
+- **Genuinely `NOT_IMPLEMENTED`** (no reachable/reliable source found):
+  custody/OTC desk flow, spot ETF flows (Farside has no API, SoSoValue
+  needs an unavailable login), token unlock/vesting schedules (Messari
+  needs a key, TokenUnlocks.app has no public API), prediction markets
+  (Polymarket/Kalshi fail DNS from this sandbox).
+- **Gated on sample size, not infeasibility**: options gamma exposure,
+  exchange counterparty risk, retail-demand proxies, DeFi lending/staking/
+  depeg monitoring — all wait on the evidence-value ranking (or a Judge-
+  reasoning-audit finding) naming a specific gap, which itself is gated on
+  n>=50 resolved decisions (currently 16-42).
+- **Explicitly decided against**: a paper-trading/live-exchange execution
+  agent (Phase 6) — on hold, no timeline; scheduling the pipeline on a
+  timer — the real bottleneck is decision-resolution time, not run
+  frequency.
+
+## Database
+
+20 migrations (`migrations/0001`-`0020`), applied in order via the
+Supabase SQL Editor (see [`operations.md`](operations.md) — the
+`psycopg2`/`apply_migration.py` path is currently broken in this
+environment). Broad eras: `0001`-`0002` core schema + news/LLM;
+`0003`-`0005` universe provenance, screening/regime, derivatives/on-chain
+(Phase 3a-3c); `0006`-`0012` multi-model assessment, portfolio/decision
+state, adversarial research, reasoning audits, evidence-value reports
+(Phase 3d-3h); `0013` execution-cost backfill (Phase 4); `0014`-`0015`
+real holdings ledger + transactions (Phase 5a-5b); `0016`-`0020` dashboard/
+accuracy cleanup and the turnover-baseline redesign (Phase 5c, see
+history.md).
 
 ## Project layout
 
 ```
 app/
+  api/           FastAPI app (main.py), auth.py (X-API-Key gate), routers/
+                 (assessments, calibration, cost, holdings, judge, news,
+                 portfolio, screening, signal_sources), static/dashboard.html
+  benchmarks/    replay/backfill, evaluation_service, triple_barrier,
+                 statistical_validation, reasoning_audit, evidence_value,
+                 baseline_comparison, historical_factors
   config/        Settings (env-driven)
-  database/      Supabase client + repositories (assets, market_snapshots, news, llm_analyses, asset_status_history, signal_sources, screened_universe, market_regime_snapshots, evidence_observations); evidence_provenance.py — shared provenance shape, decay-half-life reference, "value as known at time T" helper (3a)
-  market_data/   CoinGecko client, normalization, collection service; extended in 3b with CoinMarketCap/Coinbase/Binance, screening/regime classification (incl. BTC dominance/altcoin-season index and halving-cycle position), composite factor score, and anomaly flag; extended in 3c with Binance-futures/Deribit/CFTC/DefiLlama providers (funding rate, open interest, term structure + annualized carry yield, options IV/put-call, VRP, CME COT, protocol TVL, stablecoin supply growth), plus optional Etherscan (large-transfer proxy) and Glassnode (on-chain valuation/miner metrics, built but not subscribed to — see Phase 3c decisions); ETF flows, prediction markets, token unlocks, and stablecoin velocity/exchange-reserve tracking investigated in 3c and confirmed NOT_IMPLEMENTED (no accessible free API found — see Phase 3c); extended in 3f with a scheduled macro-event calendar, FRED-based global-liquidity/cross-asset-correlation, regulatory-calendar, and regional-exchange-premium providers; extended in 3i with entity-flow-intelligence, custody/OTC-flow, and network-usage/developer-activity providers; optionally extended in 3j (gated — see 3j) with options-gamma-exposure, exchange-counterparty-risk, and retail-demand-proxy providers; optionally extended in 3k (gated — see 3k) with DeFi-lending-rate, staking-yield/validator-queue, and stablecoin-depeg-risk providers
-  news/          RSS collection, relevance matching, dedup (Phase 2)
-  llm/           OpenRouter integration, structured output, cost guard (Phase 2); cost.py extended in 3a with COST_TRACKED_TABLES/CostLedgerRepository (multi-table cost summing, zero behavior change); extended in 3d with the current-market-assessment stage (optional Grok, optional Langfuse tracing)
-  judge/         decisions.py — DecisionValue placeholder (BUY/HOLD/SELL/WATCH/NO_TRADE), 3a; Phase 3e — deterministic decision synthesis, persisted to `judge_decisions` (schema reserved in 3a); input set extended in 3f and 3i without redesign; uncertainty-aware sizing input (model/source agreement) added 3e
-  portfolio/     Phase 3e — portfolio construction
-  risk/          Phase 3e — deterministic risk engine, incl. uncertainty-aware position scaling; extended in 3h with a
-                 deterministic portfolio tail-risk stress test
-  trading/       Phase 4 — order-book-depth-aware, fee-aware paper-fill simulation (see doc/prompts/PHASE4_PROMPT.md); Phase 6 — testnet execution agent (LangChain/LangGraph)
-  benchmarks/    Phase 4 — performance tracking; decision-outcome calibration (3e/3f);
-                 retroactive historical replay, backfilled decisions tagged
-                 `is_backfilled` and reported separately from the live
-                 baseline (3e.1, optional);
-                 statistical validation — Deflated Sharpe/PBO, Brier/reliability,
-                 held-out-window reporting, point-in-time and purged/embargoed
-                 walk-forward audits, Judge reasoning audit (3g); adaptive
-                 evidence-value ranking incl. rolling-window/regime drift check,
-                 diagnostic only (3h)
-  api/           Phase 5 — FastAPI read/query layer (not yet created)
-  main.py        Entrypoint (python -m app.main [--with-llm])
+  database/      Supabase client + repositories, evidence_provenance.py
+  judge/         context.py (AssetJudgeContext, build_judge_context),
+                 service.py, provider.py, schemas.py, decisions.py
+  llm/           OpenRouter client, structured output, cost guard,
+                 assessment_* (3d), adversarial_* (3f)
+  market_data/   one client module per external source (coingecko,
+                 coinmarketcap, coinbase, binance, deribit, etherscan,
+                 defillama, cftc, upbit, fred, sec_edgar, congress_gov,
+                 nansen, github_activity, glassnode), screening_service,
+                 regime, factors, anomaly, macro_service
+  news/          RSS collection, relevance matching, dedup
+  portfolio/     construction.py, holdings.py, schemas.py
+  risk/          engine.py (RiskEngine, SizedDecision), correlation.py,
+                 stress_test.py
+  trading/       fill_simulator.py (paper-trading fills; no live exchange —
+                 Phase 6 execution agent not built)
+  main.py        Entrypoint (python -m app.main [flags] — see operations.md)
 tests/
-migrations/      SQL schema, applied manually or via scripts/apply_migration.py
-scripts/
+migrations/      SQL schema, 0001-0020
+scripts/         see scripts.md
 ```
-

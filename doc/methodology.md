@@ -119,3 +119,18 @@ carry across every sub-phase:
   simulation and re-reports calibration net of realistic execution costs,
   specifically because a system's real-world accuracy is only as
   trustworthy as the fill assumptions behind the numbers describing it.
+- **Documentation is a living part of the project, not an afterthought
+  (standing policy adopted 2026-09-16).** Every substantial task — code or
+  not — follows Understand → Implement → Test/Validate → Update
+  Documentation → Update Context → Verify Consistency → Complete. `doc/`
+  files are treated as operational instructions for the next agent, not
+  passive notes: code is implementation truth, `architecture.md` is
+  architecture truth, this file is process truth, `decisions.md` is
+  historical-rationale truth, `history.md` is historical-fact truth, and
+  each fact lives in exactly one of these, cross-linked rather than
+  duplicated. A decision recorded after the fact must distinguish observed
+  fact from inferred rationale, never fabricating reasoning that wasn't
+  actually the reason at the time. Before calling any substantial task
+  complete, ask: if another agent started working on this repository
+  tomorrow, would the documentation and context files correctly describe
+  the system after this change? If not, it isn't done yet.

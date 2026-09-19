@@ -48,13 +48,19 @@ class JudgeResult:
     skipped_cost_cap: bool = False
     estimated_cost: str | None = None
     decisions: list[JudgeDecisionRecord] = field(default_factory=list)
+    # B1 same-day production idempotency (2026-09-16): symbols skipped this
+    # run because a live decision already exists for them today -- always
+    # empty on a normal run with no duplicates, so this stays unobtrusive
+    # in the summary line unless something's actually wrong.
+    duplicate_skipped: list[str] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
         return (
             f"decided={self.decided_assets} stored={self.stored} "
             f"outcomes_created={self.outcomes_created} failed={self.failed} "
-            f"skipped_cost_cap={self.skipped_cost_cap}"
+            f"skipped_cost_cap={self.skipped_cost_cap} "
+            f"duplicate_skipped={self.duplicate_skipped}"
         )
 
 
@@ -128,6 +134,15 @@ class JudgeService:
             )
             return result
 
+        context.assets, result.duplicate_skipped = self._exclude_already_decided_today(context.assets, run_id)
+        if not context.assets:
+            logger.info(
+                "All %d candidate(s) already have a live production decision for today (%s) -- "
+                "nothing left to decide this run.",
+                len(result.duplicate_skipped), datetime.now(UTC).date().isoformat(),
+            )
+            return result
+
         result.decided_assets = [ac.asset.symbol for ac in context.assets]
 
         allowed, reason = self._cost_guard.check()
@@ -156,6 +171,40 @@ class JudgeService:
 
         logger.info("Judge complete: %s", result.summary)
         return result
+
+    def _exclude_already_decided_today(self, assets, run_id):
+        """B1 same-day production idempotency (2026-09-16): at most one
+        live/production Judge decision per asset per UTC decision day --
+        checked BEFORE the (batched, real-money) LLM call, not after, so an
+        asset that already has today's production decision never even
+        enters the prompt/costs a token. Real incident this closes: on
+        2026-09-05/06, `--with-judge` was run 3 times each day with no
+        guard at all, producing 40 independent extra live decisions (see
+        doc/history.md's Phase 5i section) -- those historical rows are
+        untouched by this change; this only prevents a NEW recurrence.
+        Never touches `is_backfilled=true` rows (replay/ablation), which
+        legitimately span many simulated days per asset by design."""
+        asset_ids = [ac.asset.id for ac in assets]
+        already_decided = self._judge_decision_repo.get_live_decisions_on_day(
+            asset_ids, datetime.now(UTC).date(),
+        )
+        if not already_decided:
+            return assets, []
+
+        skipped_symbols = []
+        for ac in assets:
+            existing = already_decided.get(ac.asset.id)
+            if existing is None:
+                continue
+            skipped_symbols.append(ac.asset.symbol)
+            logger.info(
+                "Skipping %s: a live production Judge decision already exists for today "
+                "(existing run_id=%s at %s; this attempt's run_id=%s) -- at most one live "
+                "decision per asset per UTC day.",
+                ac.asset.symbol, existing.run_id, existing.created_at.isoformat(), run_id,
+            )
+        remaining = [ac for ac in assets if ac.asset.id not in already_decided]
+        return remaining, skipped_symbols
 
     def _persist(self, run_id, provider_result, symbol_to_context, prompt_template_id, regime_id, result) -> None:
         items = provider_result.batch.decisions

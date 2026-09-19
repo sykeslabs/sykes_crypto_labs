@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from app.config import Settings
+from app.database.models import Asset
 from app.database.repository import (
     AssetRepository,
     AssetStatusRepository,
@@ -32,6 +33,24 @@ from app.portfolio.holdings import aggregate_current_holdings
 logger = logging.getLogger("crypto_ai_portfolio.market_data")
 
 OHLCV_LOOKBACK_DAYS = 31
+
+
+def _normalize_market_entry(entry: dict) -> dict:
+    """Shared shape for a CoinGecko `/coins/markets` row, whether it came
+    from `fetch_top_markets` (the bulk top-N-by-market-cap universe) or a
+    direct `fetch_markets` lookup for a specific held asset that fell
+    outside that universe -- so both paths feed the exact same downstream
+    factor/ranking pipeline."""
+    return {
+        "symbol": entry["symbol"].upper(),
+        "id": entry["id"],
+        "name": entry["name"],
+        "market_cap": entry.get("market_cap"),
+        "total_volume": entry.get("total_volume"),
+        "current_price": entry.get("current_price"),
+        "momentum_7d": entry.get("price_change_percentage_7d_in_currency"),
+        "momentum_30d": entry.get("price_change_percentage_30d_in_currency"),
+    }
 
 
 @dataclass
@@ -96,6 +115,9 @@ class ScreeningService:
             logger.error("Failed to build screening universe from CoinGecko: %s", exc)
             return result
 
+        held_assets = self._get_held_assets()
+        universe = self._merge_missing_held_assets(universe, held_assets)
+
         result.screened_count = len(universe)
         if not universe:
             logger.warning("Screening universe is empty — nothing to do.")
@@ -155,6 +177,7 @@ class ScreeningService:
                     run_id=run_id,
                     computed_at=now,
                     symbol=symbol,
+                    name=entry.get("name"),
                     coingecko_id=entry["id"],
                     coinmarketcap_id=str(cmc_entry["id"]) if cmc_entry else None,
                     market_cap=entry.get("market_cap"),
@@ -175,7 +198,7 @@ class ScreeningService:
         for row, score in zip(screened_rows, composite_scores, strict=True):
             row.composite_factor_score = score
 
-        held_symbols = self._get_held_symbols()
+        held_symbols = {a.symbol for a in held_assets}
         self._rank_and_tag_candidates(screened_rows, held_symbols)
         result.top_candidates = [r.symbol for r in screened_rows if r.is_top_candidate]
 
@@ -205,23 +228,52 @@ class ScreeningService:
         raw = self._coingecko.fetch_top_markets(self._settings.screening_universe_size + 15)
         universe = []
         for entry in raw:
-            symbol = entry["symbol"].upper()
-            if is_stablecoin(symbol):
+            normalized = _normalize_market_entry(entry)
+            if is_stablecoin(normalized["symbol"]):
                 continue
-            universe.append(
-                {
-                    "symbol": symbol,
-                    "id": entry["id"],
-                    "name": entry["name"],
-                    "market_cap": entry.get("market_cap"),
-                    "total_volume": entry.get("total_volume"),
-                    "current_price": entry.get("current_price"),
-                    "momentum_7d": entry.get("price_change_percentage_7d_in_currency"),
-                    "momentum_30d": entry.get("price_change_percentage_30d_in_currency"),
-                }
-            )
+            universe.append(normalized)
             if len(universe) >= self._settings.screening_universe_size:
                 break
+        return universe
+
+    def _merge_missing_held_assets(self, universe: list[dict], held_assets: list[Asset]) -> list[dict]:
+        """A held asset can rank outside `_build_universe`'s own top-
+        (screening_universe_size + 15)-by-market-cap fetch entirely, in
+        which case the held-symbol override in `_rank_and_tag_candidates`
+        never gets a row to act on (see that method's own WARNING) --
+        confirmed live for JASMY, 2026-09-16. Fetches ONLY the held symbols
+        actually missing from `universe` (never widens the global
+        market-cap universe itself) via a single batched CoinGecko lookup
+        by coingecko_id, normalized into the exact same shape
+        `_build_universe` already produces, so they flow through the
+        identical per-entry factor/ranking pipeline below."""
+        present_symbols = {u["symbol"] for u in universe}
+        missing = [a for a in held_assets if a.symbol not in present_symbols]
+        if not missing:
+            return universe
+
+        try:
+            markets = self._coingecko.fetch_markets([a.coingecko_id for a in missing])
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch missing held asset(s) %s directly for screening coverage: %s",
+                [a.symbol for a in missing], exc,
+            )
+            return universe
+
+        for asset in missing:
+            entry = markets.get(asset.coingecko_id)
+            if entry is None:
+                logger.warning(
+                    "Held asset %s (coingecko_id=%s) could not be fetched directly either -- "
+                    "still gets no Judge coverage this run.", asset.symbol, asset.coingecko_id,
+                )
+                continue
+            normalized = _normalize_market_entry(entry)
+            if is_stablecoin(normalized["symbol"]) or normalized["symbol"] in present_symbols:
+                continue
+            universe.append(normalized)
+            present_symbols.add(normalized["symbol"])
         return universe
 
     def _fetch_cmc_quotes(self, symbols: list[str]) -> tuple[dict[str, dict], str]:
@@ -271,26 +323,28 @@ class ScreeningService:
         if spread > threshold:
             logger.info("%s: cross-source price disagreement %.2f%% — %s", symbol, spread * 100, present)
 
-    def _get_held_symbols(self) -> set[str]:
+    def _get_held_assets(self) -> list[Asset]:
         """Phase 5b addendum: a real position (quantity > 0 in the
         append-only holdings_ledger) should never silently lose Judge
         coverage just because it falls out of today's top
         TOP_CANDIDATES_SIZE by composite score — previously an asset you
         hold could go a week or more with zero fresh Judge opinion (see
         doc/... TODO "Include currently-held assets in Judge coverage",
-        now implemented rather than left declined). Matched by symbol, not
-        asset_id, since `_rank_and_tag_candidates` runs before
-        `_promote_new_candidates` assigns `row.asset_id` for the day's
-        rows."""
+        now implemented rather than left declined). Returns full `Asset`
+        rows, not just symbols (extended for `_merge_missing_held_assets`,
+        which also needs each held asset's `coingecko_id`) — matched by
+        symbol at the `_rank_and_tag_candidates` call site, not asset_id,
+        since that method runs before `_promote_new_candidates` assigns
+        `row.asset_id` for the day's rows."""
         aggregated = aggregate_current_holdings(self._holdings_ledger_repo.get_all_history())
-        held_symbols: set[str] = set()
+        held_assets: list[Asset] = []
         for entry in aggregated:
             if entry.asset_id is None:  # the cash line, not a real asset position
                 continue
             asset = self._asset_repo.get_by_id(entry.asset_id)
             if asset:
-                held_symbols.add(asset.symbol)
-        return held_symbols
+                held_assets.append(asset)
+        return held_assets
 
     def _rank_and_tag_candidates(self, rows: list[ScreenedAsset], held_symbols: set[str]) -> None:
         ranked = sorted(
@@ -304,10 +358,10 @@ class ScreeningService:
         matched_held_symbols = {row.symbol for row in rows}
         for missing in held_symbols - matched_held_symbols:
             logger.warning(
-                "Held asset %s wasn't in this run's screened universe at all -- "
-                "still gets no Judge coverage this run (likely fell out of the "
-                "top %d by market cap, not just the top %d by score).",
-                missing, self._settings.screening_universe_size + 15, self._settings.top_candidates_size,
+                "Held asset %s wasn't in this run's screened universe at all, even after "
+                "_merge_missing_held_assets' direct CoinGecko lookup (see that warning above) "
+                "-- still gets no Judge coverage this run.",
+                missing,
             )
 
     def _promote_new_candidates(self, rows: list[ScreenedAsset], run_id: str) -> list[str]:
@@ -321,7 +375,14 @@ class ScreeningService:
                 continue
             new_asset = self._asset_repo.create_asset(
                 symbol=row.symbol,
-                name=row.symbol,
+                # Real bug fixed 2026-09-16, found live: this fell back to
+                # the bare symbol (e.g. "ZEC" instead of "Zcash") for every
+                # newly-promoted asset, even though CoinGecko's real display
+                # name was already fetched in _build_universe and simply
+                # never threaded through ScreenedAsset. `row.name` is that
+                # real name now; the bare-symbol fallback stays only for the
+                # genuine edge case where CoinGecko's response is missing it.
+                name=row.name or row.symbol,
                 coingecko_id=row.coingecko_id,
                 coinmarketcap_id=row.coinmarketcap_id,
                 active=True,

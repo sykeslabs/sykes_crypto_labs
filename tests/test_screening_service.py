@@ -71,11 +71,20 @@ class FakeSignalSourceRepository:
 
 
 class FakeCoinGeckoClient:
-    def __init__(self, entries):
+    def __init__(self, entries, extra_by_id=None):
         self._entries = entries
+        # Simulates a direct `/coins/markets?ids=...` lookup for a specific
+        # held asset that fell outside `fetch_top_markets`' own top-N --
+        # keyed by coingecko_id, same shape `fetch_markets` really returns.
+        self._extra_by_id = extra_by_id or {}
+        self.fetch_markets_calls: list[list[str]] = []
 
     def fetch_top_markets(self, limit):
         return self._entries[:limit]
+
+    def fetch_markets(self, coingecko_ids):
+        self.fetch_markets_calls.append(list(coingecko_ids))
+        return {cid: self._extra_by_id[cid] for cid in coingecko_ids if cid in self._extra_by_id}
 
 
 class FakeCoinMarketCapClient:
@@ -126,7 +135,7 @@ def _entry(symbol, coingecko_id=None, market_cap=1_000_000, volume=100_000, mome
 def _make_service(
     entries, cmc=None, binance=None, coinbase=None,
     asset_repo=None, asset_status_repo=None, screened_repo=None, regime_repo=None, signal_repo=None,
-    holdings_ledger_repo=None, top_candidates_size=2,
+    holdings_ledger_repo=None, top_candidates_size=2, coingecko=None, coingecko_extra_by_id=None,
 ):
     settings = Settings(_env_file=None, screening_universe_size=10, top_candidates_size=top_candidates_size)
     return settings, ScreeningService(
@@ -136,7 +145,7 @@ def _make_service(
         screened_universe_repo=screened_repo or FakeScreenedUniverseRepository(),
         regime_repo=regime_repo or FakeMarketRegimeRepository(),
         signal_source_repo=signal_repo or FakeSignalSourceRepository(),
-        coingecko_client=FakeCoinGeckoClient(entries),
+        coingecko_client=coingecko or FakeCoinGeckoClient(entries, extra_by_id=coingecko_extra_by_id),
         coinmarketcap_client=cmc or FakeCoinMarketCapClient(configured=False),
         coinbase_client=coinbase or FakeVenueClient(set()),
         binance_client=binance or FakeVenueClient(set()),
@@ -193,9 +202,12 @@ def test_currently_held_asset_outside_top_n_still_gets_judge_coverage():
 
 
 def test_held_asset_missing_from_universe_entirely_logs_warning(caplog):
-    # A held asset that isn't even in today's screened universe (e.g. fell
-    # out of the top ~45 by market cap) can't be force-tagged -- this must
-    # be a disclosed warning, never a silent drop.
+    # A held asset that isn't in today's top-N screened universe AND can't
+    # be found via the direct CoinGecko lookup either (e.g. delisted, or a
+    # genuinely bad coingecko_id) -- this must be a disclosed warning, never
+    # a silent drop. No `ghost` entry is registered in coingecko_extra_by_id
+    # below, so the direct lookup genuinely finds nothing, same as a real
+    # CoinGecko 404/empty response.
     entries = [_entry("GOOD", momentum_30d=0.80)]
     asset_repo = FakeAssetRepository(existing_by_id={
         "ghost-id": Asset(
@@ -217,6 +229,92 @@ def test_held_asset_missing_from_universe_entirely_logs_warning(caplog):
     assert any("GHOST" in record.message for record in caplog.records)
 
 
+def test_held_asset_outside_top_n_universe_is_rescued_via_direct_lookup():
+    # Real fix for the JASMY finding (2026-09-16, see doc/history.md's
+    # Phase 5f section): a held asset that fell out of _build_universe's
+    # own top-N-by-market-cap fetch is now fetched directly by coingecko_id
+    # instead of only being logged as permanently missing.
+    entries = [_entry("GOOD", momentum_30d=0.80)]
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "jasmy-id": Asset(
+            id="jasmy-id", symbol="JASMY", name="JasmyCoin", coingecko_id="jasmycoin",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+    ])
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
+        coingecko_extra_by_id={"jasmycoin": _entry("JASMY", coingecko_id="jasmycoin", momentum_30d=-0.50)},
+    )
+
+    result = service.run("RUN-1")
+
+    assert "JASMY" in result.top_candidates  # rescued by the held-symbol override, same as before
+    assert result.screened_count == 2  # GOOD (top-N) + the directly-fetched JASMY
+
+
+def test_held_asset_lookup_failure_is_handled_gracefully_and_logged(caplog):
+    # The direct lookup itself can fail (network error, bad API response) --
+    # this must degrade to the existing "no coverage this run" warning, not
+    # crash the whole screening run.
+    entries = [_entry("GOOD", momentum_30d=0.80)]
+
+    class BrokenCoinGeckoClient(FakeCoinGeckoClient):
+        def fetch_markets(self, coingecko_ids):
+            raise RuntimeError("simulated CoinGecko outage")
+
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "jasmy-id": Asset(
+            id="jasmy-id", symbol="JASMY", name="JasmyCoin", coingecko_id="jasmycoin",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+    ])
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
+        coingecko=BrokenCoinGeckoClient(entries),
+    )
+
+    with caplog.at_level("WARNING"):
+        result = service.run("RUN-1")
+
+    assert "JASMY" not in result.top_candidates
+    assert result.screened_count == 1  # only GOOD -- the run itself did not crash
+    assert any("JASMY" in record.message for record in caplog.records)
+
+
+def test_held_asset_already_in_top_n_universe_is_not_fetched_again_or_duplicated():
+    # Preserves "no duplicate rows": a held asset already present in
+    # _build_universe's own top-N fetch must not trigger a second, direct
+    # lookup, and must not appear twice in the persisted screened universe.
+    entries = [_entry("BTC", coingecko_id="bitcoin", momentum_30d=0.10), _entry("GOOD", momentum_30d=0.80)]
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "btc-id": Asset(
+            id="btc-id", symbol="BTC", name="Bitcoin", coingecko_id="bitcoin",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="btc-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+    ])
+    coingecko = FakeCoinGeckoClient(entries, extra_by_id={"bitcoin": _entry("BTC", coingecko_id="bitcoin")})
+    screened_repo = FakeScreenedUniverseRepository()
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=2,
+        coingecko=coingecko, screened_repo=screened_repo,
+    )
+
+    result = service.run("RUN-1")
+
+    assert coingecko.fetch_markets_calls == []  # BTC was already present -- no direct lookup needed
+    assert result.screened_count == 2  # BTC + GOOD, no duplicate
+    assert [row.symbol for row in screened_repo.inserted].count("BTC") == 1
+
+
 def test_promotes_genuinely_new_candidate_as_asset_with_candidate_status():
     entries = [_entry("BTC"), _entry("NEWCOIN", momentum_30d=0.90)]
     asset_repo = FakeAssetRepository()
@@ -228,6 +326,26 @@ def test_promotes_genuinely_new_candidate_as_asset_with_candidate_status():
     assert "NEWCOIN" in result.new_candidates
     assert len(asset_repo.created) == 2  # both BTC and NEWCOIN are "new" here (no pre-existing assets)
     assert any(status == "CANDIDATE" for _id, status, _reason in asset_status_repo.changes)
+
+
+def test_promoted_new_candidate_gets_coingeckos_real_display_name_not_the_bare_symbol():
+    # Real bug fixed 2026-09-16, found live: CoinGecko's real display name
+    # (e.g. "Zcash") was already fetched into _build_universe's own dict but
+    # never threaded through ScreenedAsset, so every newly-promoted asset's
+    # `name` silently fell back to the bare symbol ("ZEC") instead -- 14 of
+    # 29 real tracked assets had this exact symptom live. _entry's default
+    # (name == symbol) wouldn't catch this, so this test overrides `name`
+    # explicitly to something that genuinely differs from the symbol.
+    entry = _entry("ZEC", momentum_30d=0.90)
+    entry["name"] = "Zcash"
+    entries = [_entry("BTC"), entry]
+    asset_repo = FakeAssetRepository()
+    _, service = _make_service(entries, asset_repo=asset_repo, top_candidates_size=2)
+
+    service.run("RUN-1")
+
+    created_by_symbol = {a.symbol: a for a in asset_repo.created}
+    assert created_by_symbol["ZEC"].name == "Zcash"
 
 
 def test_reuses_existing_asset_id_instead_of_creating_duplicate():

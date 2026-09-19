@@ -13,7 +13,7 @@ from app.config import Settings
 from app.database.repository import PortfolioAllocationChangeRepository, PortfolioPositionRepository
 from app.judge.schemas import JudgeDecisionRecord
 from app.portfolio.schemas import PortfolioAllocationChange, PortfolioPosition
-from app.risk.engine import SizedDecision
+from app.risk.engine import SizedDecision, is_cap_compliance_correction
 
 logger = logging.getLogger("crypto_ai_portfolio.portfolio")
 
@@ -33,6 +33,14 @@ class PortfolioAction:
     previous_allocation: float
     new_allocation: float
     decision_id: str | None
+    # Real, ground-truth holdings at the moment this action was decided --
+    # NOT the turnover-relevant `previous_allocation` above. Added so a
+    # REMOVE (or any action) can be told apart from "the strategy's own
+    # bookkeeping target changed" vs. "a real position actually existed and
+    # is being closed" without a separate join back to holdings_ledger --
+    # see PortfolioAllocationChange.actual_allocation_before, which this
+    # mirrors for the same reason, kept in sync intentionally.
+    actual_allocation_before: float = 0.0
     replaced_symbol: str | None = None
     blocked_no_capacity: bool = False
 
@@ -69,6 +77,7 @@ class PortfolioConstructionService:
                 asset_id=d.asset_id, symbol=d.symbol, action=action_type,
                 previous_allocation=d.previous_system_target, new_allocation=d.final_allocation,
                 decision_id=decision_ids_by_asset.get(d.asset_id),
+                actual_allocation_before=d.current_allocation,
             ))
 
             # Real bug fixed 2026-09-14: this used to compare/record against
@@ -91,12 +100,36 @@ class PortfolioConstructionService:
                     previous_allocation=d.previous_system_target, new_allocation=d.final_allocation,
                     actual_allocation_before=d.current_allocation,
                     baseline_semantics="system_target",
+                    # Real bug fixed 2026-09-17: WATCH/NO_TRADE risk-control
+                    # corrections (RiskEngine.size_one's
+                    # min(current_allocation, max_single_asset_allocation)
+                    # clamp) were persisted indistinguishably from real
+                    # strategy decisions, so get_turnover_since silently
+                    # re-counted them as strategy turnover even though
+                    # _strategy_turnover_delta already exempts them at
+                    # decision time -- see migrations/0021. Classified from
+                    # d.decision, the already-gated SizedDecision value --
+                    # never from judge_decisions.decision (raw, pre-gate).
+                    #
+                    # A2 (2026-09-17 onward): a BUY/HOLD/SELL decision that
+                    # reduces a genuinely oversized previous_system_target
+                    # down to, or below, MAX_SINGLE_ASSET_ALLOCATION is
+                    # classified risk_control too -- uses the exact same
+                    # is_cap_compliance_correction predicate the Risk Engine
+                    # itself uses for the turnover exemption (never a
+                    # separately-written, potentially-drifting copy).
+                    change_reason=(
+                        "risk_control"
+                        if d.decision in ("WATCH", "NO_TRADE")
+                        or is_cap_compliance_correction(d, self._settings.max_single_asset_allocation)
+                        else "strategy"
+                    ),
                     changed_at=now,
                 ))
 
         logger.info(
             "Portfolio construction: %s",
-            [(a.symbol, a.action, round(a.new_allocation, 4)) for a in actions],
+            [(a.symbol, a.action, round(a.new_allocation, 4), round(a.actual_allocation_before, 4)) for a in actions],
         )
         return actions
 

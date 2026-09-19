@@ -193,8 +193,14 @@ class MacroService:
                 "accessible with no key (verified live: real social_volume_total data "
                 "returned) but restricted to data at least ~30 days old — unusable for "
                 "live current-sentiment reads, this system's actual use case. LunarCrush "
-                "requires an auth token even for its 'public' endpoint (not pursued, "
-                "same paid-tier deferral as CoinGlass)."
+                "re-investigated 2026-09-15 with a real user-provided LUNARCRUSH_API_KEY "
+                "(set in .env, not yet wired into Settings/any client): live-tested "
+                "against /public/coins/list/v1, /public/coins/{symbol,id}/v1, and "
+                "/public/topic/{topic}/v1 — every one returned HTTP 402 'You must have "
+                "an active Individual or higher subscription to use this endpoint,' "
+                "including the coins-list endpoint LunarCrush's own docs cite as their "
+                "free-tier example. Same paid-tier deferral as CoinGlass/Glassnode — "
+                "user chose not to upgrade for now."
             ),
         }
         for name, status in result.source_status.items():

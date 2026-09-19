@@ -8,7 +8,7 @@ reuse existing schemas as FastAPI response models.
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.benchmarks.schemas import DecisionOutcome
 from app.judge.schemas import JudgeDecisionRecord
@@ -177,6 +177,25 @@ class CalibrationSummary(BaseModel):
     resolved_live_count: int
     unresolved_backfilled_count: int
     unresolved_live_count: int
+    # B2 (2026-09-16): raw history and the counts above are untouched --
+    # this field discloses the population change explicitly rather than
+    # silently shrinking directional_sample_size with no visible
+    # explanation. See its Field(description=...) below for the
+    # OpenAPI-visible explanation of what it counts.
+    excluded_duplicate_group_decision_count: int = Field(
+        description=(
+            "Number of individual live Judge decision rows excluded from "
+            "calibration because they belong to a same-asset, same-UTC-day "
+            "duplicate group (B2, 2026-09-16). This counts decision ROWS, "
+            "not the number of duplicate groups, and not incidents -- e.g. "
+            "3 groups of 3 duplicate decisions each would report 9 here, "
+            "not 3. Historical rows are never deleted or modified; this "
+            "count only reflects what was excluded from the directional/"
+            "calibration figures above, never from resolved_live_count/"
+            "unresolved_live_count, which remain raw, unfiltered audit "
+            "counts of every real decision_outcomes row."
+        ),
+    )
     directional_sample_size: int
     hit_rate: float | None
     brier_score: float | None

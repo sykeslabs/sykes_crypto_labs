@@ -86,11 +86,222 @@ def test_sell_zeroes_allocation():
 
 
 def test_watch_and_no_trade_never_change_current_allocation():
+    # Below max_single_asset_allocation (default 0.15): the target simply
+    # tracks real holdings, unchanged. See the
+    # "RiskEngine: WATCH/NO_TRADE target-allocation cap" section below for
+    # the above-cap clamp behavior.
     engine = _engine()
     sized = engine.size_one(_decision(decision="WATCH"), "BTC", 0.02, 0.05, 0.05)
     assert sized.final_allocation == 0.05
     sized2 = engine.size_one(_decision(decision="NO_TRADE"), "BTC", 0.02, 0.05, 0.05)
     assert sized2.final_allocation == 0.05
+
+
+# --- RiskEngine: WATCH/NO_TRADE target-allocation cap -------------------------
+#
+# Real bug fixed 2026-09-16 (see doc/history.md's Phase 5g section): WATCH/
+# NO_TRADE's `final_allocation = current_allocation` passthrough had no
+# `max_single_asset_allocation` check at all, so real holdings sitting
+# above the cap could be silently re-adopted as the system's own target,
+# undoing a prior turnover-costly REDUCE for free. The fix bounds only the
+# DESIRED TARGET this branch expresses -- `current_allocation` (real
+# holdings) is never touched, and the fix is entirely local to this one
+# branch (SELL and BUY/HOLD-resize sizing are unaffected).
+
+def test_watch_target_below_cap_is_unaffected():
+    engine = _engine(max_single_asset_allocation=0.15)
+    sized = engine.size_one(_decision(decision="WATCH"), "BTC", 0.02, current_allocation=0.10, previous_system_target=0.10)
+    assert sized.final_allocation == pytest.approx(0.10)
+    assert sized.current_allocation == pytest.approx(0.10)  # real holdings untouched
+
+
+def test_watch_target_exactly_at_cap_is_unaffected():
+    engine = _engine(max_single_asset_allocation=0.15)
+    sized = engine.size_one(_decision(decision="WATCH"), "BTC", 0.02, current_allocation=0.15, previous_system_target=0.15)
+    assert sized.final_allocation == pytest.approx(0.15)
+    assert sized.current_allocation == pytest.approx(0.15)
+
+
+def test_watch_target_above_cap_is_clamped_to_the_cap():
+    engine = _engine(max_single_asset_allocation=0.15)
+    sized = engine.size_one(_decision(decision="WATCH"), "BTC", 0.02, current_allocation=0.33, previous_system_target=0.33)
+    assert sized.final_allocation == pytest.approx(0.15)
+    # Real holdings are reported completely unchanged -- this decision
+    # never touches actual exposure, only the desired target.
+    assert sized.current_allocation == pytest.approx(0.33)
+
+
+def test_no_trade_decision_value_directly_clamps_to_cap():
+    engine = _engine(max_single_asset_allocation=0.15)
+    sized = engine.size_one(_decision(decision="NO_TRADE"), "BTC", 0.02, current_allocation=0.33, previous_system_target=0.33)
+    assert sized.decision == "NO_TRADE"
+    assert sized.final_allocation == pytest.approx(0.15)
+    assert sized.current_allocation == pytest.approx(0.33)
+
+
+def test_watch_clamp_does_not_count_as_strategy_turnover():
+    # The resulting (clamped) target may still be subject to the existing
+    # turnover mechanism downstream -- but WATCH/NO_TRADE's own turnover
+    # delta stays hard-zero regardless of the clamp (unchanged,
+    # pre-existing behavior -- see _strategy_turnover_delta), so
+    # apply_turnover_cap must neither charge nor revert it.
+    engine = _engine(max_single_asset_allocation=0.15, max_weekly_turnover=0.0)
+    sized = engine.size_one(_decision(decision="WATCH"), "BTC", 0.02, current_allocation=0.33, previous_system_target=0.1632)
+    assert sized.final_allocation == pytest.approx(0.15)
+
+    engine.apply_turnover_cap([sized], turnover_used_this_week=0.0)  # zero budget remaining
+
+    assert sized.final_allocation == pytest.approx(0.15)  # untouched by the turnover cap
+    assert sized.turnover_capped is False
+
+
+def test_reduce_then_watch_does_not_restore_the_target_above_the_cap():
+    # Reproduces the real 2026-09-13 -> 2026-09-15 BTC incident
+    # conceptually (real percentages differ -- this project's cap has
+    # changed over time; what matters is the STRUCTURE of the bug): a
+    # REDUCE (BUY/HOLD-resize branch) genuinely lowers the desired target;
+    # real holdings never move (no real sell executes); a subsequent WATCH
+    # must settle at the cap, never silently jump back up toward real
+    # holdings the way it did before this fix.
+    engine = _engine(max_single_asset_allocation=0.15, max_new_position_size=1.0)
+    real_holdings = 0.33  # never resolves -- no real sell ever executes in this scenario
+
+    reduce_decision = _decision(decision="HOLD", target_allocation=0.10, model_agreement=1.0, source_agreement=1.0)
+    reduced = engine.size_one(reduce_decision, "BTC", None, current_allocation=real_holdings, previous_system_target=0.20)
+    assert reduced.final_allocation == pytest.approx(0.10)  # the REDUCE takes effect, well under the cap
+
+    watch_decision = _decision(decision="WATCH")
+    watched = engine.size_one(watch_decision, "BTC", None, current_allocation=real_holdings, previous_system_target=reduced.final_allocation)
+    # The old bug: this would be 0.33 (real holdings), silently undoing the
+    # REDUCE and jumping straight past the cap in one free step.
+    assert watched.final_allocation == pytest.approx(0.15)
+    assert watched.final_allocation < real_holdings
+    assert watched.current_allocation == pytest.approx(real_holdings)  # real holdings still reported, untouched
+
+
+# --- RiskEngine: A2 cap-compliance correction (2026-09-17) --------------------
+#
+# A BUY/HOLD/SELL decision that reduces a genuinely oversized
+# previous_system_target down to, or below, MAX_SINGLE_ASSET_ALLOCATION is
+# exempted from MAX_WEEKLY_TURNOVER the same way WATCH/NO_TRADE (A1) already
+# are -- both are the system correcting itself back within an already-
+# enforced hard constraint, not discretionary strategy churn. See
+# is_cap_compliance_correction's own docstring and doc/decisions.md's A2
+# entry for the full reasoning.
+
+def test_normal_compliant_buy_hold_is_not_a2():
+    # previous_system_target is not oversized -- ordinary strategy turnover.
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "HOLD", current_allocation=0.10, previous_system_target=0.10, final_allocation=0.12)
+    assert engine._strategy_turnover_delta(d) == pytest.approx(0.02)
+
+
+def test_oversized_target_reduced_to_exactly_the_cap_is_exempt():
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "HOLD", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.15)
+    assert engine._strategy_turnover_delta(d) == 0.0
+
+
+def test_oversized_previous_target_reduced_below_cap_is_exempt():
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "HOLD", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.10)
+    assert engine._strategy_turnover_delta(d) == 0.0
+
+
+def test_sell_to_zero_from_oversized_target_is_exempt():
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "SELL", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.0)
+    assert engine._strategy_turnover_delta(d) == 0.0
+
+
+def test_a1_watch_no_trade_unaffected_by_a2():
+    # A1 regression: WATCH/NO_TRADE must still be zero, via A1's own,
+    # completely separate condition -- unaffected by the new A2 predicate.
+    engine = _engine(max_single_asset_allocation=0.15)
+    watch = _sized("a1", "BTC", "WATCH", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.15)
+    no_trade = _sized("a2", "ETH", "NO_TRADE", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.15)
+    assert engine._strategy_turnover_delta(watch) == 0.0
+    assert engine._strategy_turnover_delta(no_trade) == 0.0
+
+
+def test_final_target_still_above_cap_does_not_trigger_a2():
+    # Protects the predicate from silently treating EVERY reduction of an
+    # oversized position as risk-control -- only a reduction that actually
+    # reaches compliance qualifies.
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "HOLD", current_allocation=0.30, previous_system_target=0.30, final_allocation=0.20)
+    assert engine._strategy_turnover_delta(d) == pytest.approx(-0.10)
+
+
+def test_previous_target_exactly_at_cap_does_not_trigger_a2():
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized("a1", "BTC", "HOLD", current_allocation=0.15, previous_system_target=0.15, final_allocation=0.10)
+    assert engine._strategy_turnover_delta(d) == pytest.approx(-0.05)
+
+
+def test_epsilon_boundary_previous_target_not_qualifying_just_above_cap():
+    from app.risk.engine import TURNOVER_EPSILON
+    # previous_system_target sits within TURNOVER_EPSILON of the cap --
+    # reused, not a new constant -- so this must NOT qualify as oversized.
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized(
+        "a1", "BTC", "HOLD", current_allocation=0.15, previous_system_target=0.15 + TURNOVER_EPSILON / 2,
+        final_allocation=0.10,
+    )
+    assert engine._strategy_turnover_delta(d) == pytest.approx(-0.05 - TURNOVER_EPSILON / 2)
+
+
+def test_epsilon_boundary_previous_target_qualifying_just_beyond_epsilon():
+    from app.risk.engine import TURNOVER_EPSILON
+    engine = _engine(max_single_asset_allocation=0.15)
+    d = _sized(
+        "a1", "BTC", "HOLD", current_allocation=0.15, previous_system_target=0.15 + TURNOVER_EPSILON * 2,
+        final_allocation=0.10,
+    )
+    assert engine._strategy_turnover_delta(d) == 0.0
+
+
+def test_mixed_batch_a2_correction_does_not_consume_ordinary_strategy_budget():
+    # BTC: oversized target -> compliant HOLD (A2, exempt).
+    # ADA: ordinary BUY, competing for a small remaining strategy budget.
+    # The BTC correction must not enter proposed_turnover at all -- ADA's
+    # scaling must be computed as if BTC weren't in the batch.
+    engine = _engine(max_single_asset_allocation=0.15, max_weekly_turnover=1.0)
+    btc = _sized("btc", "BTC", "HOLD", current_allocation=0.333, previous_system_target=0.30, final_allocation=0.15)
+    ada = _sized("ada", "ADA", "BUY", current_allocation=0.05, previous_system_target=0.05, final_allocation=0.10)
+
+    engine.apply_turnover_cap([btc, ada], turnover_used_this_week=0.99)  # remaining = 0.01
+
+    assert btc.final_allocation == pytest.approx(0.15)  # A2 correction proceeds in full
+    assert btc.turnover_capped is False
+    assert ada.final_allocation == pytest.approx(0.05 + 0.05 * (0.01 / 0.05))  # scaled using ONLY its own demand
+    assert ada.turnover_capped is True
+
+
+def test_multiple_simultaneous_a2_corrections_all_proceed_with_no_ordering():
+    engine = _engine(max_single_asset_allocation=0.15, max_weekly_turnover=0.0)  # zero strategy budget
+    btc = _sized("btc", "BTC", "HOLD", current_allocation=0.333, previous_system_target=0.30, final_allocation=0.15)
+    eth = _sized("eth", "ETH", "HOLD", current_allocation=0.28, previous_system_target=0.25, final_allocation=0.15)
+    sol = _sized("sol", "SOL", "SELL", current_allocation=0.22, previous_system_target=0.20, final_allocation=0.0)
+
+    engine.apply_turnover_cap([btc, eth, sol], turnover_used_this_week=0.0)  # remaining = 0
+
+    assert btc.final_allocation == pytest.approx(0.15)
+    assert eth.final_allocation == pytest.approx(0.15)
+    assert sol.final_allocation == pytest.approx(0.0)
+    assert btc.turnover_capped is False
+    assert eth.turnover_capped is False
+    assert sol.turnover_capped is False
+
+
+def test_a2_correction_does_not_repeat_once_compliant():
+    # Repeated application / convergence: once the target is compliant, a
+    # subsequent identical-shaped decision no longer qualifies (previous ==
+    # final, or previous no longer oversized) -- mirrors A1's own proven
+    # idempotency (test_reduce_then_watch_does_not_restore_the_target_above_the_cap).
+    engine = _engine(max_single_asset_allocation=0.15)
+    corrected = _sized("a1", "BTC", "HOLD", current_allocation=0.333, previous_system_target=0.15, final_allocation=0.15)
+    assert engine._strategy_turnover_delta(corrected) == 0.0  # no movement at all -- not an A2 case, just a no-op
 
 
 # --- RiskEngine: volatility-adjusted sizing -----------------------------------
@@ -304,8 +515,13 @@ def test_turnover_normal_rebalance_10_to_25_is_15pp():
 
 
 def test_turnover_decrease_25_to_10_is_15pp():
+    # previous_system_target (0.15) is deliberately AT, not above, the
+    # default cap -- a previous target above cap would make this an A2
+    # cap-compliance correction (exempted, delta 0), which is not what
+    # this test is checking (plain decrease-magnitude math, unrelated to
+    # A2 -- see test_oversized_previous_target_reduced_below_cap_is_exempt).
     engine = _engine(max_weekly_turnover=1.0)
-    a = _sized("a1", "BTC", "SELL", 0.25, 0.25, 0.10)
+    a = _sized("a1", "BTC", "SELL", 0.15, 0.15, 0.0)
     delta = engine._strategy_turnover_delta(a)
     assert abs(delta) == pytest.approx(0.15)
 

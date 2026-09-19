@@ -1,7 +1,355 @@
-# Technology stack decisions
+# Decisions
 
 Recorded here so the reasoning behind each choice — including the ones
-deliberately *not* adopted — doesn't get lost as the project grows.
+deliberately *not* adopted, and the ones later superseded — doesn't get
+lost as the project grows. (Renamed from `technology-decisions.md` on
+2026-09-16 and extended beyond evidence-source stack choices to cover
+every significant architectural/policy decision; see git history for the
+file's history under its old name.)
+
+Entries below the "Technology stack decisions" heading are the original
+per-evidence-source adopt/reject log, largely written at *planning* time
+(the "3j"/"3k" framing) — cross-check against [`history.md`](history.md)
+and the live `signal_sources` table for what a given source's real,
+final outcome actually was; a decision to "adopt" a source here does not
+by itself mean it shipped working (e.g. Glassnode/CoinGlass/LunarCrush
+were all "grouped as fragile" or paid-tier-gated and remain deferred — see
+"Later decisions" below and [`todo.md`](todo.md)). New entries from
+2026-09-14 onward are written after the fact, from real implementation
+outcomes, and are dated.
+
+## Later decisions (2026-09-14 onward)
+
+- **Turnover-cap baseline: measure against the strategy's own previous
+  target, never real holdings — adopted, 2026-09-14.** Real incident: a
+  manual `/holdings` trade moving real holdings away from the system's
+  last target was getting silently, repeatedly charged against the
+  strategy's own `MAX_WEEKLY_TURNOVER` budget. Real backtest (14 live
+  Judge runs, zero LLM cost): turnover measured the old way totaled
+  318.30%; measured against the strategy's own previous target, 104.18% —
+  a 67% reduction attributable entirely to removing this double-counted
+  drift. See [`history.md`](history.md)'s Phase 5c section for the full
+  incident, the pre-production audit, and the corrected figures (an
+  earlier draft script had reported wrong headline numbers, caught and
+  fixed by re-verifying against the actual deployed code).
+- **`MAX_WEEKLY_TURNOVER` window (7 days) and budget (30%) — reaffirmed
+  unchanged, 2026-09-14, evidence-driven.** Explicitly investigated
+  whether to move to a longer window/higher budget (a 30-day/60-75%
+  hypothesis was floated mid-investigation). Backtested 7d/14d/30d ×
+  multiple budgets against real history: with only ~10 real days of
+  data, 14d/30d windows are statistically indistinguishable from 7d, and
+  the 30d/60-75% hypothesis would have made the real 2026-09-13 incident
+  *worse*, not better. Per the user's own explicit instruction not to
+  force the data to fit a pre-supplied hypothesis, the recommendation is
+  to leave both unchanged — no evidence supports moving either.
+- **Judge's "current allocation" context: show both real holdings and the
+  system's own last target, clearly labeled — adopted, 2026-09-15,
+  supersedes the original design.** The original (undocumented,
+  effectively default-by-omission) choice was to show only the system's
+  own target, unlabeled as such — found to have silently misled the
+  Judge by up to 27.75 percentage points on real historical decisions
+  (see [`history.md`](history.md)'s Phase 5d section). Considered
+  replacing it outright with real holdings instead, but chose to show
+  both because the gap between the two is itself a real, useful signal
+  (whether past recommendations were actually executed) that a pure
+  swap would have erased.
+- **LunarCrush (social/narrative sentiment) — deferred, re-confirmed
+  2026-09-15 with a real paid API key.** Originally deferred in 3f
+  because even the "public" endpoint required an auth token; a real user
+  key was later added and live-tested against every plausible endpoint
+  (coins list, single coin, topic) — all returned HTTP 402, requiring an
+  "Individual" tier or higher, including the endpoint LunarCrush's own
+  docs describe as free-tier-accessible. User chose not to upgrade — same
+  category as CoinGlass/Glassnode (a real paid-tier decision, not a
+  technical failure).
+- **`portfolio_allocation_changes` dashboard exposure — reversed,
+  2026-09-16.** Originally declined (see [`todo.md`](todo.md)'s
+  "Declined" section) on the reasoning that current allocation plus "last
+  changed" already covered it. Directly requested and built as a real,
+  collapsible "Recommended
+  allocation history" table plus a new `GET
+  /portfolio/allocation-changes/recent` endpoint — the earlier
+  "redundant" reasoning didn't anticipate wanting the full historical
+  delta-by-delta record, not just the latest state.
+- **Same-day production Judge idempotency (B1) — Option A (skip + log)
+  adopted, 2026-09-16; no override mechanism built.** Real incident: a
+  same-day `--with-judge` rerun (2026-09-05/06, no guard existed) produced
+  40 independent extra live decisions, with whichever run happened to
+  execute last silently becoming the production portfolio state — see
+  [`history.md`](history.md)'s Phase 5i section. A design analysis first
+  compared three options (skip+log / skip-with-explicit-override /
+  supersede-and-mark); Option A was chosen because the repository showed
+  **zero evidence of any currently legitimate same-day rerun workflow** —
+  building override machinery for a hypothetical need would be exactly the
+  kind of speculative complexity this project's own methodology argues
+  against (see `doc/methodology.md`'s "new tooling earns its place by
+  matching a real need, not by being available"). The invariant is scoped
+  to live (`is_backfilled=false`) decisions only, checked per-asset before
+  the batched LLM call — a genuinely failed/incomplete prior run (no
+  persisted row) never blocks a later retry. **Deliberately NOT resolved
+  by this decision**: whether a real rerun need ever emerges and, if so,
+  whether an override should be able to affect production state directly
+  (a separate open question from the B/B2 design analysis, not decided
+  here); and how the 40 existing historical duplicate rows should be
+  treated for calibration purposes (B2, explicitly deferred, historical
+  rows left completely untouched).
+- **Historical duplicate-decision calibration treatment (B2): whole-group
+  query-level exclusion, no canonical row, no schema change — adopted,
+  2026-09-16.** Real, live-confirmed contamination: `/calibration/summary`
+  double-counted one asset-day (NEAR, 2026-09-06 — two resolved BUY rows
+  from the same duplicate group), 20% of a live directional sample of 5.
+  Four row-selection rules were evaluated and rejected before reaching this
+  design:
+  - **Earliest run**: mechanically simple, but nothing marked it
+    authoritative at the time — two more runs followed it unopposed that
+    same day, under the pre-B1 system that had no idempotency guard at all.
+  - **Latest run**: matches nothing more than an execution-order accident;
+    a later same-day run may have used fresher information, or been
+    triggered because an operator disliked the first result — a real
+    outcome-selection-bias risk, not classic look-ahead, but a bias
+    mechanism nonetheless. It also fails a real case outright: NEAR's
+    2026-09-06 latest row is still unresolved today, so "always prefer
+    latest" would discard two already-resolved, real observations in
+    favor of nothing.
+  - **Row reflected in final portfolio state**: the clearest case of
+    conflating operational fact (which run a human happened to execute
+    last) with model evaluation (whether the decision was any good) — and,
+    live-confirmed, not even a stable historical property: the one
+    duplicate-group row `portfolio_positions.last_decision_id` currently
+    points to (LINK, 2026-09-06) is only that group's latest row because
+    nothing else has touched LINK's position since; a single later,
+    unrelated decision would silently make that no longer true for any of
+    that group's three rows, changing the "canonical" answer with no
+    connection to the historical day itself.
+  - **A durable `superseded`/status field**: would need a new column, a
+    migration, and a backfill script reproducing the exact same
+    group-membership computation a query-level check already does for
+    free — with no offsetting benefit found, since duplicate-group
+    membership is a fixed, cheap-to-recompute property (the dataset can't
+    grow now that B1 exists) rather than something worth paying schema
+    complexity to cache.
+
+  **Adopted instead**: exclude every member of a same-UTC-day,
+  same-asset, live (`is_backfilled=false`) group of more than one Judge
+  decision from calibration/evaluation entirely — no survivor chosen.
+  This is the only option that is simultaneously mechanically derivable
+  for all 20 real historical groups (including ones with no BUY/SELL row
+  and ones with mixed resolved/unresolved rows), introduces no hindsight,
+  and — critically — is **stable regardless of when it's computed**: group
+  membership depends only on `judge_decisions` (`asset_id`/`created_at`/
+  `is_backfilled`), never on outcome resolution status, so the excluded
+  set for a group like NEAR/2026-09-06 (2 resolved + 1 still-unresolved
+  today) is provably identical before and after its third row resolves.
+  Implemented as a pure, shared, query-level function
+  (`compute_duplicate_group_decision_ids`), applied identically across
+  every real consumer of the live directional population found during the
+  analysis (`/calibration/summary`, `run_composite_weights_validation.py`,
+  `calibration_baseline.py`'s live branch) — no database migration, no
+  deletion, no modification of any historical row. Raw resolved/unresolved
+  audit counts (`resolved_live_count` etc.) are a deliberately separate,
+  unfiltered statistic — they answer "how many decision_outcomes rows
+  exist," not "how many are valid calibration observations," and changing
+  their long-standing meaning was judged out of scope for a fix whose
+  purpose is sample integrity, not a redefinition of an unrelated audit
+  figure. LLM cost accounting (`app/llm/cost.py`'s `COST_TRACKED_TABLES`)
+  is structurally independent of this filter and remains completely
+  unaffected — every historical duplicate decision remains real, fully
+  counted spend.
+
+- **`MAX_WEEKLY_TURNOVER` measures STRATEGY turnover only; WATCH/NO_TRADE
+  risk-control corrections get a separate, uncapped classification, not a
+  separate numeric budget — adopted, 2026-09-17.** Real incident: a live
+  `--with-judge` run (2026-09-17) found the turnover budget already fully
+  exhausted before the run started (0.3149 used vs. 0.30 cap), so a
+  compliant BTC rebalance the Risk Engine itself had computed
+  (0.30 -> 0.15, correctly bounded by `MAX_SINGLE_ASSET_ALLOCATION`) was
+  reverted to zero net change by `apply_turnover_cap`. Forensic tracing
+  found the root cause: `RiskEngine._strategy_turnover_delta` already
+  treats WATCH/NO_TRADE as zero strategy turnover at decision time (a
+  deliberate Phase 5g design choice), but `PortfolioConstructionService
+  .apply()` persisted every `portfolio_allocation_changes` row identically
+  regardless of `d.decision` — so the exemption existed only in memory and
+  was lost the moment the row was written. `get_turnover_since()` then
+  re-counted every WATCH/NO_TRADE correction as real strategy turnover on
+  every later read. Live-confirmed: 5 of the 8 real historical rows
+  (0.1849 of 0.3149 total recorded delta, 58.7%) were risk-control
+  corrections, not strategy decisions.
+
+  Three candidate accounting models were considered: (a) exempt
+  risk-control rows from the existing strategy budget entirely (chosen);
+  (b) give risk-control corrections their own separate numeric weekly
+  budget; (c) leave all target movement, including risk-control, inside
+  one undifferentiated budget (the status quo being fixed). (c) is the
+  proven-incorrect status quo. (b) was rejected: a WATCH/NO_TRADE
+  correction is structurally self-limiting, not an independent, repeatable
+  source of turnover — `size_one`'s `min(current_allocation,
+  max_single_asset_allocation)` clamp can only fire while real holdings
+  sit above the cap; the moment it corrects the target to the cap, a
+  second WATCH/NO_TRADE decision on the same asset produces
+  `final_allocation == previous_system_target` (no new
+  `portfolio_allocation_changes` row at all, by `apply()`'s own
+  `!=` guard) — it cannot oscillate or repeat the way a discretionary
+  strategy rebalance could, so a dedicated cap would police a category of
+  risk that doesn't actually recur. (a), the adopted model, matches the
+  category's real behavior: track it separately for visibility and audit
+  (`change_reason`), but don't budget-limit something that is already
+  self-limiting by construction.
+
+  **Implemented**: `PortfolioAllocationChange.change_reason`
+  (`"strategy"`/`"risk_control"`, new field, default `"strategy"`), set in
+  `PortfolioConstructionService.apply()` from `d.decision` — the
+  already-gated `SizedDecision` value — never reconstructed later from
+  `judge_decisions.decision` (the raw, pre-confidence-gate value; the real
+  2026-09-17 NEAR row's raw decision was "BUY" at confidence 0.50, gated
+  to WATCH before sizing, and must classify as risk_control, not
+  strategy). `get_turnover_since()` filters `change_reason="strategy"`.
+  8 pre-existing historical rows backfilled via `migrations/0021` after
+  independently re-deriving each row's real gated decision from
+  `actual_allocation_before` + the real confidence-gate thresholds (never
+  trusted from a prior analysis pass without re-verification) — 5
+  `risk_control`, 3 `strategy`, matching the forensic analysis exactly.
+  Corrected 7-day strategy turnover re-derived live post-implementation:
+  0.1300 (vs. 0.3149 under the old, uncorrected accounting), remaining
+  budget 0.1700 (vs. ~0). This changes the evidence behind the still-open
+  A2 (cap-violation-vs-turnover-budget priority) design decision — see
+  [`todo.md`](todo.md) — but A2 itself remains **not implemented**; the
+  next step is a fresh live re-observation under the corrected accounting,
+  not yet performed.
+
+- **A2 resolved: a BUY/HOLD/SELL decision that reduces a genuinely
+  oversized `previous_system_target` to, or below,
+  `MAX_SINGLE_ASSET_ALLOCATION` is exempt from `MAX_WEEKLY_TURNOVER` —
+  adopted, 2026-09-17 (Option C, "risk-control exemption").** A technical
+  decision, not a business/risk judgment call — derived directly from this
+  project's own existing documented semantics, not chosen on preference.
+
+  **Why this is the technically consistent choice, grounded in the
+  repository's own words**: `MAX_WEEKLY_TURNOVER` is documented in
+  `app/config/settings.py`'s own comment as *"a circuit breaker against
+  excessive STRATEGY TARGET CHURN"*, backed by a real transaction-cost
+  analysis (147 resolved decisions) finding average net-of-costs drag of
+  only ~0.26pp/decision — too small to justify any specific cap size. A
+  forced reduction toward an already-enforced hard constraint
+  (`MAX_SINGLE_ASSET_ALLOCATION`) is not discretionary churn by this
+  project's own chosen definition of the term. Separately,
+  `doc/history.md`'s own architecture summary lists `MAX_SINGLE_ASSET_
+  ALLOCATION` and `MAX_WEEKLY_TURNOVER` as co-equal "hard caps" — neither
+  is documented as subordinate to the other — so this decision does not
+  rest on one cap being "more important," only on `MAX_WEEKLY_TURNOVER`'s
+  own stated scope excluding compliance-driven movement.
+
+  **A1 provides the direct precedent**: WATCH/NO_TRADE corrections
+  (`size_one`'s `min(current_allocation, max_single_asset_allocation)`
+  clamp, Phase 5g) have been unconditionally exempt from
+  `apply_turnover_cap` since that fix shipped — confirmed by direct code
+  execution with an artificially exhausted budget
+  (`turnover_used_this_week=999.0`) leaving a WATCH clamp's target
+  completely untouched. A2 is the minimal generalization of this same,
+  already-proven mechanism to a second, independent trigger condition
+  (a BUY/HOLD/SELL decision whose Risk-Engine target is compliant, coming
+  from an oversized previous target) — not a new mechanism.
+
+  **Real motivating incident**: BTC's Risk Engine computed the fully
+  cap-compliant target (0.15) on both 2026-09-16 and 2026-09-17 (verified
+  by independently re-deriving both via a real `size_one()` call against
+  the actual persisted `judge_decisions`/`screened_universe` rows for
+  those runs), but the ordinary turnover-cap mechanism blocked or scaled
+  it back above cap both times (`TurnoverCapEvent` rows confirm this
+  live) — with no guaranteed convergence under the old behavior.
+
+  **Three sub-questions resolved from existing project evidence, not
+  invented**:
+  - **SELL-to-zero**: treated identically to a partial cap-compliance
+    reduction — no code, test, doc, or historical decision anywhere in
+    this project distinguishes "reduce to compliance" from "exit
+    entirely" as different turnover-policy categories, so inventing that
+    distinction now would add an unjustified new concept.
+  - **`change_reason`**: reused as `"risk_control"` — no new
+    `"cap_correction"` value. Every real consumer of `change_reason`
+    (`get_turnover_since()`'s filter, the replay fake's filter, every
+    existing test) only ever needs the binary strategy/risk_control
+    distinction for budget purposes; distinguishing an A1-triggered row
+    from an A2-triggered one remains fully available via the existing
+    `decision_id → judge_decisions.decision` join whenever actually
+    needed, at zero schema cost.
+  - **Epsilon**: `TURNOVER_EPSILON` (already existing, `app/risk/
+    engine.py`, introduced for the 2026-09-14 accumulated-float-noise
+    incident) is reused for the `previous_system_target > cap` boundary
+    only — no new constant. `final_allocation <= cap` needs no epsilon at
+    all, since it is always the direct output of a `min()` call, exact by
+    construction, never an accumulated sum.
+
+  **Multi-asset behavior**: each qualifying correction is independently
+  exempt; no ordering, no shared sub-limit between simultaneously-
+  oversized assets — nothing in `apply_turnover_cap`'s actual (unmodified)
+  algorithm requires or benefits from one, and Options B ("applied first")
+  and C ("excluded from the sum") were verified to be operationally
+  identical under this architecture, since both explicitly specify the
+  correction never consumes the shared budget.
+
+  **Explicitly rejected, with reasons**: Option D (separate risk-control
+  budget) would require inventing a numeric parameter with zero
+  supporting evidence anywhere in this project's history — a worse
+  epistemic position than even the already-criticized, un-optimized
+  30%/7-day `MAX_WEEKLY_TURNOVER` figure. Option E (hybrid) requires an
+  undefined safety constraint with no existing precedent to build from.
+  Option A (status quo) was rejected because it directly contradicts
+  `MAX_WEEKLY_TURNOVER`'s own documented scope.
+
+  **Implemented**: `is_cap_compliance_correction()` (new, module-level,
+  pure function, `app/risk/engine.py`) — the single, shared predicate used
+  by both `RiskEngine._strategy_turnover_delta()` (the turnover exemption)
+  and `PortfolioConstructionService.apply()` (the `change_reason`
+  classification), guaranteeing the two layers cannot silently disagree
+  (regression-tested). A1's own condition (`decision in ("WATCH",
+  "NO_TRADE")`) is completely unchanged, evaluated first, independent of
+  A2's condition. No schema change, no migration (the `risk_control` value
+  already existed), no `apply_turnover_cap` algorithm change — the desired
+  behavior emerges entirely from `_strategy_turnover_delta()` returning
+  `0.0` for a qualifying decision, exactly as it already did for A1.
+- **`scripts/calibration_baseline.py`'s live/backfill Judge-decision
+  retrieval: migrate to `JudgeDecisionRepository.get_recent(limit=None,
+  ...)` — adopted, 2026-09-19.** Problem: both `run_live_baseline()` and
+  `run_backfill_baseline()` retrieved `judge_decisions` via a raw,
+  unpaginated `client.table("judge_decisions")...execute()` call, with no
+  `.range()` and no `.order()` — bypassing the repository's own pagination
+  abstraction (`_fetch_all_paginated()`, Phase 5m, 2026-09-18) entirely.
+  Not yet truncating live (205 real live / 192 real backfilled rows today,
+  both under Supabase's real ~1000-row-per-request cap), but the identical
+  vulnerable pattern already found and fixed for `llm_analyses`, and B2's
+  whole-group duplicate exclusion (this file's B2 entry, above) specifically
+  depends on receiving the *complete* live population — a silently
+  truncated fetch could split a duplicate group across the cutoff and let
+  the visible half through unexcluded.
+
+  **Decision**: both paths now call the existing
+  `JudgeDecisionRepository.get_recent(limit=None, is_backfilled=...)` —
+  `is_backfilled=False` for `run_live_baseline()`, `is_backfilled=True` for
+  `run_backfill_baseline()` — reusing `_fetch_all_paginated()` unchanged.
+  No new pagination mechanism was introduced; this is a migration of an
+  existing raw-query consumer onto an abstraction that already existed for
+  exactly this purpose, not a new fix.
+
+  **Scope**: limited to `run_live_baseline()` and `run_backfill_baseline()`.
+  B2's duplicate-group semantics — exclusion of every member of a
+  same-UTC-calendar-day, same-asset, live group of more than one Judge
+  decision — are unchanged; pagination affects only how completely the
+  population is fetched before that grouping logic runs, never the
+  grouping rule itself.
+
+  **Validation** (forensic, read-only, 2026-09-19): current live population
+  205 decisions, backfilled 192 — both currently under the 1000-row cap, so
+  no real production truncation boundary has actually been crossed yet; the
+  page-boundary-split-duplicate-group case was instead verified with an
+  engineered test (a monkeypatched small page size forcing a real duplicate
+  group across a page boundary), not a live 1000+-row dataset. Focused
+  tests: 11 passed. Full suite: 633 passed, no failures, no skips. No
+  production run or database mutation was performed during validation. See
+  [`history.md`](history.md)'s Phase 5n section for the full writeup.
+
+---
+
+# Technology stack decisions (original evidence-source log)
 
 - **FastAPI — adopted, Phase 5 only.** Pydantic-native, which matches this
   project's validation-heavy style throughout Phase 2/3 (strict schemas for

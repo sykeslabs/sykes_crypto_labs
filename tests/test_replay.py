@@ -88,6 +88,24 @@ def test_in_memory_allocation_change_repo_turnover_window():
     assert turnover == pytest.approx(0.05)  # only the in-window change counts
 
 
+def test_in_memory_allocation_change_repo_excludes_risk_control_rows():
+    # Mirrors the real repository's 2026-09-17 change_reason fix -- replay
+    # backtests must not double-count WATCH/NO_TRADE risk-control
+    # corrections as strategy turnover either.
+    repo = InMemoryAllocationChangeRepo()
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    repo.insert(PortfolioAllocationChange(
+        asset_id="a1", run_id="R", decision_id="d1", previous_allocation=0.0, new_allocation=0.05,
+        changed_at=now, change_reason="strategy",
+    ))
+    repo.insert(PortfolioAllocationChange(
+        asset_id="a2", run_id="R", decision_id="d2", previous_allocation=0.30, new_allocation=0.15,
+        changed_at=now, change_reason="risk_control",
+    ))
+    turnover = repo.get_turnover_since(now - timedelta(days=7))
+    assert turnover == pytest.approx(0.05)  # the risk_control row is excluded
+
+
 class _FakeAsOfRepoBackend:
     def get_latest_by_asset_as_of(self, asset_id, as_of, limit=3):
         return [("called", asset_id, as_of, limit)]

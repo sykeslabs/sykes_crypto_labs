@@ -1,4 +1,5 @@
-from datetime import UTC, datetime
+from collections.abc import Iterable
+from datetime import UTC, date, datetime, time, timedelta
 
 from supabase import Client
 
@@ -18,6 +19,47 @@ from app.market_data.schemas import MarketSnapshot
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.news.schemas import NewsArticle
 from app.portfolio.schemas import HoldingsLedgerEntry, PortfolioAllocationChange, PortfolioPosition, TurnoverCapEvent
+
+# Real, confirmed 2026-09-18: this project's Supabase/PostgREST instance
+# silently caps ANY single request at this many rows (its own server-side
+# db-max-rows/max-rows default) -- a query with no .limit() at all, and
+# even an explicit .limit(5000), both returned exactly 1000 rows against
+# llm_analyses' real 1379 that day. Genuine "get everything" methods (the
+# documented "limit=None means unlimited" convention, e.g.
+# LLMAnalysisRepository.get_recent, JudgeDecisionRepository.get_recent)
+# must paginate around this via _fetch_all_paginated below rather than
+# issuing one unbounded request, or they silently truncate real data with
+# no error surfaced anywhere.
+_SUPABASE_MAX_ROWS_PER_REQUEST = 1000
+
+
+def _fetch_all_paginated(build_query):
+    """Runs `build_query()` repeatedly, paginating via `.range()` in pages
+    of `_SUPABASE_MAX_ROWS_PER_REQUEST`, until a page returns fewer rows
+    than requested (the real end of data) -- the standard client-side
+    workaround for PostgREST's server-side max-rows cap. `build_query` is
+    a zero-arg callable that returns a FRESH, not-yet-executed query
+    builder each call (never a single already-built query object) --
+    supabase-py's query builder is single-use per `.execute()`, and each
+    page needs its own `.range(offset, ...)` applied to an otherwise-
+    identical query.
+
+    The caller's query MUST already end in a fully deterministic
+    `.order(...)` (a unique tiebreaker column, e.g. `.order("id")` after
+    the caller's own primary sort) -- ties on the primary sort column
+    (real here: multiple rows persisted in the same batched insert can
+    share the exact same `timestamp`) make plain `.range()` pagination
+    non-deterministic across separate requests without one, risking a
+    row silently duplicated across two pages or dropped between them."""
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        page = build_query().range(offset, offset + _SUPABASE_MAX_ROWS_PER_REQUEST - 1).execute()
+        rows.extend(page.data)
+        if len(page.data) < _SUPABASE_MAX_ROWS_PER_REQUEST:
+            break
+        offset += _SUPABASE_MAX_ROWS_PER_REQUEST
+    return rows
 
 
 class AssetRepository:
@@ -267,12 +309,36 @@ class LLMAnalysisRepository:
         answers" feed (this table had no cross-asset read method before,
         only `get_latest_by_asset`). `limit=None` (default) returns every
         analysis ever made, matching `/news/recent` and
-        `/judge/decisions/recent`'s same "None means unlimited" convention."""
-        query = self._client.table("llm_analyses").select("*").order("timestamp", desc=True)
+        `/judge/decisions/recent`'s same "None means unlimited" convention.
+
+        Real bug fixed 2026-09-18: `limit=None` used to issue a single
+        unbounded request, which Supabase/PostgREST silently caps at
+        `_SUPABASE_MAX_ROWS_PER_REQUEST` rows -- confirmed live, this
+        table's real 1379 rows were silently truncated to exactly 1000,
+        with no error anywhere (the dashboard's "LLM prompts & answers"
+        panel showed "1000 answers", not the real total). Paginates via
+        `_fetch_all_paginated` instead, with `id` as an explicit
+        tiebreaker so pagination stays deterministic across rows that
+        share an identical `timestamp` (real here -- one provider's whole
+        batch of per-asset rows is persisted with one shared `timestamp`
+        computed once per call, see LLMResearchService._persist)."""
         if limit is not None:
-            query = query.limit(limit)
-        response = query.execute()
-        return [LLMAnalysisRecord.model_validate(row) for row in response.data]
+            response = (
+                self._client.table("llm_analyses")
+                .select("*")
+                .order("timestamp", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return [LLMAnalysisRecord.model_validate(row) for row in response.data]
+
+        rows = _fetch_all_paginated(
+            lambda: self._client.table("llm_analyses")
+            .select("*")
+            .order("timestamp", desc=True)
+            .order("id", desc=True)
+        )
+        return [LLMAnalysisRecord.model_validate(row) for row in rows]
 
 
 class AssetStatusRepository:
@@ -656,6 +722,65 @@ class ModelMarketAssessmentRepository:
         return [ModelMarketAssessmentRecord.model_validate(row) for row in response.data]
 
 
+def utc_day_bounds(day: date) -> tuple[datetime, datetime]:
+    """The `[start, end)` UTC instant range covering one calendar day --
+    e.g. `date(2026, 9, 16)` -> `(2026-09-16T00:00:00Z, 2026-09-17T00:00:00Z)`.
+    A decision at `23:59:59Z` on a day falls inside that day's range; one
+    at `00:00:01Z` the next day does not -- pulled out as its own pure
+    function (no DB/network) so this exact boundary is independently
+    testable, since it's the one piece of B1's same-day idempotency
+    invariant most exposed to a real midnight-UTC edge case."""
+    day_start = datetime.combine(day, time.min, tzinfo=UTC)
+    return day_start, day_start + timedelta(days=1)
+
+
+def compute_duplicate_group_decision_ids(
+    decisions: Iterable[tuple[str, str, datetime, bool]],
+) -> set[str]:
+    """B2 (2026-09-16): the `decision_id`s belonging to a same-UTC-calendar-
+    day, same-asset group of MORE THAN ONE live (`is_backfilled=false`)
+    Judge decision -- every member of such a group is excluded (no
+    canonical row is chosen; see doc/decisions.md's B2 entry for why no
+    row-selection rule survived scrutiny), for calibration/evaluation
+    purposes only. Never touches real database rows -- this is a pure,
+    read-only classification function shared by every consumer of the
+    live directional population (`app/api/routers/calibration.py`,
+    `scripts/run_composite_weights_validation.py`,
+    `scripts/calibration_baseline.py`'s `--source live` branch) so they
+    all apply the exact same exclusion semantics.
+
+    Deliberately depends ONLY on `(asset_id, calendar day of created_at,
+    is_backfilled)` -- never on outcome resolution status, decision type,
+    confidence, or portfolio state -- so the result is stable regardless
+    of when it's computed relative to outcome resolution. A real
+    historical group (NEAR, 2026-09-06) has mixed resolved/unresolved
+    rows today; the excluded set must be, and is, identical no matter
+    which of its members have resolved so far, and stays identical once
+    the rest resolve too. `is_backfilled=true` (replay/ablation) rows are
+    unconditionally skipped -- they legitimately span many simulated days
+    per asset by design and must never be treated as a duplicate group by
+    this mechanism (B1's own same-day guard makes the same distinction).
+
+    `decisions` is an iterable of `(decision_id, asset_id, created_at,
+    is_backfilled)` tuples rather than a single concrete type, since the
+    real callers hold this data in different shapes (`JudgeDecisionRecord`
+    objects vs. raw Supabase row dicts) -- this keeps the shared logic to
+    the one thing that must be identical everywhere (the grouping rule)
+    without forcing an awkward type coercion on any caller."""
+    groups: dict[tuple[str, date], list[str]] = {}
+    for decision_id, asset_id, created_at, is_backfilled in decisions:
+        if is_backfilled or decision_id is None:
+            continue
+        key = (asset_id, created_at.date())
+        groups.setdefault(key, []).append(decision_id)
+
+    excluded: set[str] = set()
+    for group_decision_ids in groups.values():
+        if len(group_decision_ids) > 1:
+            excluded.update(group_decision_ids)
+    return excluded
+
+
 class JudgeDecisionRepository:
     """Persists/reads `judge_decisions` (3a schema, populated starting 3e) —
     the full narrative record of every Judge output."""
@@ -666,6 +791,43 @@ class JudgeDecisionRepository:
     def insert(self, record: JudgeDecisionRecord) -> str:
         response = self._client.table("judge_decisions").insert(record.to_row()).execute()
         return response.data[0]["id"]
+
+    def get_live_decisions_on_day(self, asset_ids: list[str], day: date) -> dict[str, JudgeDecisionRecord]:
+        """B1 same-day production idempotency (2026-09-16): the existing
+        LIVE (`is_backfilled=false`) decision already made today for each
+        of `asset_ids` that has one, keyed by `asset_id` -- lets
+        `JudgeService` skip re-deciding an asset that already has a
+        production decision for this UTC calendar day, without ever
+        considering (or blocking) `is_backfilled=true` replay/ablation
+        rows, which legitimately produce many decisions per asset across
+        many different SIMULATED days by design. Real bug this closes:
+        with no guard at all, `--with-judge` run twice the same day used
+        to silently create a second, independent decision -- see
+        doc/history.md's Phase 5i section for the real 2026-09-05/06
+        incident this was found from."""
+        if not asset_ids:
+            return {}
+        day_start, day_end = utc_day_bounds(day)
+        response = (
+            self._client.table("judge_decisions")
+            .select("*")
+            .in_("asset_id", asset_ids)
+            .eq("is_backfilled", False)
+            .gte("created_at", day_start.isoformat())
+            .lt("created_at", day_end.isoformat())
+            .execute()
+        )
+        by_asset: dict[str, JudgeDecisionRecord] = {}
+        for row in response.data:
+            record = JudgeDecisionRecord.model_validate(row)
+            existing = by_asset.get(record.asset_id)
+            # If more than one somehow already exists for a day (shouldn't
+            # happen once this guard is live), keep the earliest -- the
+            # first production decision remains authoritative, matching
+            # the "at most one live decision per asset per day" invariant.
+            if existing is None or record.created_at < existing.created_at:
+                by_asset[record.asset_id] = record
+        return by_asset
 
     def get_latest_by_asset(self, asset_id: str) -> JudgeDecisionRecord | None:
         response = (
@@ -686,15 +848,31 @@ class JudgeDecisionRepository:
         just backfilled or just live rows (never mixes them silently).
         `limit=None` (Phase 5b addendum) returns every decision ever made,
         not just a capped slice -- no `.limit()` call at all in that case,
-        matching `/news/recent`'s same "None means unlimited" convention."""
-        query = self._client.table("judge_decisions").select("*")
-        if is_backfilled is not None:
-            query = query.eq("is_backfilled", is_backfilled)
-        query = query.order("created_at", desc=True)
+        matching `/news/recent`'s same "None means unlimited" convention.
+
+        Real bug fixed 2026-09-18: a single unbounded request silently
+        truncates at `_SUPABASE_MAX_ROWS_PER_REQUEST` rows (confirmed live
+        against `llm_analyses`' identical pattern -- see
+        `LLMAnalysisRepository.get_recent`'s own docstring for the full
+        incident). This table is under that cap today (384 real rows) but
+        will cross it as more decisions accumulate, so it gets the same
+        `_fetch_all_paginated` fix now rather than waiting for it to
+        silently truncate too."""
         if limit is not None:
-            query = query.limit(limit)
-        response = query.execute()
-        return [JudgeDecisionRecord.model_validate(row) for row in response.data]
+            query = self._client.table("judge_decisions").select("*")
+            if is_backfilled is not None:
+                query = query.eq("is_backfilled", is_backfilled)
+            response = query.order("created_at", desc=True).limit(limit).execute()
+            return [JudgeDecisionRecord.model_validate(row) for row in response.data]
+
+        def build_query():
+            q = self._client.table("judge_decisions").select("*")
+            if is_backfilled is not None:
+                q = q.eq("is_backfilled", is_backfilled)
+            return q.order("created_at", desc=True).order("id", desc=True)
+
+        rows = _fetch_all_paginated(build_query)
+        return [JudgeDecisionRecord.model_validate(row) for row in rows]
 
     def get_by_id(self, decision_id: str) -> JudgeDecisionRecord | None:
         response = self._client.table("judge_decisions").select("*").eq("id", decision_id).limit(1).execute()
@@ -868,18 +1046,45 @@ class PortfolioAllocationChangeRepository:
         -- summing them into the NEW budget would mix two non-comparable
         definitions and unfairly charge future runs for a mismeasured
         historical artifact. See RiskEngine._strategy_turnover_delta's
-        docstring for the real incident and backtest evidence."""
+        docstring for the real incident and backtest evidence.
+
+        Also filters to `change_reason="strategy"` -- real bug fixed
+        2026-09-17: a WATCH/NO_TRADE risk-control correction
+        (RiskEngine.size_one's `min(current_allocation,
+        max_single_asset_allocation)` clamp) is already exempted from
+        strategy turnover at decision time by `_strategy_turnover_delta`,
+        but that exemption was never persisted, so this query re-counted
+        it as real turnover on every read. Filtered by the persisted
+        `change_reason` column alone -- never by a join back to
+        `judge_decisions`, whose `decision` field is the raw, pre-gate
+        value and cannot reliably reconstruct this classification. See
+        migrations/0021 for the historical backfill."""
         response = (
             self._client.table("portfolio_allocation_changes")
             .select("previous_allocation, new_allocation")
             .gte("changed_at", since.isoformat())
             .eq("baseline_semantics", "system_target")
+            .eq("change_reason", "strategy")
             .execute()
         )
         return sum(
             abs(float(row["new_allocation"]) - float(row["previous_allocation"]))
             for row in response.data
         )
+
+    def get_recent(self, limit: int = 50) -> list[PortfolioAllocationChange]:
+        """Every real recorded target-allocation change, newest first --
+        includes rows under both `baseline_semantics` values (old real-
+        holdings-baseline rows are genuine historical fact, never hidden;
+        see PortfolioAllocationChange's own docstring)."""
+        response = (
+            self._client.table("portfolio_allocation_changes")
+            .select("*")
+            .order("changed_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return [PortfolioAllocationChange.model_validate(row) for row in response.data]
 
 
 class TurnoverCapEventRepository:

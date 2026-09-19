@@ -24,6 +24,7 @@ from app.database.repository import (
     MarketSnapshotRepository,
     ModelMarketAssessmentRepository,
     NewsRepository,
+    PortfolioAllocationChangeRepository,
     PortfolioPositionRepository,
     PromptTemplateRepository,
     ScreenedUniverseRepository,
@@ -106,6 +107,10 @@ def get_market_snapshot_repo() -> MarketSnapshotRepository:
 
 def get_turnover_cap_event_repo() -> TurnoverCapEventRepository:
     return TurnoverCapEventRepository(get_client())
+
+
+def get_portfolio_allocation_change_repo() -> PortfolioAllocationChangeRepository:
+    return PortfolioAllocationChangeRepository(get_client())
 
 
 def get_signal_source_repo() -> SignalSourceRepository:

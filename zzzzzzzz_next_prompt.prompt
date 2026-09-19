@@ -1,0 +1,31 @@
+https://chatgpt.com/c/6aaaedae-a548-83eb-a0b4-bb853791f12d
+
+next prompt
+--------------
+
+B2 Documentation Reconciliation — Complete
+
+Documentation
+
+- New decision entry added to doc/decisions.md, placed as the final bullet under "Later decisions (2026-09-14 onward)" (immediately after the 2026-09-17 A2 entry, before the --- separator into the original technology-stack log) — following that section's exact house style (bold title + adopted date, Problem/Decision/Scope/Validation structure, cross-references to history.md).
+- It documents the 2026-09-19 migration of run_live_baseline()/run_backfill_baseline() to JudgeDecisionRepository.get_recent(limit=None, ...), states plainly that no new pagination mechanism was introduced (reuses _fetch_all_paginated()), that B2's duplicate-group semantics are unchanged, and records the validation evidence exactly as given (205 live / 192 backfilled, 11 focused / 633 full-suite passes, page-boundary safety verified via an engineered test rather than a real 1000+-row dataset, no production mutation).
+- New doc/history.md entry, "Phase 5n" (the next unused letter after 5m — 5h doesn't exist either, a pre-existing gap, not introduced here), appended at the end of the file mirroring Phase 5m's own structure (Real bug found / Fixed / Live-verified post-fix / test note), and explicitly distinguishes itself from Phase 5m ("Phase 5m fixed JudgeDecisionRepository.get_recent() itself, but calibration_baseline.py never went through that repository method at all").
+- Chronology preserved: Phase 5m (2026-09-18, repository-level fix) and Phase 5n (2026-09-19, script-level migration) are kept as two distinct, separately dated events, cross-linked to each other and to the new decisions.md entry — not merged into one.
+
+Code comment
+
+- scripts/calibration_baseline.py:245-246 now reads "see doc/decisions.md's 2026-09-19 entry and doc/history.md's Phase 5n section for the full forensic analysis." Both targets now exist (grep-confirmed). The dangling reference is resolved. No other line in the script was touched.
+
+Separation of concerns
+
+- The two remaining raw judge_decisions queries (scripts/run_reasoning_audit.py, scripts/run_evidence_value_ranking.py) were left untouched — not migrated, not documented as fixed.
+- DecisionOutcomeRepository.get_recent(limit=200) was left untouched; no new backlog entry was added for it since doc/todo.md already carries the project's "not yet fixed" bucket and this was judged not urgent enough to warrant a dedicated new line without further analysis, per the task's own instruction to leave it for later unless an existing section already fit.
+- No A1/A2/B1/B2 policy was reopened or modified — only a documentation gap about an already-decided B2/pagination implementation was closed.
+
+Validation
+
+- Focused: tests/test_calibration_baseline.py — 4 passed.
+- Full suite: 633 passed, 0 failed, 0 skipped (unchanged from before this task — expected, since only comments/docs changed).
+- git status: only doc/decisions.md, doc/history.md (both already tracked as pending renames from earlier in the session, now further modified), and scripts/calibration_baseline.py (comment-only diff, confirmed via git diff) reflect this task's changes. No other file was touched.
+
+B2 DOCUMENTATION STATUS: COMPLETE
