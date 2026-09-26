@@ -2,19 +2,22 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, compute_current_allocations
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 
-def _entry(asset_id, quantity, cost_basis=None):
-    return HoldingsLedgerEntry(asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis, recorded_at=datetime.now(UTC))
+def _entry(asset_id, quantity, cost_basis=None, platform="coinbase"):
+    return HoldingsLedgerEntry(
+        asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis,
+        recorded_at=datetime.now(UTC), platform=platform,
+    )
 
 
-def _tx(asset_id, quantity, cost_basis=None, transaction_type="BUY", minutes_ago=0):
+def _tx(asset_id, quantity, cost_basis=None, transaction_type="BUY", minutes_ago=0, platform="coinbase"):
     return HoldingsLedgerEntry(
         asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis,
         recorded_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
-        transaction_type=transaction_type,
+        transaction_type=transaction_type, platform=platform,
     )
 
 
@@ -152,3 +155,87 @@ def test_aggregate_feeds_correctly_into_compute_current_allocations():
     result = compute_current_allocations(aggregated, price_by_asset_id={"sol": 100.0})
     # 8 SOL @ $100 = $800; cash = $140; total = $940 -> SOL fraction = 800/940
     assert result["sol"] == pytest.approx(800.0 / 940.0)
+
+
+# --- Phase 5o: platform-aware bucketing + collapse_platforms -----------------
+
+def test_aggregate_buckets_the_same_asset_by_platform_independently():
+    # The same asset held on two platforms is two independent positions,
+    # each with its own weighted-average cost basis -- not one merged row.
+    entries = [
+        _tx("btc", 1.0, cost_basis=1000.0, platform="coinbase"),
+        _tx("btc", 2.0, cost_basis=4000.0, platform="ledger_wallet"),
+    ]
+    result = aggregate_current_holdings(entries)
+    by_platform = {r.platform: r for r in result}
+    assert set(by_platform) == {"coinbase", "ledger_wallet"}
+    assert by_platform["coinbase"].quantity == pytest.approx(1.0)
+    assert by_platform["coinbase"].cost_basis_usd == pytest.approx(1000.0)
+    assert by_platform["ledger_wallet"].quantity == pytest.approx(2.0)
+    assert by_platform["ledger_wallet"].cost_basis_usd == pytest.approx(4000.0)
+
+
+def test_aggregate_sell_on_one_platform_never_affects_the_other_platforms_cost_basis():
+    # A disposal on Coinbase must not touch the Ledger Wallet's own
+    # independently-tracked cost basis for the same asset.
+    entries = [
+        _tx("btc", 1.0, cost_basis=1000.0, platform="coinbase"),
+        _tx("btc", 0.5, transaction_type="SELL", platform="coinbase"),
+        _tx("btc", 2.0, cost_basis=4000.0, platform="ledger_wallet"),
+    ]
+    result = aggregate_current_holdings(entries)
+    by_platform = {r.platform: r for r in result}
+    assert by_platform["coinbase"].quantity == pytest.approx(0.5)
+    assert by_platform["coinbase"].cost_basis_usd == pytest.approx(500.0)  # 50% sold -> 50% of cost basis removed
+    assert by_platform["ledger_wallet"].quantity == pytest.approx(2.0)
+    assert by_platform["ledger_wallet"].cost_basis_usd == pytest.approx(4000.0)  # untouched
+
+
+def test_aggregate_cash_line_is_latest_per_platform_not_one_global_latest():
+    entries = [
+        _tx(None, 100.0, minutes_ago=60, platform="coinbase"),
+        _tx(None, 50.0, minutes_ago=10, platform="coinbase"),
+        _tx(None, 25.0, minutes_ago=30, platform="ledger_wallet"),
+    ]
+    result = aggregate_current_holdings(entries)
+    cash_rows = {r.platform: r.quantity for r in result if r.asset_id is None}
+    assert cash_rows == {"coinbase": 50.0, "ledger_wallet": 25.0}
+
+
+def test_collapse_platforms_sums_quantity_and_cost_basis_across_platforms():
+    per_platform = [
+        _entry("btc", 1.0, cost_basis=1000.0, platform="coinbase"),
+        _entry("btc", 2.0, cost_basis=4000.0, platform="ledger_wallet"),
+    ]
+    collapsed = collapse_platforms(per_platform)
+    assert len(collapsed) == 1
+    assert collapsed[0].asset_id == "btc"
+    assert collapsed[0].quantity == pytest.approx(3.0)
+    assert collapsed[0].cost_basis_usd == pytest.approx(5000.0)
+
+
+def test_collapse_platforms_sums_cash_across_platforms_too():
+    per_platform = [
+        _entry(None, 100.0, platform="coinbase"),
+        _entry(None, 25.0, platform="ledger_wallet"),
+    ]
+    collapsed = collapse_platforms(per_platform)
+    cash_rows = [r for r in collapsed if r.asset_id is None]
+    assert len(cash_rows) == 1
+    assert cash_rows[0].quantity == pytest.approx(125.0)
+
+
+def test_collapse_platforms_then_allocate_matches_pipeline_consumers_expectations():
+    # Integration check mirroring how app/main.py etc. actually call this:
+    # collapse_platforms(aggregate_current_holdings(...)) feeding straight
+    # into compute_current_allocations, same as a single-platform position
+    # would -- platform detail must be invisible to this pipeline.
+    entries = [
+        _tx("btc", 1.0, cost_basis=1000.0, platform="coinbase"),
+        _tx("btc", 1.0, cost_basis=1000.0, platform="ledger_wallet"),
+        _tx(None, 800.0, platform="coinbase"),
+    ]
+    collapsed = collapse_platforms(aggregate_current_holdings(entries))
+    result = compute_current_allocations(collapsed, price_by_asset_id={"btc": 100.0})
+    # 2 BTC @ $100 = $200; cash = $800; total = $1000 -> BTC fraction = 0.2
+    assert result["btc"] == pytest.approx(0.2)

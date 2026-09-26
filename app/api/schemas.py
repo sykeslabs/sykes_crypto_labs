@@ -95,7 +95,15 @@ class HoldingsEntryView(BaseModel):
     every other number on this row — never against the live spot price,
     per the same reasoning as `price_usd` vs `live_price_usd`. `None`
     whenever no cost basis was ever entered for that position (never a
-    fabricated 0)."""
+    fabricated 0).
+
+    `platform` (Phase 5o): which real custody location this row is for —
+    on `GET /holdings`, the same asset can now appear as more than one row
+    (one per platform it's actually held on), each with its own `quantity`/
+    `cost_basis_usd`/`cost_per_unit`. `source_type` is the real original
+    transaction type where known (e.g. `"Staking Income"`), `None` for a
+    manual dashboard entry — purely descriptive, never affects any other
+    field on this row."""
 
     id: str | None
     asset_id: str | None
@@ -105,6 +113,8 @@ class HoldingsEntryView(BaseModel):
     recorded_at: datetime
     purchased_at: datetime | None = None
     transaction_type: str = "BUY"
+    platform: str
+    source_type: str | None = None
     allocation: float | None = None
     value_usd: float | None = None
     price_usd: float | None = None

@@ -134,7 +134,24 @@ class HoldingsLedgerEntry(BaseModel):
     `purchased_at` (Phase 5b): the real date this was bought/sold at this
     price — distinct from `recorded_at` (when the row was entered into
     the ledger, which may be well after the fact). `None` for rows entered
-    before this field existed — never a fabricated backfilled date."""
+    before this field existed — never a fabricated backfilled date.
+
+    `platform` (Phase 5o, 2026-09-26): which real custody location this
+    transaction happened on/for — required, no default, on every row
+    (including the cash line). Aggregation buckets by `(asset_id,
+    platform)`, never `asset_id` alone (see `aggregate_current_holdings`),
+    so the same asset held in two places is tracked as two independent
+    positions with their own cost basis; `collapse_platforms` sums them
+    back down to one asset-level figure for every consumer that only ever
+    wants a single cross-custody number (Risk Engine, Judge context,
+    screening coverage).
+
+    `source_type` (Phase 5o): the real original transaction type where
+    known (e.g. `"Staking Income"`, `"Advanced Trade Buy"`, `"Convert"`,
+    `"Internal Transfer"`) — purely descriptive, `None` for a manual
+    dashboard entry. Never read by `aggregate_current_holdings()`, which
+    only looks at `transaction_type`/`quantity`/`cost_basis_usd` — kept
+    for a future staking/reward-income view, not built yet."""
 
     id: str | None = None
     asset_id: str | None = None
@@ -143,6 +160,8 @@ class HoldingsLedgerEntry(BaseModel):
     recorded_at: datetime
     purchased_at: datetime | None = None
     transaction_type: Literal["BUY", "SELL"] = "BUY"
+    platform: Literal["coinbase", "ledger_wallet"]
+    source_type: str | None = None
 
     def to_row(self) -> dict:
         return {
@@ -152,4 +171,6 @@ class HoldingsLedgerEntry(BaseModel):
             "recorded_at": self.recorded_at.isoformat(),
             "purchased_at": self.purchased_at.isoformat() if self.purchased_at else None,
             "transaction_type": self.transaction_type,
+            "platform": self.platform,
+            "source_type": self.source_type,
         }

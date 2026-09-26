@@ -17,7 +17,7 @@ import sys
 
 from app.database.client import get_supabase_client
 from app.database.repository import AssetRepository, HoldingsLedgerRepository
-from app.portfolio.holdings import aggregate_current_holdings
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
 
 
 def main() -> int:
@@ -25,7 +25,7 @@ def main() -> int:
     asset_repo = AssetRepository(client)
     ledger_repo = HoldingsLedgerRepository(client)
 
-    aggregated = aggregate_current_holdings(ledger_repo.get_all_history())
+    aggregated = collapse_platforms(aggregate_current_holdings(ledger_repo.get_all_history()))
     held_asset_ids = {h.asset_id for h in aggregated if h.asset_id is not None and h.quantity > 0}
 
     all_assets_resp = client.table("assets").select("id,symbol,in_asset").execute()

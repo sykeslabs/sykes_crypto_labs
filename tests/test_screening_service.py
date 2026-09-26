@@ -190,7 +190,7 @@ def test_currently_held_asset_outside_top_n_still_gets_judge_coverage():
         ),
     })
     holdings_ledger_repo = FakeHoldingsLedgerRepository([
-        HoldingsLedgerEntry(asset_id="btc-asset-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+        HoldingsLedgerEntry(asset_id="btc-asset-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
     ])
     _, service = _make_service(
         entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=2,
@@ -216,7 +216,7 @@ def test_held_asset_missing_from_universe_entirely_logs_warning(caplog):
         ),
     })
     holdings_ledger_repo = FakeHoldingsLedgerRepository([
-        HoldingsLedgerEntry(asset_id="ghost-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+        HoldingsLedgerEntry(asset_id="ghost-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
     ])
     _, service = _make_service(
         entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
@@ -242,7 +242,7 @@ def test_held_asset_outside_top_n_universe_is_rescued_via_direct_lookup():
         ),
     })
     holdings_ledger_repo = FakeHoldingsLedgerRepository([
-        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
     ])
     _, service = _make_service(
         entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
@@ -272,7 +272,7 @@ def test_held_asset_lookup_failure_is_handled_gracefully_and_logged(caplog):
         ),
     })
     holdings_ledger_repo = FakeHoldingsLedgerRepository([
-        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+        HoldingsLedgerEntry(asset_id="jasmy-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
     ])
     _, service = _make_service(
         entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo, top_candidates_size=1,
@@ -299,7 +299,7 @@ def test_held_asset_already_in_top_n_universe_is_not_fetched_again_or_duplicated
         ),
     })
     holdings_ledger_repo = FakeHoldingsLedgerRepository([
-        HoldingsLedgerEntry(asset_id="btc-id", quantity=1.0, recorded_at=datetime.now(UTC)),
+        HoldingsLedgerEntry(asset_id="btc-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
     ])
     coingecko = FakeCoinGeckoClient(entries, extra_by_id={"bitcoin": _entry("BTC", coingecko_id="bitcoin")})
     screened_repo = FakeScreenedUniverseRepository()

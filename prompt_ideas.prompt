@@ -1,3 +1,6 @@
+see zzzz.prompt
+
+-----------
 
 low hanging:
 - update the doc. ensure that all the done todos are recorded as decisions in the documentation, so that we can remove the todos in the ui that are in status=done. also, show all the implementation phases and ensure that the decisions are linked to these phases so that the devleopment history is clear.
@@ -15,7 +18,4 @@ low hanging:
 - see prompt_modelintegration.prompt
 - see prompt_assessment.prompt
 
-----------------------------------------------------------------------------------------
-Q: only answer nothing to implement: i initially loaded/seeded my portfolio with the wrong tokens and prices. is that an issue? how can i "reset" to my actual buyings from the past 10 years?
-A: To rebuild your real 10-year history correctly: once the wrong entries are zeroed out, enter your real historical BUY/SELL transactions one by one, using the purchased_at field for the real date each trade happened (it's separate from recorded_at, which is just "when you typed this in today"). Your current position is just the sum of everything regardless of when it was entered into the system — so backfilling 10 years of real trades today, dated correctly, works exactly as intended. GET /holdings/history lets you verify "what did I actually hold as of date T" afterward.
 ----------------------------------------------------------------------------------------

@@ -28,7 +28,7 @@ from app.market_data.regime import (
 )
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.market_data.stablecoins import is_stablecoin
-from app.portfolio.holdings import aggregate_current_holdings
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
 
 logger = logging.getLogger("crypto_ai_portfolio.market_data")
 
@@ -336,7 +336,7 @@ class ScreeningService:
         symbol at the `_rank_and_tag_candidates` call site, not asset_id,
         since that method runs before `_promote_new_candidates` assigns
         `row.asset_id` for the day's rows."""
-        aggregated = aggregate_current_holdings(self._holdings_ledger_repo.get_all_history())
+        aggregated = collapse_platforms(aggregate_current_holdings(self._holdings_ledger_repo.get_all_history()))
         held_assets: list[Asset] = []
         for entry in aggregated:
             if entry.asset_id is None:  # the cash line, not a real asset position

@@ -28,7 +28,7 @@ from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.coingecko import CoinGeckoClient
 from app.market_data.live_price import fetch_live_price
-from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 router = APIRouter(prefix="/holdings", tags=["holdings"], dependencies=[Depends(verify_api_key)])
@@ -62,6 +62,7 @@ def _with_symbols(entries: list[HoldingsLedgerEntry], asset_repo: AssetRepositor
             quantity=entry.quantity, cost_basis_usd=entry.cost_basis_usd,
             recorded_at=entry.recorded_at, purchased_at=entry.purchased_at,
             transaction_type=entry.transaction_type,
+            platform=entry.platform, source_type=entry.source_type,
         ))
     return views
 
@@ -76,15 +77,22 @@ class HoldingsEntryRequest(BaseModel):
     violation, not a feature.
 
     `transaction_type="SELL"` is validated against the real current
-    aggregated position for that asset — it's rejected (422) if it would
-    sell more than is actually held, rather than silently clamping to zero
-    the way the underlying pure aggregation function defensively does."""
+    aggregated position for that asset ON THAT SPECIFIC PLATFORM — it's
+    rejected (422) if it would sell more than is actually held there
+    (you can't sell BTC "from Coinbase" if all your BTC is on the Ledger
+    wallet, even if you own BTC in aggregate), rather than silently
+    clamping to zero the way the underlying pure aggregation function
+    defensively does.
+
+    `platform` (Phase 5o): required on every entry, including CASH —
+    which real custody location this transaction happened on/for."""
 
     asset_symbol: str = Field(default="CASH", description='A real tracked token symbol (e.g. "SOL"), or "CASH" for the cash line.')
     quantity: float = Field(ge=0, description="Asset units, or USD amount when asset_symbol is CASH.")
     cost_basis_usd: float | None = Field(default=None, ge=0, description="Total cost basis for THIS transaction, not a per-unit price.")
     purchased_at: datetime | None = Field(default=None, description="The real date this was bought/sold — distinct from when it's entered.")
     transaction_type: Literal["BUY", "SELL"] = "BUY"
+    platform: Literal["coinbase", "ledger_wallet"] = Field(description="Which real custody location this transaction happened on/for.")
 
 
 @router.post("", response_model=HoldingsEntryView, status_code=201)
@@ -143,28 +151,29 @@ def record_holding(
 
     if asset_id is not None and entry.transaction_type == "SELL":
         aggregated = aggregate_current_holdings(ledger_repo.get_all_history())
-        currently_held = next((h.quantity for h in aggregated if h.asset_id == asset_id), 0.0)
+        currently_held = next(
+            (h.quantity for h in aggregated if h.asset_id == asset_id and h.platform == entry.platform), 0.0
+        )
         if entry.quantity > currently_held:
             raise HTTPException(
                 status_code=422,
-                detail=f"Cannot sell {entry.quantity} {symbol} — only {currently_held} currently held.",
+                detail=f"Cannot sell {entry.quantity} {symbol} on {entry.platform} — only {currently_held} currently held there.",
             )
 
     record = HoldingsLedgerEntry(
         asset_id=asset_id, quantity=entry.quantity, cost_basis_usd=entry.cost_basis_usd,
         recorded_at=datetime.now(UTC), purchased_at=entry.purchased_at,
-        transaction_type=entry.transaction_type,
+        transaction_type=entry.transaction_type, platform=entry.platform,
     )
     ledger_repo.insert(record)
 
     if asset_id is not None:
         # Keeps assets.in_asset genuinely in sync with real holdings going
         # forward (a confirmed-stale column before this fix -- it was
-        # previously only ever set once, at asset-creation time). Keyed off
-        # the real aggregated position after this transaction, not
-        # transaction_type alone, since a SELL can still leave a real
-        # partial position open.
-        aggregated_after = aggregate_current_holdings(ledger_repo.get_all_history())
+        # previously only ever set once, at asset-creation time). Collapsed
+        # across every platform -- in_asset means "held anywhere," not
+        # "held on this specific platform."
+        aggregated_after = collapse_platforms(aggregate_current_holdings(ledger_repo.get_all_history()))
         currently_held_after = next((h.quantity for h in aggregated_after if h.asset_id == asset_id), 0.0)
         asset_repo.update_in_asset(asset_id, currently_held_after > 0)
 
@@ -172,6 +181,7 @@ def record_holding(
         id=record.id, asset_id=record.asset_id, symbol=symbol, quantity=record.quantity,
         cost_basis_usd=record.cost_basis_usd, recorded_at=record.recorded_at,
         purchased_at=record.purchased_at, transaction_type=record.transaction_type,
+        platform=record.platform, source_type=record.source_type,
     )
 
 
@@ -183,18 +193,22 @@ def get_current_holdings(
     binance_client: BinanceClient = Depends(get_binance_client),
     coinbase_client: CoinbaseClient = Depends(get_coinbase_client),
 ) -> list[HoldingsEntryView]:
-    """The current AGGREGATED position per asset (including the cash
-    line) — every BUY/SELL transaction ever recorded for that asset summed
-    together (Phase 5b's transactional model, see
+    """The current AGGREGATED position per asset PER PLATFORM (including a
+    cash line per platform) — every BUY/SELL transaction ever recorded for
+    that asset on that specific custody location summed together (Phase
+    5b's transactional model, extended Phase 5o for platform, see
     `aggregate_current_holdings`), not just the latest row. This is the
     real ground-truth holdings state Portfolio Construction actually
-    reasons against. Each row's `allocation` is computed via the exact
-    same `compute_current_allocations` (Phase 5a) the live pipeline itself
-    calls — the real fraction-of-total-portfolio-value comparable against
-    "Portfolio state"'s recommended allocation, not a separate estimate.
-    `value_usd` (Phase 5b) is this entry's real dollar value right now —
-    summing every row's `value_usd` gives the real total portfolio value,
-    which cannot be derived from `allocation` (a fraction) alone.
+    reasons against (collapsed across platforms there, via
+    `collapse_platforms`, since it only ever wants one number per asset).
+
+    `value_usd`/`allocation` are computed directly here, per row, against
+    the total portfolio value summed across every row (including every
+    platform) — not via `compute_current_allocations` (Phase 5a), whose
+    dict keyed by `asset_id` alone would silently overwrite one platform's
+    value with another's whenever the same asset is held in two places.
+    Summing every row's `value_usd` still gives the real total portfolio
+    value, which cannot be derived from `allocation` (a fraction) alone.
     `price_usd` is the real current price behind that math, exposed
     directly rather than making a caller re-derive it from value/quantity.
     `live_price_usd` (Phase 5b, by explicit user choice) is a separate,
@@ -202,50 +216,50 @@ def get_current_holdings(
     time — deliberately not used for `value_usd`/`allocation` above, so
     those stay consistent with the real pipeline's own stored-snapshot
     basis (see `app/market_data/live_price.py`). `cost_per_unit`/
-    `unrealized_pnl_usd`/`unrealized_pnl_pct` are computed from the
-    aggregated position's own weighted-average cost basis against
-    `value_usd` — `None` whenever no cost basis was ever entered."""
+    `unrealized_pnl_usd`/`unrealized_pnl_pct` are computed from this row's
+    own weighted-average cost basis against `value_usd` — `None` whenever
+    no cost basis was ever entered."""
     latest_holdings = aggregate_current_holdings(repo.get_all_history())
     price_by_asset_id = {}
     price_as_of_by_asset_id = {}
     for entry in latest_holdings:
-        if entry.asset_id is None:
-            continue
-        snapshot = snapshot_repo.get_latest_snapshot(entry.asset_id)
-        if snapshot is not None:
-            price_by_asset_id[entry.asset_id] = float(snapshot.price)
-            price_as_of_by_asset_id[entry.asset_id] = snapshot.timestamp
+        if entry.asset_id is not None and entry.asset_id not in price_by_asset_id:
+            snapshot = snapshot_repo.get_latest_snapshot(entry.asset_id)
+            if snapshot is not None:
+                price_by_asset_id[entry.asset_id] = float(snapshot.price)
+                price_as_of_by_asset_id[entry.asset_id] = snapshot.timestamp
 
-    allocations = compute_current_allocations(latest_holdings, price_by_asset_id)
-    cash_allocation = 1.0 - sum(allocations.values())
-    value_by_asset_id = {}
-    cash_value = 0.0
-    for entry in latest_holdings:
-        if entry.asset_id is None:
-            cash_value += entry.quantity
-            continue
-        price = price_by_asset_id.get(entry.asset_id)
-        if price is not None:
-            value_by_asset_id[entry.asset_id] = entry.quantity * price
-
+    # `_with_symbols` is a 1:1, order-preserving map over `latest_holdings`,
+    # so zipping the two together pairs each raw entry with its own view --
+    # this is what lets the same asset_id appear more than once (one row
+    # per platform) without one row's value clobbering another's.
     views = _with_symbols(latest_holdings, asset_repo)
-    for view in views:
-        if view.asset_id is None:
-            view.allocation = cash_allocation
-            view.value_usd = cash_value
+    total_value = 0.0
+    for entry, view in zip(latest_holdings, views):
+        if entry.asset_id is None:
+            view.value_usd = entry.quantity  # cash: quantity IS the USD amount
         else:
-            view.allocation = allocations.get(view.asset_id)
-            view.value_usd = value_by_asset_id.get(view.asset_id)
-            view.price_usd = price_by_asset_id.get(view.asset_id)
-            view.price_as_of = price_as_of_by_asset_id.get(view.asset_id)
-            live = fetch_live_price(view.symbol, binance_client, coinbase_client)
-            if live is not None:
-                view.live_price_usd, view.live_price_as_of, view.live_price_source = live
-            if view.cost_basis_usd is not None and view.quantity > 0:
-                view.cost_per_unit = view.cost_basis_usd / view.quantity
-                if view.value_usd is not None:
-                    view.unrealized_pnl_usd = view.value_usd - view.cost_basis_usd
-                    view.unrealized_pnl_pct = (view.unrealized_pnl_usd / view.cost_basis_usd) * 100 if view.cost_basis_usd > 0 else None
+            price = price_by_asset_id.get(entry.asset_id)
+            if price is not None:
+                view.value_usd = entry.quantity * price
+                view.price_usd = price
+                view.price_as_of = price_as_of_by_asset_id.get(entry.asset_id)
+        if view.value_usd is not None:
+            total_value += view.value_usd
+
+    for entry, view in zip(latest_holdings, views):
+        if view.value_usd is not None and total_value > 0:
+            view.allocation = view.value_usd / total_value
+        if entry.asset_id is None:
+            continue
+        live = fetch_live_price(view.symbol, binance_client, coinbase_client)
+        if live is not None:
+            view.live_price_usd, view.live_price_as_of, view.live_price_source = live
+        if view.cost_basis_usd is not None and view.quantity > 0:
+            view.cost_per_unit = view.cost_basis_usd / view.quantity
+            if view.value_usd is not None:
+                view.unrealized_pnl_usd = view.value_usd - view.cost_basis_usd
+                view.unrealized_pnl_pct = (view.unrealized_pnl_usd / view.cost_basis_usd) * 100 if view.cost_basis_usd > 0 else None
     return views
 
 

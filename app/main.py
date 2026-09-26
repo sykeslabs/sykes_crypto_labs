@@ -58,7 +58,7 @@ from app.market_data.upbit import UpbitClient
 from app.news.rss_client import RssClient
 from app.news.service import NewsCollectionService
 from app.portfolio.construction import PortfolioConstructionService
-from app.portfolio.holdings import aggregate_current_holdings, compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, compute_current_allocations
 from app.portfolio.schemas import TurnoverCapEvent
 from app.risk.correlation import compute_daily_returns
 from app.risk.engine import RiskEngine
@@ -395,7 +395,7 @@ def main() -> int:
         # Judge's own "current allocation" context field silently meant the
         # system's stale target instead of real holdings. See
         # app/judge/context.py's `actual_allocation` docstring.
-        latest_holdings = aggregate_current_holdings(holdings_ledger_repo.get_all_history())
+        latest_holdings = collapse_platforms(aggregate_current_holdings(holdings_ledger_repo.get_all_history()))
         price_lookup_ids = {a.id for a in assets_by_id.values()} | {
             h.asset_id for h in latest_holdings if h.asset_id is not None
         }

@@ -1126,16 +1126,21 @@ class HoldingsLedgerRepository:
         """The latest row per `asset_id` (including at most one cash row,
         `asset_id=None`) by `recorded_at` — never the full append-only
         history. Client-side dedup-by-first-seen-in-desc-order, same
-        pattern already used for 3f's multi-entry macro evidence."""
-        response = (
-            self._client.table("holdings_ledger")
-            .select("*")
-            .order("recorded_at", desc=True)
-            .execute()
+        pattern already used for 3f's multi-entry macro evidence.
+
+        Real bug fixed 2026-09-26: this used to be a raw, unpaginated
+        query -- the same server-side ~1000-row cap already found and
+        fixed for `llm_analyses`/`JudgeDecisionRepository.get_recent()`
+        (Phase 5m) applies here too. Paginates via `_fetch_all_paginated`
+        now, with `id` as an explicit tiebreaker since real import batches
+        (Phase 5o) can insert many rows with the same `recorded_at`."""
+        rows = _fetch_all_paginated(
+            lambda: self._client.table("holdings_ledger").select("*")
+            .order("recorded_at", desc=True).order("id", desc=True)
         )
         seen: set[str | None] = set()
         latest: list[HoldingsLedgerEntry] = []
-        for row in response.data:
+        for row in rows:
             key = row["asset_id"]
             if key in seen:
                 continue
@@ -1146,22 +1151,39 @@ class HoldingsLedgerRepository:
     def get_history(self, asset_id: str | None) -> list[HoldingsLedgerEntry]:
         """Every entry ever recorded for one asset (or the cash line, if
         `asset_id=None`), newest first — "what did I hold as of date T"
-        stays answerable from this."""
-        query = self._client.table("holdings_ledger").select("*")
-        query = query.is_("asset_id", "null") if asset_id is None else query.eq("asset_id", asset_id)
-        response = query.order("recorded_at", desc=True).execute()
-        return [HoldingsLedgerEntry.model_validate(row) for row in response.data]
+        stays answerable from this.
+
+        Real bug fixed 2026-09-26: same unpaginated-query defect as
+        `get_all_history()` below -- a single asset's own history can now
+        realistically approach the 1000-row cap too (XTZ: 758 real rows
+        after the Phase 5o import), so this is fixed proactively rather
+        than waiting for it to silently truncate."""
+        def build_query():
+            q = self._client.table("holdings_ledger").select("*")
+            q = q.is_("asset_id", "null") if asset_id is None else q.eq("asset_id", asset_id)
+            return q.order("recorded_at", desc=True).order("id", desc=True)
+
+        rows = _fetch_all_paginated(build_query)
+        return [HoldingsLedgerEntry.model_validate(row) for row in rows]
 
     def get_all_history(self) -> list[HoldingsLedgerEntry]:
         """Every entry ever recorded, across every asset and the cash
-        line, newest first."""
-        response = (
-            self._client.table("holdings_ledger")
-            .select("*")
-            .order("recorded_at", desc=True)
-            .execute()
+        line, newest first.
+
+        Real bug fixed 2026-09-26: this used to be a raw, unpaginated
+        query -- confirmed live actively truncating (1357 real rows after
+        the Phase 5o full-history import, silently capped to exactly
+        1000, with no error anywhere) the same server-side cap already
+        found and fixed for `llm_analyses`/`JudgeDecisionRepository
+        .get_recent()` (Phase 5m). This is the SOLE input to every real
+        current-holdings computation (`aggregate_current_holdings`, the
+        whole Risk Engine/Judge pipeline, `GET /holdings`) so a silent
+        truncation here means every one of them was silently wrong."""
+        rows = _fetch_all_paginated(
+            lambda: self._client.table("holdings_ledger").select("*")
+            .order("recorded_at", desc=True).order("id", desc=True)
         )
-        return [HoldingsLedgerEntry.model_validate(row) for row in response.data]
+        return [HoldingsLedgerEntry.model_validate(row) for row in rows]
 
 
 class AdversarialResearchRepository:

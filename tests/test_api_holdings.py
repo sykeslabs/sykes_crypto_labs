@@ -56,11 +56,11 @@ def _asset(asset_id="a1", symbol="BTC"):
     return Asset(id=asset_id, symbol=symbol, name=symbol, coingecko_id=symbol.lower(), active=True, in_asset=True, created_at=datetime.now(UTC))
 
 
-def _tx(asset_id, quantity, cost_basis=None, transaction_type="BUY", minutes_ago=0):
+def _tx(asset_id, quantity, cost_basis=None, transaction_type="BUY", minutes_ago=0, platform="coinbase"):
     return HoldingsLedgerEntry(
         asset_id=asset_id, quantity=quantity, cost_basis_usd=cost_basis,
         recorded_at=datetime.now(UTC) - timedelta(minutes=minutes_ago),
-        transaction_type=transaction_type,
+        transaction_type=transaction_type, platform=platform,
     )
 
 
@@ -167,7 +167,7 @@ def test_rejects_untracked_symbol_when_coingecko_also_has_no_real_match(client):
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo()  # no assets known
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo()
     # Default autouse FakeCoinGeckoClient also finds nothing real.
-    response = client.post("/holdings", json={"asset_symbol": "NOTREAL", "quantity": 1.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "NOTREAL", "quantity": 1.0})
     assert response.status_code == 422
     assert "not a tracked asset symbol" in response.json()["detail"]
     assert "no real CoinGecko-listed token" in response.json()["detail"]
@@ -189,7 +189,7 @@ def test_creates_a_new_asset_when_coingecko_confirms_a_real_match(client):
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
     app.dependency_overrides[get_coingecko_client] = lambda: FakeCoinGeckoWithMatch()
 
-    response = client.post("/holdings", json={"asset_symbol": "ADA", "quantity": 100.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "ADA", "quantity": 100.0})
     assert response.status_code == 201
     body = response.json()
     assert body["symbol"] == "ADA"
@@ -212,7 +212,7 @@ def test_rejects_a_symbol_with_no_real_coingecko_coin_and_creates_nothing(client
     app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo()
     # Default autouse FakeCoinGeckoClient finds nothing real for "FAKECOIN".
-    response = client.post("/holdings", json={"asset_symbol": "FAKECOIN", "quantity": 1.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "FAKECOIN", "quantity": 1.0})
     assert response.status_code == 422
     assert fake_asset_repo.created == []
 
@@ -237,7 +237,7 @@ def test_reuses_an_existing_asset_already_tracked_under_the_same_coingecko_id(cl
             return {"id": "avax", "symbol": "avax", "name": "Avalanche", "market_cap_rank": 20}
 
     app.dependency_overrides[get_coingecko_client] = lambda: FakeCoinGeckoResolvesToTrackedId()
-    response = client.post("/holdings", json={"asset_symbol": "AVALANCHE", "quantity": 1.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "AVALANCHE", "quantity": 1.0})
     assert response.status_code == 201
     assert response.json()["symbol"] == "AVAX"  # reused the existing tracked asset's real symbol
     assert fake_asset_repo.created == []  # no duplicate row created
@@ -248,7 +248,7 @@ def test_symbol_lookup_is_case_insensitive(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="SOL")])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "sol", "quantity": 5.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "sol", "quantity": 5.0})
     assert response.status_code == 201
     assert response.json()["symbol"] == "SOL"
 
@@ -256,14 +256,14 @@ def test_symbol_lookup_is_case_insensitive(client):
 def test_rejects_negative_quantity(client):
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset()])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo()
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": -1.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": -1.0})
     assert response.status_code == 422
 
 
 def test_rejects_negative_cost_basis(client):
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset()])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo()
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0, "cost_basis_usd": -100.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 1.0, "cost_basis_usd": -100.0})
     assert response.status_code == 422
 
 
@@ -271,7 +271,7 @@ def test_accepts_valid_asset_holding(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset()])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 2.5, "cost_basis_usd": 100.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 2.5, "cost_basis_usd": 100.0})
     assert response.status_code == 201
     assert response.json()["quantity"] == 2.5
     assert len(fake_ledger.inserted) == 1
@@ -281,7 +281,7 @@ def test_accepts_cash_line(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo()
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "CASH", "quantity": 5000.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "CASH", "quantity": 5000.0})
     assert response.status_code == 201
     assert response.json()["asset_id"] is None
     assert response.json()["symbol"] == "CASH"
@@ -293,7 +293,7 @@ def test_response_never_contains_a_decision_or_target_allocation_field(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset()])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 1.0})
     body = response.json()
     assert "decision" not in body
     assert "target_allocation" not in body
@@ -306,7 +306,7 @@ def test_sell_exceeding_current_holding_is_rejected(client):
     fake_ledger = FakeHoldingsLedgerRepo(seed)
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="BTC")])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 9.0, "transaction_type": "SELL"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 9.0, "transaction_type": "SELL"})
     assert response.status_code == 422
     assert "Cannot sell" in response.json()["detail"]
     assert len(fake_ledger.inserted) == 1  # rejected -- never inserted
@@ -317,9 +317,31 @@ def test_sell_within_current_holding_is_accepted(client):
     fake_ledger = FakeHoldingsLedgerRepo(seed)
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="BTC")])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 2.0, "transaction_type": "SELL"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 2.0, "transaction_type": "SELL"})
     assert response.status_code == 201
     assert len(fake_ledger.inserted) == 2
+
+
+def test_sell_is_validated_against_the_specific_platform_not_the_cross_platform_total(client):
+    # Real Phase 5o correctness fix: 5 BTC on Coinbase + 5 BTC on the
+    # Ledger wallet is 10 BTC in aggregate, but you can't sell 9 "from
+    # Coinbase" when only 5 actually sit there.
+    seed = [
+        _tx("a1", 5.0, cost_basis=500.0, minutes_ago=60, platform="coinbase"),
+        _tx("a1", 5.0, cost_basis=500.0, minutes_ago=60, platform="ledger_wallet"),
+    ]
+    fake_ledger = FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="BTC")])
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 9.0, "transaction_type": "SELL"})
+    assert response.status_code == 422
+    assert "Cannot sell" in response.json()["detail"]
+    assert len(fake_ledger.inserted) == 2  # rejected -- never inserted
+
+    # But selling within what THAT platform actually holds is fine.
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 4.0, "transaction_type": "SELL"})
+    assert response.status_code == 201
+    assert len(fake_ledger.inserted) == 3
 
 
 def test_sell_of_cash_line_is_never_validated_against_a_position(client):
@@ -328,7 +350,7 @@ def test_sell_of_cash_line_is_never_validated_against_a_position(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo()
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={"asset_symbol": "CASH", "quantity": 100.0, "transaction_type": "SELL"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "CASH", "quantity": 100.0, "transaction_type": "SELL"})
     assert response.status_code == 201
 
 
@@ -348,7 +370,7 @@ def test_buy_on_previously_zero_position_asset_sets_in_asset_true(client):
     app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
 
-    response = client.post("/holdings", json={"asset_symbol": "LINK", "quantity": 10.0, "transaction_type": "BUY"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "LINK", "quantity": 10.0, "transaction_type": "BUY"})
     assert response.status_code == 201
     assert fake_asset_repo.update_in_asset_calls == [("a1", True)]
     assert fake_asset_repo._assets["a1"].in_asset is True
@@ -364,7 +386,7 @@ def test_sell_that_fully_closes_position_sets_in_asset_false(client):
     app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
 
-    response = client.post("/holdings", json={"asset_symbol": "SONIC", "quantity": 5.0, "transaction_type": "SELL"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "SONIC", "quantity": 5.0, "transaction_type": "SELL"})
     assert response.status_code == 201
     assert fake_asset_repo.update_in_asset_calls == [("a1", False)]
     assert fake_asset_repo._assets["a1"].in_asset is False
@@ -380,7 +402,7 @@ def test_partial_sell_leaving_a_real_position_open_keeps_in_asset_true(client):
     app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
 
-    response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 4.0, "transaction_type": "SELL"})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 4.0, "transaction_type": "SELL"})
     assert response.status_code == 201
     assert fake_asset_repo.update_in_asset_calls == [("a1", True)]
 
@@ -391,7 +413,7 @@ def test_cash_entries_never_touch_in_asset(client):
     app.dependency_overrides[get_asset_repo] = lambda: fake_asset_repo
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
 
-    response = client.post("/holdings", json={"asset_symbol": "CASH", "quantity": 1000.0})
+    response = client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "CASH", "quantity": 1000.0})
     assert response.status_code == 201
     assert fake_asset_repo.update_in_asset_calls == []
 
@@ -403,8 +425,8 @@ def test_editing_a_holding_appends_a_new_row_never_overwrites(client):
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset()])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
 
-    client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0})
-    client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 2.0})  # a second, separate BUY transaction
+    client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 1.0})
+    client.post("/holdings", json={"platform": "coinbase", "asset_symbol": "BTC", "quantity": 2.0})  # a second, separate BUY transaction
 
     history_response = client.get("/holdings/history", params={"asset_id": "a1"})
     assert history_response.status_code == 200
@@ -430,6 +452,33 @@ def test_get_current_holdings_sums_multiple_buy_transactions(client):
     assert len(body) == 1
     assert body[0]["quantity"] == pytest.approx(8.0)
     assert body[0]["cost_basis_usd"] == pytest.approx(860.0)
+
+
+def test_get_current_holdings_returns_one_row_per_platform_for_the_same_asset(client):
+    # Real Phase 5o behavior: the same asset held on two platforms shows
+    # as two separate rows, each with its own cost basis/value/allocation
+    # -- never merged into one, and never one platform's value silently
+    # overwriting the other's (the real bug this endpoint's rewrite fixes).
+    seed = [
+        _tx("a1", 1.0, cost_basis=1000.0, platform="coinbase"),
+        _tx("a1", 3.0, cost_basis=3000.0, platform="ledger_wallet"),
+    ]
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="BTC")])
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeMarketSnapshotRepo({"a1": 100.0})
+    response = TestClient(app).get("/holdings")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 2
+    by_platform = {r["platform"]: r for r in body}
+    assert by_platform["coinbase"]["quantity"] == pytest.approx(1.0)
+    assert by_platform["coinbase"]["value_usd"] == pytest.approx(100.0)
+    assert by_platform["ledger_wallet"]["quantity"] == pytest.approx(3.0)
+    assert by_platform["ledger_wallet"]["value_usd"] == pytest.approx(300.0)
+    # Allocation is each row's own share of the TOTAL (400) -- not
+    # recomputed independently per platform.
+    assert by_platform["coinbase"]["allocation"] == pytest.approx(100.0 / 400.0)
+    assert by_platform["ledger_wallet"]["allocation"] == pytest.approx(300.0 / 400.0)
 
 
 def test_get_current_holdings_reflects_a_sell(client):
@@ -617,7 +666,7 @@ def test_purchased_at_and_transaction_type_round_trip(client):
     fake_ledger = FakeHoldingsLedgerRepo()
     app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="SOL")])
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: fake_ledger
-    response = client.post("/holdings", json={
+    response = client.post("/holdings", json={"platform": "coinbase", 
         "asset_symbol": "SOL", "quantity": 5.0, "cost_basis_usd": 500.0,
         "purchased_at": "2026-08-15T00:00:00Z", "transaction_type": "BUY",
     })

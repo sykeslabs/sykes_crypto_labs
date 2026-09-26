@@ -57,7 +57,7 @@ def test_holdings_unhandled_exception_never_leaks_a_secret_embedded_in_its_own_m
     app.dependency_overrides[get_holdings_ledger_repo] = lambda: type("R", (), {"insert": lambda self, e: None})()
     try:
         client = TestClient(app, raise_server_exceptions=False)
-        response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0})
+        response = client.post("/holdings", json={"asset_symbol": "BTC", "quantity": 1.0, "platform": "coinbase"})
         assert response.status_code == 500
         body_text = response.text
         assert FAKE_SUPABASE_KEY not in body_text

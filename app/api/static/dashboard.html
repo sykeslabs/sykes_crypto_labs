@@ -309,6 +309,12 @@
     <label for="holdings-asset-symbol" class="sr-only">Token symbol (or CASH)</label>
     <input id="holdings-asset-symbol" list="holdings-symbol-list" placeholder="token symbol (or CASH)" style="flex:1;" autocomplete="off" required title="Required -- a token symbol (e.g. BTC) or CASH.">
     <datalist id="holdings-symbol-list"></datalist>
+    <label for="holdings-platform" class="sr-only">Platform</label>
+    <select id="holdings-platform" required title="Required -- which real custody location this transaction happened on/for.">
+      <option value="" disabled selected>Platform…</option>
+      <option value="coinbase">Coinbase</option>
+      <option value="ledger_wallet">Ledger wallet</option>
+    </select>
     <label for="holdings-transaction-type" class="sr-only">Transaction type</label>
     <select id="holdings-transaction-type">
       <option value="BUY">Buy</option>
@@ -788,7 +794,7 @@ const SECTION_INFO_MODAL_IDS = {
   "judge-decisions": registerTextModal("Judge Decisions", "<p>Every decision the Judge has ever made — its synthesis of every upstream evidence source (screening factors, derivatives/on-chain, multi-model assessments, adversarial research, news, portfolio state) into ONE call per asset (BUY/SELL/HOLD/WATCH/NO_TRADE), both live (made in real time) and backfilled (a simulated historical replay, used to build up a track record fast). Each decision's real outcome is tracked here too as it resolves — whether it hit its target/stop, and what it actually earned vs. simply holding BTC (Effective alpha), not just what it was expected to earn.</p>"),
   "calibration-summary": registerTextModal("Calibration summary", "<p>Statistical validation of the Judge's track record: how many decisions have resolved vs. are still waiting (split by live/backfilled), and, of those resolved, whether its stated confidence was actually honest (Brier score) and whether it called the right direction more often than a coin flip (Hit rate) — plus risk-adjusted return figures (Sharpe ratio, Deflated Sharpe Ratio) corrected for the chance that trying many variations makes a result look good by luck alone, not real skill. See each row's own \"What this means\" column for detail on that specific metric.</p>"),
   "llm-prompts": registerTextModal("LLM prompts &amp; answers", "<p>Every distinct LLM prompt actually defined in this codebase, real code lookups only — not every one runs on every python -m app.main invocation. One panel per prompt: its own definition (purpose, context of use, status, full prompt text) directly above the real answers it actually got back from OpenRouter, across every run — so \"what does this prompt ask for\" and \"what did it actually answer\" are one click into one panel, not two separate lookups. Any prompt found genuinely unreachable from anywhere would show as not in use here, rather than being silently omitted; a prompt with genuinely zero answers yet would show that honestly right under its own definition. The Judge prompt's own answers are already shown in full in Judge Decisions above, so aren't repeated here.</p>"),
-  "ai-portfolio": registerTextModal("Portfolio", "<p><strong>AI Portfolio</strong> is the system's own recommended allocation — synthesized by the Judge (one decision per asset, from every upstream evidence source) → Risk Engine (deterministic sizing/gating) → Portfolio Construction (turns that into a target allocation) — a target, not what you actually hold. Each row's own recommendation details (regime, outcome, mark-to-mid, net of costs, fill method) are one click away via \"Show details\", rather than 5 more always-visible columns competing with the bars for attention.</p><p><strong>My Portfolio</strong>, shown directly below it, is what you actually hold, entered by hand as real transactions — ground truth, the only input Portfolio Construction uses for current_allocation. Append-only and transactional (Phase 5b): every BUY/SELL you record for an asset sums with every prior one for that asset into the position shown below; nothing you enter ever overwrites or deletes a prior entry. Enter CASH for uninvested cash (a stated USD amount, always an absolute total, not summed like a real asset). The symbol field isn't limited to the autocomplete list above it — typing a real token not yet tracked here (e.g. ADA, LTC) is checked against CoinGecko and, if it's a genuine listed coin, added as a newly tracked asset automatically; a symbol that isn't real is rejected.</p><p>The two tables share the same 10 columns so they're directly comparable — Allocation is each row's real/recommended share of the same total portfolio value. The Comparison table and bar chart below both tables show the two side by side per asset.</p>"),
+  "ai-portfolio": registerTextModal("Portfolio", "<p><strong>AI Portfolio</strong> is the system's own recommended allocation — synthesized by the Judge (one decision per asset, from every upstream evidence source) → Risk Engine (deterministic sizing/gating) → Portfolio Construction (turns that into a target allocation) — a target, not what you actually hold. Each row's own recommendation details (regime, outcome, mark-to-mid, net of costs, fill method) are one click away via \"Show details\", rather than 5 more always-visible columns competing with the bars for attention.</p><p><strong>My Portfolio</strong>, shown directly below it, is what you actually hold, entered by hand as real transactions — ground truth, the only input Portfolio Construction uses for current_allocation. Append-only and transactional (Phase 5b): every BUY/SELL you record for an asset sums with every prior one for that asset into the position shown below; nothing you enter ever overwrites or deletes a prior entry. Enter CASH for uninvested cash (a stated USD amount, always an absolute total, not summed like a real asset). Platform (which real custody location — e.g. Coinbase, Ledger wallet — this transaction happened on/for) is required on every entry; the same asset held on two platforms shows as two separate rows, each with its own quantity/cost basis. The symbol field isn't limited to the autocomplete list above it — typing a real token not yet tracked here (e.g. ADA, LTC) is checked against CoinGecko and, if it's a genuine listed coin, added as a newly tracked asset automatically; a symbol that isn't real is rejected.</p><p>The two tables share the same 11 columns so they're directly comparable — Allocation is each row's real/recommended share of the same total portfolio value. The Comparison table and bar chart below both tables show the two side by side per asset.</p>"),
   "recent-news": registerTextModal("Recent news", "<p>Articles matched against your tracked assets by keyword (not full NLP — see app/news/relevance.py), feeding the Judge's research context. Shown here read-only, same as everything else on this page.</p>"),
   "cost-spend": registerTextModal("Cost / spend", "<p>Every real dollar the system has spent on Claude/OpenAI/Gemini API calls while researching or deciding something — broken down by pipeline stage and by real calendar day — capped daily and monthly so a bug or a bad day can never run up an unbounded bill.</p>"),
   "signal-sources": registerTextModal("Signal sources", "<p>Every real external data source this system has ever integrated or investigated — vendors (Binance, CoinGecko, Etherscan, Deribit, DefiLlama, etc.) actually feeding live evidence, plus ones deliberately deferred (a paid tier, an access relationship not pursued) or genuinely inaccessible (a bot-challenge, a dead endpoint) — each status here reflects a real, investigated decision, never a silent gap.</p>"),
@@ -828,7 +834,10 @@ function sortDashboardTable(id, colIndex) {
 // the two views can never silently drift apart on what counts as "tracked."
 function buildAllocationComparison(holdings, portfolioState) {
   const currentBySymbol = {};
-  holdings.forEach(h => { currentBySymbol[h.symbol] = h.allocation || 0; });
+  // Summed, not overwritten -- the same symbol can now appear as more than
+  // one row (one per platform it's actually held on, see Platform column),
+  // and each one's allocation is that platform's own share of the total.
+  holdings.forEach(h => { currentBySymbol[h.symbol] = (currentBySymbol[h.symbol] || 0) + (h.allocation || 0); });
   const recommendedBySymbol = {};
   portfolioState.forEach(p => { recommendedBySymbol[p.symbol] = p.current_allocation; });
   const recommendedCash = 1 - portfolioState.reduce((sum, p) => sum + p.current_allocation, 0);
@@ -1773,24 +1782,26 @@ async function loadPortfolioState() {
     ];
     const aiPortfolioTable = buildSortableTable([
       { label: "Asset", width: HOLDINGS_TABLE_COLUMN_WIDTHS[0], value: r => r.symbol },
-      { label: "Quantity", width: HOLDINGS_TABLE_COLUMN_WIDTHS[1], title: "An IMPLIED quantity -- this target's dollar Value divided by the collected Price -- not a real position. This system never places real orders; nothing in this row has actually been bought. See My Portfolio for real quantities.",
+      { label: "Platform", width: HOLDINGS_TABLE_COLUMN_WIDTHS[1], title: "Not applicable -- a recommended target has no real custody location, since it was never actually bought. See My Portfolio for real platform.",
+        value: () => null, html: () => "—" },
+      { label: "Quantity", width: HOLDINGS_TABLE_COLUMN_WIDTHS[2], title: "An IMPLIED quantity -- this target's dollar Value divided by the collected Price -- not a real position. This system never places real orders; nothing in this row has actually been bought. See My Portfolio for real quantities.",
         value: r => (r.price_usd && r.value_usd !== null) ? r.value_usd / r.price_usd : null,
         html: r => (r.price_usd && r.value_usd !== null) ? (r.value_usd / r.price_usd).toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
-      { label: "Cost / unit", width: HOLDINGS_TABLE_COLUMN_WIDTHS[2], title: "Not applicable -- a recommended target was never actually bought, so it has no real acquisition cost. See My Portfolio for real cost/unit.",
+      { label: "Cost / unit", width: HOLDINGS_TABLE_COLUMN_WIDTHS[3], title: "Not applicable -- a recommended target was never actually bought, so it has no real acquisition cost. See My Portfolio for real cost/unit.",
         value: () => null, html: () => "—" },
-      { label: "Cost basis", width: HOLDINGS_TABLE_COLUMN_WIDTHS[3], title: "Not applicable, for the same reason as Cost / unit -- see My Portfolio for real cost basis.",
+      { label: "Cost basis", width: HOLDINGS_TABLE_COLUMN_WIDTHS[4], title: "Not applicable, for the same reason as Cost / unit -- see My Portfolio for real cost basis.",
         value: () => null, html: () => "—" },
-      { label: "Price (collected)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[4], title: "The price the last time the collector ran (python -m app.main) -- not live. This is what Value/Allocation below are computed from, the same convention as My Portfolio's own Price (collected) column.",
+      { label: "Price (collected)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[5], title: "The price the last time the collector ran (python -m app.main) -- not live. This is what Value/Allocation below are computed from, the same convention as My Portfolio's own Price (collected) column.",
         value: r => r.price_usd, html: r => renderStoredPrice(r.price_usd) },
-      { label: "Value (USD)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[5], title: "This target's dollar value -- Allocation x total portfolio value (the same total shown in the AI Portfolio heading above and in My Portfolio's own title).",
+      { label: "Value (USD)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[6], title: "This target's dollar value -- Allocation x total portfolio value (the same total shown in the AI Portfolio heading above and in My Portfolio's own title).",
         value: r => r.value_usd, html: r => r.value_usd !== null && r.value_usd !== undefined ? "$" + r.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
-      { label: "Live price", width: HOLDINGS_TABLE_COLUMN_WIDTHS[6], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Allocation, which use the stored price instead, same convention as My Portfolio's own Live price column.",
+      { label: "Live price", width: HOLDINGS_TABLE_COLUMN_WIDTHS[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Allocation, which use the stored price instead, same convention as My Portfolio's own Live price column.",
         value: r => r.live_price_usd, html: r => renderLivePrice(r.live_price_usd, r.live_price_source) },
-      { label: "Unrealized P&L", width: HOLDINGS_TABLE_COLUMN_WIDTHS[7], title: "Not applicable -- with no real cost basis (this is a recommended target, never an executed trade), there is nothing real to compute a gain/loss against. See My Portfolio for real Unrealized P&L.",
+      { label: "Unrealized P&L", width: HOLDINGS_TABLE_COLUMN_WIDTHS[8], title: "Not applicable -- with no real cost basis (this is a recommended target, never an executed trade), there is nothing real to compute a gain/loss against. See My Portfolio for real Unrealized P&L.",
         value: () => null, html: () => "—" },
-      { label: "Allocation", width: HOLDINGS_TABLE_COLUMN_WIDTHS[8], title: "This system's own current recommended target -- what fraction of the portfolio it currently thinks this asset should be, as a percentage. Directly comparable to My Portfolio's own Allocation column, since both are fractions of the same total.",
+      { label: "Allocation", width: HOLDINGS_TABLE_COLUMN_WIDTHS[9], title: "This system's own current recommended target -- what fraction of the portfolio it currently thinks this asset should be, as a percentage. Directly comparable to My Portfolio's own Allocation column, since both are fractions of the same total.",
         value: r => r.allocation, html: r => r.allocation !== null && r.allocation !== undefined ? (r.allocation * 100).toFixed(2) + "%" : "—" },
-      { label: "Recorded at", width: HOLDINGS_TABLE_COLUMN_WIDTHS[9], title: "portfolio_positions.updated_at -- the last time this position's target allocation actually changed, not the last time the Judge looked at it; a HOLD/WATCH re-confirmation that leaves the number unchanged does not update this. CASH has no row of its own in portfolio_positions, so this is always \"--\" for it.",
+      { label: "Recorded at", width: HOLDINGS_TABLE_COLUMN_WIDTHS[10], title: "portfolio_positions.updated_at -- the last time this position's target allocation actually changed, not the last time the Judge looked at it; a HOLD/WATCH re-confirmation that leaves the number unchanged does not update this. CASH has no row of its own in portfolio_positions, so this is always \"--\" for it.",
         value: r => r.updated_at, html: r => r.updated_at ? new Date(r.updated_at).toLocaleString() : "—" },
     ], aiPortfolioRows);
     // Mirrored copy of My Portfolio's own table, reusing this same
@@ -2317,12 +2328,12 @@ async function loadRecentNews() {
 
 // Shared by the AI Portfolio table and both My Portfolio tables (its own
 // section, and the mirrored copy embedded in the combined "Portfolio"
-// section) -- the same 10 column labels appear in all three, in this same
+// section) -- the same 11 column labels appear in all three, in this same
 // order, so one shared width array keeps every column visually aligned
 // across all of them (auto-layout can't guarantee this on its own, since
 // each table's real content independently drives its own widths -- see
 // buildSortableTable's own `width`/`colgroup` handling).
-const HOLDINGS_TABLE_COLUMN_WIDTHS = ["7%", "10%", "9%", "9%", "10%", "9%", "14%", "11%", "7%", "14%"];
+const HOLDINGS_TABLE_COLUMN_WIDTHS = ["6%", "8%", "9%", "8%", "8%", "9%", "9%", "12%", "10%", "7%", "14%"];
 
 // Shared between My Portfolio's own section and the mirrored copy embedded
 // in the combined "Portfolio" section (loadPortfolioState) -- one column
@@ -2331,24 +2342,34 @@ function buildHoldingsTable(holdings) {
   const w = HOLDINGS_TABLE_COLUMN_WIDTHS;
   return buildSortableTable([
     { label: "Asset", width: w[0], value: h => h.symbol },
-    { label: "Quantity", width: w[1], value: h => h.quantity },
-    { label: "Cost / unit", width: w[2], title: "Cost basis divided by current quantity -- the weighted-average price per unit this position was really bought at.",
+    { label: "Platform", width: w[1], title: "Which real custody location this position is actually held on (Coinbase, Ledger wallet) -- entered by hand at transaction time, purely descriptive; has no effect on Value, Allocation, or any other column.",
+      value: h => h.platform, html: h => renderPlatform(h.platform) },
+    { label: "Quantity", width: w[2], value: h => h.quantity },
+    { label: "Cost / unit", width: w[3], title: "Cost basis divided by current quantity -- the weighted-average price per unit this position was really bought at.",
       value: h => h.cost_per_unit, html: h => h.cost_per_unit !== null && h.cost_per_unit !== undefined ? "$" + h.cost_per_unit.toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
-    { label: "Cost basis", width: w[3], title: "The TOTAL cost basis of this whole aggregated position -- the sum of every BUY's cost basis, reduced proportionally by any SELLs.",
+    { label: "Cost basis", width: w[4], title: "The TOTAL cost basis of this whole aggregated position -- the sum of every BUY's cost basis, reduced proportionally by any SELLs.",
       value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
-    { label: "Price (collected)", width: w[4], title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from. Timestamp shown once, above the table, not repeated per row -- one collector run prices every holding at essentially the same moment.",
+    { label: "Price (collected)", width: w[5], title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from. Timestamp shown once, above the table, not repeated per row -- one collector run prices every holding at essentially the same moment.",
       value: h => h.price_usd, html: h => renderStoredPrice(h.price_usd) },
-    { label: "Value (USD)", width: w[5], title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below.",
+    { label: "Value (USD)", width: w[6], title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below.",
       value: h => h.value_usd, html: h => h.value_usd !== null && h.value_usd !== undefined ? "$" + h.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
-    { label: "Live price", width: w[6], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead. Timestamp shown once, above the table, not repeated per row.",
+    { label: "Live price", width: w[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead. Timestamp shown once, above the table, not repeated per row.",
       value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_source) },
-    { label: "Unrealized P&L", width: w[7], title: "Value (USD) minus Cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
+    { label: "Unrealized P&L", width: w[8], title: "Value (USD) minus Cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
       value: h => h.unrealized_pnl_usd, html: h => renderPnl(h.unrealized_pnl_usd, h.unrealized_pnl_pct) },
-    { label: "Allocation", width: w[8], title: "What fraction of your total portfolio value (across every holding plus cash) this one asset represents, as a percentage.",
+    { label: "Allocation", width: w[9], title: "What fraction of your total portfolio value (across every holding plus cash) this one row represents, as a percentage -- the same asset held on two platforms gets its own separate row/percentage.",
       value: h => h.allocation, html: h => h.allocation !== null ? (h.allocation * 100).toFixed(2) + "%" : "—" },
-    { label: "Recorded at", width: w[9], value: h => h.recorded_at ? new Date(h.recorded_at).getTime() : null,
+    { label: "Recorded at", width: w[10], value: h => h.recorded_at ? new Date(h.recorded_at).getTime() : null,
       html: h => h.recorded_at ? new Date(h.recorded_at).toLocaleString() : "—" },
   ], holdings);
+}
+
+// Platform is purely descriptive (see buildHoldingsTable's own tooltip) --
+// rendered as plain text, not a badge, since it carries no status/health
+// meaning the way e.g. renderPnl's colored badge does.
+function renderPlatform(platform) {
+  if (!platform) return "—";
+  return platform === "coinbase" ? "Coinbase" : platform === "ledger_wallet" ? "Ledger wallet" : platform;
 }
 
 // Phase 5b: populates the entry form's symbol autocomplete from the real
@@ -2378,7 +2399,10 @@ async function loadHoldingsHistory() {
     const historyTable = buildSortableTable([
       { label: "Recorded at", value: h => h.recorded_at },
       { label: "Asset", value: h => h.symbol },
+      { label: "Platform", value: h => h.platform, html: h => renderPlatform(h.platform) },
       { label: "Type", value: h => h.transaction_type, html: h => `<span class="badge ${h.transaction_type === "SELL" ? "backfilled" : "live"}">${h.transaction_type}</span>` },
+      { label: "Source", title: "The real original transaction type where known (e.g. Staking Income, Advanced Trade Buy, Internal Transfer) -- purely descriptive, \"Manual entry\" for anything recorded directly via the form above.",
+        value: h => h.source_type, html: h => h.source_type || "Manual entry" },
       { label: "Quantity", value: h => h.quantity },
       { label: "Cost basis (this txn)", value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
       { label: "Purchased at", value: h => h.purchased_at, html: h => h.purchased_at ? h.purchased_at.slice(0, 10) : "—" },
@@ -2402,6 +2426,7 @@ document.getElementById("holdings-form").addEventListener("submit", async (event
   const statusEl = document.getElementById("holdings-form-status");
   const submitBtn = document.getElementById("holdings-submit-btn");
   const assetSymbol = document.getElementById("holdings-asset-symbol").value.trim() || "CASH";
+  const platform = document.getElementById("holdings-platform").value;
   const transactionType = document.getElementById("holdings-transaction-type").value;
   const quantity = parseFloat(document.getElementById("holdings-quantity").value);
   const costBasisRaw = document.getElementById("holdings-cost-basis").value.trim();
@@ -2420,11 +2445,12 @@ document.getElementById("holdings-form").addEventListener("submit", async (event
   try {
     await apiPost("/holdings", {
       asset_symbol: assetSymbol, quantity, cost_basis_usd: costBasis,
-      purchased_at: purchasedAt, transaction_type: transactionType,
+      purchased_at: purchasedAt, transaction_type: transactionType, platform,
     });
     statusEl.textContent = "Recorded.";
     flashStatus(statusEl);
     document.getElementById("holdings-asset-symbol").value = "";
+    document.getElementById("holdings-platform").value = "";
     document.getElementById("holdings-quantity").value = "";
     document.getElementById("holdings-cost-basis").value = "";
     document.getElementById("holdings-purchased-at").value = "";
