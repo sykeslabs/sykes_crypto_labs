@@ -3767,3 +3767,39 @@ specific gap these audits identified is now fully closed.
 
 See [`decisions.md`](decisions.md) for the corresponding decision entry.
 
+## Phase 5v — A2 confirmed live-exercised; TODO sweep (2026-09-27)
+
+**Follow-up to Phase 5l, not a rewrite of it**: Phase 5l's own text
+(2026-09-17) said A2's cap-compliance-correction path (`app/risk/
+engine.py`'s `is_cap_compliance_correction`) was implemented and
+unit-/live-DB-verified but not yet exercised by a real production run.
+That text stands as written — a real record of what was true then.
+
+**Live-verified today**: it has since fired for real. Run
+`RUN-20260918-123050` (2026-09-18) gave BTC a raw **HOLD** decision (not
+WATCH/NO_TRADE) while its system target sat at 0.299 — above
+`MAX_SINGLE_ASSET_ALLOCATION` (0.15) — and the target was correctly
+reduced to exactly 0.15, persisted as `change_reason="risk_control"` on
+the real `portfolio_allocation_changes` row. This is precisely the A2
+condition (`decision not in ("WATCH","NO_TRADE")`, `previous_system_target
+> cap`, `final_allocation <= cap`), confirmed directly against the live
+`judge_decisions`/`portfolio_allocation_changes` tables, not inferred.
+`doc/todo.md`'s open item describing this as not-yet-exercised has been
+removed as resolved.
+
+**Same pass**: did a live re-check of every other open `doc/todo.md`
+item still time-sensitive enough to drift (embargo gap, evidence-value
+sample size, the `/calibration/summary` N+1 pattern's row count/latency,
+`market_snapshots`/`evidence_observations` row counts) and refreshed each
+figure to its current real value — see `doc/todo.md`'s own entries for
+the updated numbers. No item's *status* changed as a result except A2;
+the rest remain open, just with current figures instead of 2026-09-12/17
+ones. Structural/design-gap items not expected to drift on their own
+(replay universe point-in-time, `run_stress_test.py` reading target
+instead of real holdings, the reliability-diagram item) were spot-checked
+against the current code and confirmed still accurately open.
+
+See [`decisions.md`](decisions.md)'s A2 entry for the original design
+analysis — unchanged, this is a live-exercise confirmation, not a policy
+revision.
+

@@ -1,484 +1,1379 @@
-Act as a **senior AI/ML engineer, quantitative researcher, crypto analyst, software architect, and critical code reviewer** performing a rigorous assessment of this AI crypto portfolio.
+Act as a **senior quantitative researcher, AI/ML researcher, crypto systematic-trading researcher, portfolio/risk specialist, software architect, and extremely skeptical code reviewer**.
 
-Your job is **not primarily to improve the UX**. Your primary objective is to determine whether the underlying **investment logic, data, AI approaches, modelling assumptions, signals, portfolio construction, backtesting methodology, and technical architecture are actually sound**.
+You are reviewing the **current state** of the `sykes_crypto_labs` AI crypto portfolio system.
 
-Be skeptical. Do not assume that something is good simply because it uses AI, machine learning, LLMs, RAG, multiple indicators, or sophisticated terminology.
+Your primary question is no longer:
 
----
+> "Is the software technically reliable?"
 
-# 1. Challenge the overall concept
+A substantial reliability and data-integrity review has already been completed and its identified issues have been implemented and validated.
 
-Determine whether the fundamental approach makes sense.
+Your primary question is now:
 
-Assess:
+> **Does the underlying investment system have credible evidence of predictive and economic value, or is it primarily a sophisticated decision pipeline that has not yet demonstrated an actual edge?**
 
-* What is the portfolio actually trying to predict or optimize?
-* Is the prediction target well defined?
-* Is there a genuine information advantage?
-* Which parts are theoretically plausible and which are questionable?
-* Is AI actually useful here, or is it being used where conventional quantitative methods would be better?
-* Are we solving a prediction problem, ranking problem, portfolio-construction problem, or several problems mixed together?
-* Is the system unnecessarily complex?
-* Which components are likely to add signal and which are likely to add noise?
+Think like someone deciding whether to allocate **CHF 100,000 of their own capital** to this strategy.
 
-Explicitly identify **AI/ML components that should potentially be removed** because they do not provide sufficient value.
+Do not reward complexity.
 
----
+Do not reward AI usage.
 
-# 2. Critically assess the quantitative approaches
+Do not reward impressive terminology.
 
-Review all indicators, signals, scores, predictions, rankings, heuristics and decision rules.
+Do not assume a component contributes signal merely because it produces a prediction, score, confidence value, explanation, or sophisticated-looking output.
 
-Look for:
-
-* Overfitting
-* Data leakage
-* Look-ahead bias
-* Survivorship bias
-* Selection bias
-* Regime dependence
-* Non-stationarity
-* Spurious correlations
-* Feature redundancy
-* Multicollinearity
-* Excessive parameter tuning
-* Arbitrary thresholds
-* Arbitrary weighting
-* Double-counting the same information
-* Correlation between supposedly independent signals
-* Poorly defined labels
-* Inappropriate evaluation metrics
-* Insufficient sample sizes
-* Crypto-specific market structure problems
-
-For every major approach, classify it as:
-
-**KEEP / MODIFY / QUESTION / REMOVE**
-
-and explain why.
+Your job is to determine what the evidence actually supports.
 
 ---
 
-# 3. Evaluate the AI/ML models specifically
+# 0. IMPORTANT: START FROM THE CURRENT PROJECT STATE
 
-For every AI/ML model or AI-driven component, answer:
+Before reviewing anything:
 
-1. What problem is it solving?
-2. Why is ML/AI appropriate for that problem?
-3. What simpler baseline should it beat?
-4. What evidence demonstrates that it actually beats that baseline?
-5. Could the observed performance simply be overfitting?
-6. How should it be validated?
-7. What would convince you that the model has genuine predictive value?
+1. Inspect the repository structure.
+2. Read the existing documentation.
+3. Read the current `TODO` section.
+4. Read relevant architecture/history/decision documentation.
+5. Inspect the current implementation rather than relying on documentation alone.
+6. Inspect the current tests.
+7. Inspect the actual persisted data and evaluation outputs available to the project.
+8. Understand the complete production pipeline from data ingestion through portfolio construction and evaluation.
+9. Identify the current implementation/version of each major component.
+10. Establish which previous findings have already been fixed and validated.
 
-Compare sophisticated approaches against appropriate baselines such as:
+Do **not** assume that the previous review's conclusions are still correct.
 
-* Buy & hold
-* BTC/ETH benchmark
-* Market-cap weighting
-* Simple momentum
-* Moving-average strategies
-* Cross-sectional momentum
-* Mean reversion
-* Logistic regression
-* Linear models
-* Random forest / gradient boosting
-* Simple factor models
-
-Do not recommend a more sophisticated model unless there is a clear empirical reason for it.
+Verify the current code.
 
 ---
 
-# 4. Examine the data strategy
+# 0.1 PREVIOUSLY CLOSED ISSUES — DO NOT REOPEN WITHOUT EVIDENCE
 
-Critically assess all data sources and features.
+The following areas have already undergone dedicated forensic review and implementation.
 
-Review:
+Treat them as **closed unless your current inspection discovers a regression or a new interaction that materially affects them**:
 
-* Price data
-* Volume
-* Volatility
-* Technical indicators
-* On-chain data
-* Funding rates
-* Open interest
-* Liquidations
-* Market sentiment
-* News
-* Social media
-* LLM-generated signals
-* External APIs
+### Risk / portfolio controls
 
-Determine:
+* `MAX_SINGLE_ASSET_ALLOCATION` bypass through WATCH / NO_TRADE.
+* A1 cap enforcement.
+* A2 interaction between cap corrections and weekly strategy turnover.
+* Separation of `strategy` versus `risk_control` turnover.
+* Preservation of actual holdings versus target allocation.
+* `actual_allocation_before` observability.
 
-* Which data is genuinely useful?
-* Which data is redundant?
-* Which data is noisy?
-* Which data has questionable quality?
-* Which data would have been unavailable at the exact prediction timestamp?
-* Are timestamps aligned correctly?
-* Could API updates/revisions introduce leakage?
-* Are missing values handled correctly?
-* Are assets entering/leaving the universe handled correctly?
+### Judge idempotency / duplicate decisions
 
-Pay particular attention to whether information from the future can accidentally enter training or decision-making.
+* Same-day duplicate live Judge decisions.
+* B1 same-day duplicate prevention.
+* B2 historical duplicate-group exclusion from production calibration.
+* Preservation of raw historical duplicate rows for forensic purposes.
+* Cost accounting of raw duplicate Judge rows.
 
----
+### Historical-data integrity
 
-# 5. Examine portfolio construction
+* Historical-series timestamp fallback safety.
+* Strict `<= decision_timestamp` historical lookup.
+* Historical OHLCV pagination beyond the Binance/API 1,000-row page limitation.
+* Held-symbol rescue when assets fall outside the CoinGecko top-65 universe.
 
-Do not stop at predicting prices.
+### JudgeDecision pagination
 
-Assess how predictions are translated into actual portfolio decisions.
+* Repository pagination.
+* Unlimited retrieval.
+* Raw JudgeDecision consumer migration.
+* Deterministic ordering.
 
-Review:
+### DecisionOutcome pagination
 
-* Asset selection
-* Position sizing
-* Weighting
-* Buy/sell thresholds
-* Rebalancing
-* Cash/stablecoin allocation
-* Risk limits
-* Maximum position size
-* Volatility adjustment
-* Correlation adjustment
-* Drawdown controls
-* Stop-loss logic
-* Trading frequency
-* Transaction costs
-* Slippage
-* Liquidity
-* Concentration risk
+* Repository pagination.
+* Unlimited retrieval.
+* All script consumers migrated.
+* Calibration consumers migrated.
+* Evidence ranking ordering.
+* Reasoning audit retrieval.
+* `/calibration/summary` final 2,000-row ceiling.
+* `/calibration/outcomes/recent` intentional caller-supplied bounds.
 
-Determine whether a model with good predictive accuracy could nevertheless produce a **bad portfolio**.
+The final migration state has been validated with a **704-test suite**, including a meaningful >2,000-row regression test for the final endpoint defect.
+
+Do not spend the review rediscovering these issues.
+
+If you find a regression, interaction, or previously overlooked consequence, document it precisely.
+
+Otherwise treat them as established infrastructure.
 
 ---
 
-# 6. Evaluate backtesting rigor
+# 1. THE CENTRAL QUESTION
 
-Treat the backtest as potentially guilty until proven innocent.
+Determine whether the system has demonstrated a **real, economically meaningful edge**.
 
-Look for:
+Separate these questions:
 
-* Look-ahead bias
-* Leakage
-* Survivorship bias
-* Data snooping
-* Multiple-testing problems
-* Unrealistic execution
-* Missing fees
-* Missing slippage
-* Unrealistic liquidity assumptions
-* Unrealistic fills
-* Rebalancing assumptions
-* Incorrect treatment of delisted tokens
-* Parameter optimization on the test set
+### Q1 — Does the system predict anything?
 
-Require proper separation of:
+Does it produce predictions that contain information about future outcomes?
 
-**training → validation → test → genuinely out-of-sample / forward testing**
+### Q2 — Are the predictions calibrated?
 
-If the current methodology does not provide convincing evidence of out-of-sample performance, say so explicitly.
+Are probabilities/confidence scores meaningful?
 
----
+### Q3 — Do the predictions rank assets correctly?
 
-# 7. Analyze the reported metrics
+Does higher conviction correspond to better future outcomes?
 
-Critically assess metrics such as:
+### Q4 — Does the ranking survive portfolio construction?
 
-* Sharpe ratio
-* Sortino ratio
-* Maximum drawdown
-* CAGR
-* Win rate
-* Profit factor
-* Calmar ratio
-* Brier score
-* Precision/recall
-* Prediction accuracy
-* Calibration
+Can the system convert predictive information into useful positions?
 
-Explain which metrics are meaningful for this particular system and which could be misleading.
+### Q5 — Does the portfolio generate economically meaningful returns?
 
-A high Sharpe ratio should **never automatically be interpreted as evidence that the strategy works**.
+After transaction costs, slippage, turnover and realistic execution?
 
-Investigate whether the reported performance could realistically survive:
+### Q6 — Does the edge survive comparison with simple strategies?
 
-* Transaction costs
-* Slippage
-* Changing market regimes
-* Parameter changes
-* Unseen assets
-* Unseen time periods
+This is critical.
+
+### Q7 — Does the edge survive genuinely out-of-sample testing?
+
+This is even more critical.
+
+### Q8 — Is the apparent edge attributable to the AI/LLM components?
+
+Or would a substantially simpler system perform similarly?
+
+Do not conflate these questions.
+
+A strategy can have:
+
+* predictive signal but poor portfolio construction;
+* good ranking but no economic alpha;
+* high apparent Sharpe caused by overfitting;
+* good backtest performance but no genuine out-of-sample evidence;
+* useful news information but no need for an LLM;
+* useful quantitative signals while the AI components add no measurable value.
+
+Identify which situation actually applies.
 
 ---
 
-# 8. Evaluate the LLM / agent architecture
+# 2. RECONSTRUCT THE COMPLETE DECISION PIPELINE
 
-Critically evaluate any use of:
+Trace one complete decision from raw data to portfolio state.
 
-* OpenRouter
-* LLMs
-* Grok/xAI
-* RAG
-* News analysis
-* Sentiment analysis
-* Autonomous agents
-* MCP
-* Tool-calling
-* LLM-generated trading decisions
+Document the actual sequence:
 
-Ask whether the LLM is being used for a task where it has a genuine advantage.
+```text
+market / external data
+        ↓
+universe selection
+        ↓
+screening
+        ↓
+feature / indicator generation
+        ↓
+news / external information
+        ↓
+LLM research
+        ↓
+assessment / adversarial analysis
+        ↓
+Judge
+        ↓
+Risk Engine
+        ↓
+correlation / portfolio constraints
+        ↓
+turnover control
+        ↓
+portfolio construction
+        ↓
+execution-cost model
+        ↓
+outcome evaluation
+        ↓
+calibration / alpha / performance analysis
+```
 
-Separate:
+Do not assume this diagram is correct.
 
-**structured quantitative information**
+Derive the real pipeline from code.
 
-from
+For every stage identify:
 
-**unstructured information that an LLM may reasonably interpret.**
+* input;
+* output;
+* timestamp;
+* data availability;
+* deterministic versus stochastic behavior;
+* model/version;
+* parameters;
+* persistence;
+* downstream consumers;
+* potential leakage;
+* potential double-counting.
 
-Do not treat an LLM's confidence or reasoning as evidence of predictive accuracy.
+Then answer:
 
-Identify where deterministic rules or conventional ML would be superior.
+> **Where in this pipeline is the system actually expected to obtain an investment edge?**
 
----
-
-# 9. Assess the software and architecture
-
-Review the technical architecture as an AI/quant system.
-
-Look for:
-
-* Poor separation of data ingestion, feature engineering, modelling and portfolio construction
-* Reproducibility problems
-* Hidden state
-* Hard-coded parameters
-* Difficult-to-test components
-* Weak experiment tracking
-* Lack of model/version tracking
-* Lack of data versioning
-* Poor error handling
-* API dependency risks
-* Rate-limit problems
-* Missing caching
-* Insufficient observability
-* Inability to reproduce historical decisions
-
-Recommend architectural changes only where they materially improve reliability, research quality, or maintainability.
-
----
-
-# 10. Actively search for false confidence
-
-Identify anything that **looks impressive but may not actually provide predictive value**.
-
-Examples:
-
-* Sophisticated AI terminology without measurable benefit
-* Too many indicators
-* Too many models
-* High backtest Sharpe
-* Complex ensemble scoring
-* LLM explanations that sound convincing
-* Sentiment scores without demonstrated predictive power
-* Arbitrary confidence scores
-* Very precise predictions from noisy data
-* Large numbers of features relative to observations
-
-For each, explain why it may create false confidence.
+If there is no clear answer, identify that as a fundamental problem.
 
 ---
 
-# 11. Propose experiments, not just opinions
+# 3. DEFINE THE ACTUAL PREDICTION TARGET
 
-For every major criticism, propose a concrete experiment that could prove or disprove the hypothesis.
+Determine precisely what the system is predicting.
 
-Examples:
+Do not accept vague descriptions such as:
 
-* Remove the LLM and compare performance.
-* Remove sentiment data.
-* Replace the ML model with logistic regression.
-* Replace the ensemble with a simple momentum strategy.
-* Shuffle a feature and measure performance degradation.
-* Perform walk-forward validation.
-* Test completely unseen assets.
-* Test different market regimes.
-* Run a transaction-cost sensitivity analysis.
-* Compare against BTC buy-and-hold.
-* Compare against a simple equal-weight portfolio.
+* "market direction";
+* "asset quality";
+* "future performance";
+* "investment opportunity".
 
-Prioritize experiments by:
+Find the actual target mathematically.
 
-**Expected information value × implementation effort**
+For each major prediction/decision determine:
+
+* prediction horizon;
+* target variable;
+* label definition;
+* return definition;
+* benchmark;
+* threshold;
+* treatment of costs;
+* treatment of unresolved outcomes;
+* treatment of missing prices;
+* treatment of delisted/dead assets;
+* treatment of stablecoins;
+* treatment of cash;
+* treatment of HOLD / WATCH / NO_TRADE;
+* whether the target is directional, ordinal, continuous, probabilistic, or portfolio-relative.
+
+If different components use different implicit targets, document the mismatch.
+
+Then answer:
+
+> **Is the system optimizing one coherent objective or combining several objectives without a clearly defined hierarchy?**
 
 ---
 
-# 12. TODO SECTION — REQUIRED
+# 4. INFORMATION ADVANTAGE
 
-The project's existing **`TODO` section is the central action list for this review.**
+For every major input, ask:
 
-Every **actionable improvement, experiment, investigation, bug, architectural change, modelling change, data-quality issue, risk-control improvement, or UX improvement** that you identify should be added to the `TODO` section.
+> Why should this information allow the system to predict future crypto returns better than the market?
 
-Do **not** merely describe recommendations in your final assessment. **Actually add them to the project's TODO section.**
+Classify every information source as:
 
-## Rules for TODO entries
+* **Potentially predictive**
+* **Potentially useful but unproven**
+* **Likely redundant**
+* **Likely noisy**
+* **Likely too delayed**
+* **Potential leakage risk**
+* **No demonstrated value**
 
-Each TODO item must:
+Review at minimum:
 
-* Be concrete and actionable.
-* Describe what should actually be changed or investigated.
-* Be specific enough that another AI agent or developer can implement it.
-* Avoid vague entries such as "improve AI" or "improve performance".
-* Explain the reason when it is not obvious.
-* Prefer measurable outcomes where possible.
-* Avoid duplicating an existing TODO.
-* Update an existing TODO rather than creating a duplicate if the same task already exists.
+* OHLCV;
+* momentum;
+* volatility;
+* technical indicators;
+* market-cap data;
+* universe selection;
+* funding;
+* open interest;
+* liquidations;
+* on-chain data;
+* macro data;
+* sentiment;
+* news;
+* social signals;
+* LLM interpretations;
+* external model outputs.
 
-Use categories where appropriate:
+Do not merely state that a feature "could be useful."
 
-* **CRITICAL** — potential invalidation of results, serious methodology issue, data leakage, security/risk issue
-* **HIGH** — major improvement to validity, reliability or investment quality
-* **MEDIUM** — meaningful improvement but not blocking
-* **LOW** — useful refinement
-* **UX** — interface/usability improvement
+Ask whether the project has actually demonstrated that it is useful.
 
-For quantitative and AI-related items, include the relevant validation criterion whenever possible.
+---
+
+# 5. SIGNAL DECOMPOSITION
+
+Determine what the strategy is actually driven by.
+
+Decompose the final decision into its major information sources.
 
 For example:
 
-> **[CRITICAL][Quant] Implement walk-forward validation to eliminate potential look-ahead bias and report out-of-sample Sharpe, max drawdown and CAGR.**
+```text
+quantitative market information
+news
+LLM research
+assessment
+adversarial reasoning
+Judge
+risk constraints
+portfolio state
+```
 
-Instead of:
+Determine whether the final decision is primarily driven by:
 
-> Improve backtesting.
+* price momentum;
+* technical indicators;
+* market regime;
+* news;
+* LLM reasoning;
+* historical portfolio state;
+* risk constraints;
+* heuristics;
+* arbitrary thresholds.
 
-## TODO prioritization
+Identify where multiple components are effectively expressing the same information.
 
-Order TODO items by **impact and importance**, not simply by how easy they are to implement.
+Explicitly look for:
 
-The priority should generally be:
+### Double counting
 
-1. Issues that could invalidate current results
-2. Data leakage / methodological problems
-3. Backtesting and validation weaknesses
-4. Incorrect modelling assumptions
-5. Portfolio/risk problems
-6. Data-quality problems
-7. Architecture/reliability improvements
-8. Model improvements
-9. UX improvements
-10. Cosmetic changes
+Example:
 
-**Do not add new AI complexity to the TODO merely because it sounds interesting.**
+```text
+price momentum
+→ technical score
+→ LLM sees momentum
+→ Judge sees technical score
+→ final score
+```
 
-If the best recommendation is to simplify or remove something, create a TODO for removing it.
+This may look like multiple independent signals while actually being one signal repeatedly transformed.
+
+Identify all such cases.
+
+---
+
+# 6. AI / ML VALUE AUDIT
+
+For **every AI/ML component**, answer:
+
+1. What exact problem does it solve?
+2. What is the baseline?
+3. Why should AI outperform that baseline?
+4. What empirical evidence currently exists?
+5. What sample size supports the conclusion?
+6. Is the evaluation genuinely out-of-sample?
+7. What would falsify the hypothesis?
+8. What is the simplest replacement?
+9. Does the component justify its complexity and cost?
+
+Explicitly inspect:
+
+* classical ML;
+* neural networks;
+* LLM research;
+* LLM sentiment;
+* LLM assessment;
+* adversarial LLM analysis;
+* Judge;
+* ensemble logic;
+* RAG;
+* tool calling;
+* multi-agent architecture;
+* provider diversity.
+
+For each classify:
+
+**KEEP / MODIFY / QUESTION / REMOVE**
+
+But these classifications must be evidence-based.
+
+---
+
+# 7. LLM ABLATION IS MANDATORY
+
+Treat the LLM architecture as an experimental hypothesis.
+
+Determine whether the project currently has enough data to compare:
+
+### A — Full system
+
+Current production architecture.
+
+### B — No LLM
+
+Remove all LLM-generated information while keeping everything else possible constant.
+
+### C — Quantitative-only
+
+Use deterministic quantitative signals and conventional rules/models.
+
+### D — Simplified LLM
+
+One LLM call with a minimal structured task rather than multiple reasoning stages.
+
+### E — News-only LLM
+
+Test whether the value comes specifically from interpreting unstructured news.
+
+Do not implement all experiments automatically.
+
+First determine whether the existing data permits valid experiments.
+
+For each experiment specify:
+
+* population;
+* time period;
+* training/validation/test split;
+* decision horizon;
+* target;
+* metrics;
+* costs;
+* statistical test;
+* success criterion.
+
+---
+
+# 8. BASELINE STRATEGIES
+
+The current system must be compared with simple alternatives.
+
+Determine whether the project currently contains valid comparisons against:
+
+### Market baselines
+
+* BTC buy-and-hold;
+* ETH buy-and-hold;
+* BTC/ETH benchmark;
+* market-cap-weighted crypto portfolio.
+
+### Simple systematic strategies
+
+* buy-and-hold;
+* momentum;
+* cross-sectional momentum;
+* moving-average strategy;
+* volatility targeting;
+* equal-weight;
+* risk-weighted portfolio;
+* simple trend following.
+
+### Model baselines
+
+* logistic regression;
+* linear regression where appropriate;
+* random forest;
+* gradient boosting;
+* simple factor model.
+
+Do not add every baseline merely for completeness.
+
+Identify the **minimum set of baselines necessary to determine whether the current system adds value**.
+
+---
+
+# 9. ABLATION OF INFORMATION SOURCES
+
+Determine whether the project can perform controlled ablations of:
+
+* technical indicators;
+* momentum;
+* volatility;
+* news;
+* sentiment;
+* on-chain data;
+* derivatives data;
+* LLM research;
+* adversarial analysis;
+* Judge;
+* individual providers.
+
+For each available ablation, determine whether removing the component changes:
+
+* predictive accuracy;
+* Brier score;
+* calibration;
+* ranking quality;
+* realized return;
+* alpha;
+* Sharpe;
+* drawdown;
+* turnover;
+* transaction costs.
+
+A component that increases complexity but does not improve economically relevant metrics should be questioned or removed.
+
+---
+
+# 10. STATISTICAL VALIDITY
+
+Be extremely skeptical of small samples.
+
+For every important reported result determine:
+
+* N;
+* number of independent observations;
+* number of assets;
+* number of decisions;
+* number of resolved outcomes;
+* number of BUY/SELL observations;
+* number of market regimes;
+* confidence interval;
+* statistical significance where appropriate;
+* multiple-testing exposure;
+* dependency between observations.
+
+Distinguish:
+
+```text
+number of rows
+```
+
+from:
+
+```text
+number of independent observations
+```
+
+This distinction is essential.
+
+A strategy with 1,000 correlated daily observations does not necessarily have 1,000 independent pieces of evidence.
+
+Explicitly investigate autocorrelation and cross-sectional dependence where relevant.
+
+---
+
+# 11. CALIBRATION
+
+Critically assess:
+
+* Brier score;
+* hit rate;
+* probability calibration;
+* reliability curves;
+* confidence distributions;
+* directional accuracy.
+
+Determine whether the probabilities actually correspond to observed frequencies.
+
+Ask:
+
+> If the model says 70% probability, does the event actually happen approximately 70% of the time?
+
+Also determine whether calibration is being measured on:
+
+* training data;
+* validation data;
+* test data;
+* production forward data;
+* mixed populations.
+
+Do not treat a good Brier score on a tiny or selected sample as convincing evidence.
+
+---
+
+# 12. PORTFOLIO-CONSTRUCTION VALIDITY
+
+Determine whether predictive information survives translation into positions.
+
+Trace examples of:
+
+```text
+prediction
+→ confidence
+→ decision
+→ risk adjustment
+→ target allocation
+→ turnover constraint
+→ final allocation
+```
+
+Look for situations where:
+
+* a strong signal is neutralized by portfolio constraints;
+* a weak signal produces a large position;
+* turnover constraints dominate the model;
+* correlation adjustments dominate the model;
+* cash allocation hides poor predictions;
+* risk controls create apparent alpha;
+* the final portfolio is mostly a consequence of deterministic rules rather than prediction.
+
+Quantify where possible:
+
+> **How much of observed portfolio behavior is attributable to prediction versus risk/portfolio rules?**
+
+---
+
+# 13. RISK-CONTROL ATTRIBUTION
+
+This is particularly important because A1/A2 have now been implemented.
+
+Determine separately:
+
+### Strategy-driven movement
+
+Allocation changes caused by investment decisions.
+
+### Risk-control movement
+
+Allocation changes caused by hard portfolio constraints.
+
+Do not attribute risk-control behavior to predictive skill.
+
+Investigate:
+
+* turnover;
+* concentration;
+* cap corrections;
+* correlation controls;
+* cash;
+* forced reductions;
+* execution costs.
+
+Determine how much performance comes from:
+
+1. alpha;
+2. beta/market exposure;
+3. risk controls;
+4. timing;
+5. portfolio construction;
+6. randomness.
+
+---
+
+# 14. BACKTEST / REPLAY METHODOLOGY
+
+Audit the entire evaluation framework.
+
+Verify:
+
+### Temporal integrity
+
+At simulated timestamp T, every input must have existed at or before T.
+
+### Universe integrity
+
+Determine whether the historical universe is realistic.
+
+Look specifically for:
+
+* survivorship bias;
+* current top-65 applied historically;
+* assets that did not yet exist;
+* dead/delisted assets;
+* historical market-cap availability;
+* universe entry/exit timing.
+
+### Model fitting
+
+Determine exactly where parameters/models are fitted.
+
+Verify separation:
+
+```text
+training
+→ validation
+→ test
+→ forward / production
+```
+
+Look for hidden tuning on the evaluation period.
+
+### Replay determinism
+
+Determine whether replaying the same historical decision produces the same result.
+
+If not, identify all sources of non-determinism:
+
+* LLM responses;
+* external APIs;
+* market data revisions;
+* random seeds;
+* provider differences;
+* timestamps;
+* database state.
+
+---
+
+# 15. LLM NON-DETERMINISM
+
+The current system uses external LLM providers.
+
+Determine:
+
+* whether prompts are versioned;
+* model versions are recorded;
+* provider is recorded;
+* temperature/settings are recorded;
+* raw responses are persisted;
+* research evidence is persisted;
+* decisions can be reconstructed;
+* provider failures/retries alter results;
+* identical historical runs can produce different decisions.
+
+Then distinguish:
+
+### Reproducibility
+
+Can we reconstruct what happened?
+
+from:
+
+### Determinism
+
+Would we get the same answer again?
+
+These are different.
+
+Determine whether the system requires either one for credible research.
+
+---
+
+# 16. ECONOMIC VALIDITY
+
+This is the most important section.
+
+Calculate or inspect evidence for:
+
+* gross return;
+* net return;
+* transaction costs;
+* slippage;
+* turnover;
+* maximum drawdown;
+* CAGR;
+* Sharpe;
+* Sortino;
+* Calmar;
+* alpha;
+* beta;
+* exposure;
+* hit rate;
+* profit factor.
+
+Then ask:
+
+> Would the strategy still look attractive if its estimated edge were reduced substantially?
+
+Perform sensitivity where possible:
+
+* 2× transaction costs;
+* 3× transaction costs;
+* worse slippage;
+* delayed execution;
+* one-period execution delay;
+* reduced signal strength;
+* different thresholds.
+
+Do not claim robustness without evidence.
+
+---
+
+# 17. REGIME ROBUSTNESS
+
+Break results into meaningful market regimes.
+
+At minimum investigate:
+
+* bull;
+* bear;
+* sideways;
+* high-volatility;
+* low-volatility;
+* major crash periods;
+* major recovery periods.
+
+Determine whether performance is concentrated in one narrow historical regime.
+
+A strategy that only works in one regime should not be described as generally robust.
+
+---
+
+# 18. CROSS-ASSET GENERALIZATION
+
+Determine whether the system works across:
+
+* BTC;
+* large caps;
+* mid caps;
+* small caps;
+* different sectors/narratives;
+* newly introduced assets;
+* assets not used during development.
+
+Look for evidence that the strategy is exploiting a generalizable pattern rather than memorizing specific assets.
+
+If possible, propose:
+
+### Leave-one-asset-out testing
+
+and/or
+
+### Completely unseen asset testing.
+
+---
+
+# 19. MULTIPLE TESTING AND RESEARCHER DEGREES OF FREEDOM
+
+Audit the development history and current configuration for evidence of repeated tuning.
+
+Look for:
+
+* repeated threshold changes;
+* weighting changes;
+* model changes;
+* feature selection;
+* prompt changes;
+* universe changes;
+* risk-limit changes;
+* evaluation-window changes;
+* repeated experiments where only successful versions were retained.
+
+Ask:
+
+> How many implicit hypotheses have effectively been tested?
+
+A high-performing final configuration after many iterations is not equivalent to a pre-specified hypothesis.
+
+If possible, reconstruct the research degrees of freedom.
+
+---
+
+# 20. COST OF COMPLEXITY
+
+Estimate the practical cost of the architecture:
+
+* LLM API cost;
+* latency;
+* operational complexity;
+* provider dependency;
+* debugging effort;
+* reproducibility burden;
+* maintenance;
+* data dependencies.
+
+Then ask:
+
+> What measurable investment benefit justifies this complexity?
+
+If a simple deterministic strategy could produce similar results, explicitly recommend simplification.
+
+---
+
+# 21. FALSE CONFIDENCE AUDIT
+
+Actively identify components that may make the system look more sophisticated than it actually is.
 
 Examples:
 
-> **[HIGH][AI] Benchmark the current ensemble against logistic regression and gradient boosting; retain the complex model only if it demonstrates statistically meaningful out-of-sample improvement.**
+* multiple LLM agents;
+* adversarial reasoning;
+* confidence scores;
+* precise probabilities;
+* ensemble scores;
+* large feature sets;
+* complex architecture diagrams;
+* high Sharpe;
+* large numbers of observations;
+* many indicators;
+* sophisticated terminology.
 
-> **[HIGH][AI] Run an ablation study removing LLM sentiment signals and compare risk-adjusted out-of-sample performance.**
+For each determine:
 
-> **[CRITICAL][Backtest] Audit all feature timestamps and ensure every feature available to the model existed at the exact simulated decision timestamp.**
+1. What does it actually add?
+2. What evidence supports that claim?
+3. What simpler alternative exists?
+4. What experiment would falsify its usefulness?
 
-> **[HIGH][Portfolio] Add transaction costs and realistic slippage to the backtester and rerun all historical evaluations.**
+---
 
-## TODO maintenance
+# 22. FIND THE SIMPLEST SYSTEM THAT COULD WORK
+
+After analyzing the current architecture, design a hypothetical minimal system.
+
+It should contain only components that have demonstrated value.
+
+For example:
+
+```text
+clean market data
+→ simple predictive features
+→ validated model
+→ portfolio construction
+→ risk controls
+→ realistic execution
+→ forward evaluation
+```
+
+Do not assume this exact architecture is correct.
+
+Derive the minimum architecture from the evidence.
+
+Then compare:
+
+### Current system
+
+versus
+
+### Evidence-based minimal system
+
+Identify every component that the current architecture contains that the minimal system does not require.
+
+---
+
+# 23. REQUIRED EXPERIMENT PROGRAM
+
+Do not merely produce recommendations.
+
+Construct a prioritized research program.
+
+For every proposed experiment provide:
+
+* hypothesis;
+* baseline;
+* treatment;
+* data;
+* period;
+* metric;
+* statistical method;
+* success criterion;
+* expected information value;
+* implementation effort.
+
+Prioritize by:
+
+**Expected information value × implementation feasibility**
+
+The highest priority experiments should answer:
+
+> **Does the strategy actually have an edge?**
+
+before experiments that merely make the system more sophisticated.
+
+---
+
+# 24. TODO — CENTRAL ACTION LIST
+
+The project's existing TODO is the canonical action list.
 
 Before adding anything:
 
-1. Read the existing TODO section.
-2. Understand the existing tasks.
-3. Identify duplicates or overlapping tasks.
-4. Update existing TODOs where appropriate.
-5. Add only genuinely new findings.
-6. Preserve useful existing TODO items unless your review proves they are obsolete or misguided.
-7. If an existing TODO is based on a flawed assumption, explicitly revise or remove it.
+1. Read the complete existing TODO.
+2. Understand each existing item.
+3. Identify duplicates.
+4. Identify obsolete items.
+5. Identify items whose assumptions have now been disproven.
+6. Update existing items rather than duplicating them.
+7. Add only genuinely new findings from this review.
 
-After completing the review, re-read the TODO section and ensure that **every major actionable recommendation from your assessment is represented there.**
+Every actionable finding must be represented in TODO.
 
----
+Use:
 
-# 13. Final assessment
+* `[CRITICAL]`
+* `[HIGH]`
+* `[MEDIUM]`
+* `[LOW]`
+* `[UX]`
 
-Finish the analysis with:
+Use domain tags where useful:
 
-### A. Overall assessment
+* `[Quant]`
+* `[AI]`
+* `[Backtest]`
+* `[Data]`
+* `[Portfolio]`
+* `[Risk]`
+* `[Architecture]`
+* `[LLM]`
+* `[Research]`
 
-Score the project from **0–100** for:
+Every quantitative TODO should include a validation criterion whenever possible.
 
-* Quantitative validity
-* AI/ML validity
-* Data quality
-* Backtesting rigor
-* Portfolio construction
-* Risk management
-* Software architecture
-* Practical usefulness
+Examples:
 
-### B. Biggest problems
+> **[CRITICAL][Backtest] Establish a genuinely untouched forward-test period and freeze all strategy parameters before evaluation. Success criterion: no parameter, threshold, prompt, feature or universe decision is changed using observations from the frozen evaluation period.**
 
-List the **10 most important weaknesses**, ranked by severity.
+> **[HIGH][AI] Run a controlled LLM ablation against the deterministic quantitative baseline using identical timestamps, universe, portfolio constraints and execution assumptions. Retain the LLM layer only if it produces statistically and economically meaningful improvement on unseen data.**
 
-### C. Strongest components
+> **[HIGH][Quant] Establish confidence intervals for strategy Sharpe and alpha and account for multiple testing and serial/cross-sectional dependence.**
 
-Identify what is genuinely good and worth keeping.
+Do not add TODO items simply because they sound sophisticated.
 
-### D. Remove
+If the evidence indicates that something should be removed, create a removal TODO.
 
-List components you would remove if you were responsible for the project.
+If the evidence indicates that a component is useful, do not create unnecessary work around it.
 
-### E. Improve
+After completing the review:
 
-List the highest-value improvements.
+### Re-read TODO.
 
-### F. Experiments
+Verify that every major actionable recommendation is represented.
 
-List the **5–10 experiments that should be performed before adding more complexity**.
+Report:
 
-### G. Recommended architecture
-
-Describe what the system should look like if rebuilt from first principles.
-
-### H. TODO verification
-
-Summarize:
-
-* Number of new TODOs added
-* Number of existing TODOs modified
-* Number of TODOs removed as obsolete
-* Number of critical/high-priority items
-* The **5 highest-priority TODOs**
-
-### I. Final verdict
-
-Answer directly:
-
-> **Would you trust this system with real money today?**
-
-If no, explain exactly what evidence is missing before you would trust it.
+* TODOs added;
+* TODOs modified;
+* TODOs removed;
+* TODOs explicitly closed as obsolete;
+* CRITICAL count;
+* HIGH count;
+* MEDIUM count;
+* LOW count;
+* top five TODOs.
 
 ---
 
-# Important review principles
+# 25. EVIDENCE CLASSIFICATION
 
-* Be intellectually honest rather than encouraging.
-* Prefer simple approaches that can be empirically validated.
-* Do not reward complexity.
-* Do not assume AI improves performance.
-* Distinguish prediction accuracy from investment performance.
-* Distinguish correlation from causation.
-* Distinguish backtest performance from genuine out-of-sample performance.
-* Explicitly call out unsupported assumptions.
-* Do not invent evidence that is not present in the project.
-* If information is missing, state exactly what is missing.
-* If something is good, say so — but explain why.
-* If something is fundamentally flawed, say so clearly.
-* **Do not add TODOs merely to make the project appear more sophisticated.**
-* **Prioritize proving whether the existing system works before adding new functionality.**
+Every major conclusion must be assigned one of:
 
-Think like someone deciding whether to allocate **CHF 100,000 of their own capital** to this system, not like a consultant trying to make the project look impressive.
+### VERIFIED
 
-Only after completing the critical technical/quantitative assessment should you provide UX recommendations. **UX is secondary to whether the underlying system deserves to exist in its current form.**
+Directly demonstrated by code, data, tests or reproducible analysis.
+
+### STRONGLY SUPPORTED
+
+Multiple pieces of evidence support the conclusion but some uncertainty remains.
+
+### PLAUSIBLE
+
+Technically/economically reasonable but not yet demonstrated.
+
+### UNVALIDATED
+
+Insufficient evidence currently exists.
+
+### CONTRADICTED
+
+Available evidence argues against the hypothesis.
+
+Do not turn "plausible" into "true".
+
+Do not turn "unvalidated" into "false".
+
+Do not turn a backtest into proof of future performance.
+
+---
+
+# 26. IMPORTANT: DO NOT INVENT EVIDENCE
+
+If the project does not contain enough evidence to answer something:
+
+Say exactly:
+
+> **Evidence unavailable in current project state.**
+
+Then specify:
+
+* what evidence is missing;
+* why it matters;
+* how it should be obtained.
+
+Do not estimate missing results.
+
+Do not fabricate statistical significance.
+
+Do not invent performance numbers.
+
+Do not assume a model works because its architecture is reasonable.
+
+---
+
+# 27. FINAL ASSESSMENT
+
+Do NOT use a 0–100 score.
+
+Numerical scores create false precision and encourage optimization toward arbitrary ratings.
+
+Instead provide an evidence-based status for each dimension:
+
+| Dimension              | Status         | Evidence | Main uncertainty |
+| ---------------------- | -------------- | -------- | ---------------- |
+| Quantitative validity  | VERIFIED / ... | ...      | ...              |
+| AI/ML validity         | ...            | ...      | ...              |
+| Data quality           | ...            | ...      | ...              |
+| Backtesting rigor      | ...            | ...      | ...              |
+| Portfolio construction | ...            | ...      | ...              |
+| Risk management        | ...            | ...      | ...              |
+| Software architecture  | ...            | ...      | ...              |
+| Practical usefulness   | ...            | ...      | ...              |
+
+---
+
+# 28. FINAL REPORT STRUCTURE
+
+The final report must contain:
+
+## A. Executive conclusion
+
+Answer:
+
+> **Does the current evidence demonstrate a genuine investment edge?**
+
+Use the evidence classification system.
+
+Do not hedge unnecessarily, but do not claim more than the evidence supports.
+
+---
+
+## B. Current system
+
+Describe what the system actually does today.
+
+Keep this factual and concise.
+
+---
+
+## C. Where the potential edge comes from
+
+Identify the specific mechanisms that could plausibly generate alpha.
+
+For each:
+
+* hypothesis;
+* evidence;
+* uncertainty.
+
+---
+
+## D. What is actually validated
+
+List components whose value is supported by evidence.
+
+---
+
+## E. What remains unvalidated
+
+This section is critical.
+
+List the major claims the project currently makes that are **not yet demonstrated**.
+
+---
+
+## F. Top 10 weaknesses
+
+Rank by **research/investment importance**, not implementation convenience.
+
+For each:
+
+* issue;
+* evidence;
+* consequence;
+* confidence;
+* experiment required.
+
+---
+
+## G. Components to KEEP / MODIFY / QUESTION / REMOVE
+
+Provide the classification for the major components.
+
+Do not rank components by preference.
+
+Base classification on evidence.
+
+---
+
+## H. Strongest components
+
+Identify what genuinely works well and why.
+
+Include technical infrastructure where it materially supports research validity.
+
+---
+
+## I. Simplification opportunities
+
+Identify components that could be removed without sacrificing demonstrated value.
+
+Prioritize simplification where evidence is absent.
+
+---
+
+## J. Highest-value experiments
+
+Provide the **5–10 experiments that should happen before adding significant new complexity**.
+
+Prioritize experiments that can answer whether the system actually works.
+
+---
+
+## K. Recommended research architecture
+
+Describe what the system should evolve toward based on the evidence.
+
+Do not add technology for its own sake.
+
+---
+
+## L. TODO verification
+
+Report:
+
+* new TODOs;
+* modified TODOs;
+* removed TODOs;
+* obsolete TODOs closed;
+* CRITICAL;
+* HIGH;
+* MEDIUM;
+* LOW;
+* five highest-priority TODOs.
+
+---
+
+## M. Evidence matrix
+
+Create a table:
+
+| Claim | Evidence | Status | What would prove/disprove it |
+| ----- | -------- | ------ | ---------------------------- |
+
+Include claims such as:
+
+* the strategy predicts returns;
+* LLMs add value;
+* news adds value;
+* the Judge adds value;
+* ensemble logic adds value;
+* risk controls improve risk-adjusted returns;
+* portfolio construction adds value;
+* the strategy beats simple baselines;
+* the strategy survives transaction costs;
+* the strategy generalizes to unseen periods/assets;
+* the strategy is robust across regimes.
+
+---
+
+## N. REAL-MONEY DECISION
+
+Answer exactly:
+
+> **Would the current evidence justify allocating CHF 100,000 of real capital to this system today?**
+
+Do not answer based on how impressive the software is.
+
+Base the answer exclusively on the evidence available in the project.
+
+If the evidence is insufficient, specify the exact evidence that is missing.
+
+---
+
+# 29. OPERATING RULES
+
+Throughout the review:
+
+* Inspect actual code.
+* Inspect actual data.
+* Inspect actual tests.
+* Inspect actual TODOs.
+* Prefer evidence over architecture diagrams.
+* Prefer experiments over opinions.
+* Prefer simple baselines over sophisticated assumptions.
+* Treat backtests as hypotheses, not proof.
+* Treat LLM reasoning as unvalidated unless empirically demonstrated.
+* Separate predictive accuracy from portfolio performance.
+* Separate portfolio performance from risk-control effects.
+* Separate statistical significance from economic significance.
+* Separate reproducibility from determinism.
+* Separate historical replay from genuinely out-of-sample forward testing.
+* Distinguish independent observations from correlated rows.
+* Explicitly account for multiple testing.
+* Do not add complexity merely because it is technically interesting.
+* Do not change production behavior merely to make the review easier.
+* Do not refactor unrelated code.
+* Do not modify the strategy while evaluating it unless the experiment explicitly requires a controlled variant.
+* Preserve the current production implementation while establishing the baseline.
+* Make experiments reproducible.
+* Record exact parameters and populations for experiments.
+* Keep documentation synchronized with conclusions.
+
+---
+
+# 30. SCOPE CONTROL
+
+This is primarily a **research and investment-validity review**, not a general software cleanup.
+
+Do not spend substantial effort on:
+
+* UI polish;
+* cosmetic refactoring;
+* naming;
+* formatting;
+* minor code style;
+* non-material architecture improvements.
+
+Only recommend such changes if they materially affect:
+
+* research validity;
+* reproducibility;
+* investment performance;
+* risk;
+* maintainability of the research system.
+
+The highest priority is:
+
+> **Prove whether the existing system has an edge before making it more sophisticated.**
+
+Do not optimize the system before determining whether there is anything worth optimizing.
+
+---
+
+# 31. IMPLEMENTATION POLICY
+
+This review is primarily an **assessment and experiment-design exercise**.
+
+Do not automatically implement major strategy changes during the review.
+
+You MAY make small, non-behavioral changes required to:
+
+* add TODO entries;
+* add documentation;
+* add read-only audit scripts;
+* expose existing data for analysis;
+* create isolated experiment infrastructure where clearly necessary.
+
+You MUST NOT silently modify:
+
+* production signals;
+* model parameters;
+* portfolio rules;
+* risk limits;
+* evaluation methodology;
+* prompts;
+* universe definitions;
+
+merely because you believe they should be different.
+
+If a change is recommended, document it as a controlled experiment or TODO.
+
+---
+
+# 32. REQUIRED COMPLETION CHECK
+
+Before finishing:
+
+1. Re-read the TODO section.
+2. Verify every major actionable finding is represented.
+3. Verify no duplicate TODOs were created.
+4. Verify previously closed infrastructure issues were not unnecessarily reopened.
+5. Verify all major conclusions have an evidence classification.
+6. Verify all performance claims identify their population and period.
+7. Verify no current-vs-historical population is being conflated.
+8. Verify no backtest result is presented as proof of future performance.
+9. Verify all AI/LLM claims distinguish plausible usefulness from demonstrated usefulness.
+10. Verify the strongest conclusions are supported directly by code/data/evaluation evidence.
+11. Report exactly what remains unknown.
+12. Report the five highest-value experiments.
+13. Report the five highest-priority TODOs.
+14. Provide the final real-money evidence assessment.
+
+The standard is not:
+
+> "Does this look like an advanced AI trading system?"
+
+The standard is:
+
+> **"What evidence would convince a skeptical quantitative investor that this system has a repeatable, economically meaningful edge — and does the current project actually provide that evidence?"**

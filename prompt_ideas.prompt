@@ -1,21 +1,8 @@
-see zzzz.prompt
-
------------
-
-low hanging:
-- update the doc. ensure that all the done todos are recorded as decisions in the documentation, so that we can remove the todos in the ui that are in status=done. also, show all the implementation phases and ensure that the decisions are linked to these phases so that the devleopment history is clear.
-
----
-
-- 2026-09-19T08:58:36Z | WARNING  | run=RUN-20260919-085136 | crypto_ai_portfolio.llm | gemini (google/gemini-2.5-pro) returned invalid structured output, retrying once: Provider error: {'code': 504, 'message': 'Upstream idle timeout exceeded', 'metadata': {'error_type': 'timeout'}}
-- 2026-09-19T09:01:03Z | WARNING  | run=RUN-20260919-090055 | crypto_ai_portfolio.market_data | CMC: skipping symbol(s) this endpoint can't accept (non-alphanumeric): ['FIGR_HELOC']
-
+NEXT: run prompt_assessment.prompt
+----------------------------------------------------------------------------------------
 - according to the doc, certain scripts should be run periodically, but not daily, and are currently not integrated in run_daily. 
 - we have created many new classes etc. is there anything we can show additionally in the ui?
-
----
+----------------------------------------------------------------------------------------
 - at the moment we are screening the top 50 crypto tokens sorted by it market cap, correct? i want to have but also tokens in scope, that have had in the past 24 hours, 7 days and 30 days a signifcant price increase, see https://docs.coingecko.com/reference/coins-markets.
 - see prompt_modelintegration.prompt
-- see prompt_assessment.prompt
-
 ----------------------------------------------------------------------------------------

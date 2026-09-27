@@ -12,35 +12,28 @@ working list, updated in real time as items are found/resolved. This file
 is a periodically-synced summary for readers (human or agent) without
 dashboard access — if the two ever disagree, the dashboard is current and
 this file is stale; update this file to match, don't silently trust
-whichever was read first. Last synced: 2026-09-17.
+whichever was read first. **Note (2026-09-27): the dashboard's own
+`#todo-section` is itself a static, manually-maintained snapshot (its own
+helper text says so) and was found stale relative to this file in places
+(e.g. no A2 mention at all) — the stated "dashboard wins" hierarchy does
+not currently hold in practice; treat both as needing an independent
+live check, not either as automatically authoritative.** Last synced:
+2026-09-27.
 
 ## Critical / High priority, open
 
-- **[MEDIUM][Risk] A2 (cap-compliance corrections exempt from
-  `MAX_WEEKLY_TURNOVER`) is implemented but not yet exercised by a live
-  run.** See [`history.md`](history.md)'s Phase 5l section and
-  [`decisions.md`](decisions.md) for the full policy analysis and
-  implementation. `is_cap_compliance_correction()` (`app/risk/engine.py`)
-  is unit-tested and live-DB-verified against BTC's real historical
-  sequence (2026-09-16/09-17), but no real production run has yet produced
-  a *new* BUY/HOLD/SELL decision that actually triggers it end-to-end
-  (BTC's next real decision would be the first live exercise). Not a
-  design gap — a live-run re-observation to confirm the mechanism behaves
-  as designed against fresh data, exactly the kind of controlled
-  validation already performed for the Phase 5k `change_reason` fix.
-  SOL's real-holdings-above-cap-with-a-compliant-target situation is a
-  separate, pre-existing, already-documented gap (no automated execution
-  engine exists in this project) — explicitly out of A2's scope, not
-  newly discovered here.
 - **[CRITICAL][Backtest] No embargo between the backfilled training window
-  and the live holdout window.** The backfilled/live boundary has zero
-  (slightly negative) separation against a 45-day longest resolution
-  horizon — 100% of live decisions sit within one horizon's distance of
-  the boundary (`embargo_gap_days`, live-computed in Calibration summary).
-  Price-momentum/regime persistence (present in both sets) is a real,
-  unaddressed leakage channel. **Fix**: introduce a genuine embargo gap for
-  the *next* holdout cohort, or continue treating every current/past
-  holdout result as directionally suggestive only, never confirmatory.
+  and the live holdout window.** The backfilled/live boundary is negative
+  against a 45-day longest resolution horizon — 100% of live decisions
+  sit within one horizon's distance of the boundary (`embargo_gap_days`,
+  live-computed in Calibration summary; **re-checked 2026-09-27: now
+  -17.3 days**, more negative than the "slightly negative" figure this
+  item previously cited — the gap has widened as more live decisions
+  accumulated, not narrowed). Price-momentum/regime persistence (present
+  in both sets) is a real, unaddressed leakage channel. **Fix**: introduce
+  a genuine embargo gap for the *next* holdout cohort, or continue
+  treating every current/past holdout result as directionally suggestive
+  only, never confirmatory.
 - **[CRITICAL][Backtest] The backfill replay's candidate universe is not
   point-in-time** — `HistoricalReplayService.run()` uses TODAY's active-
   asset list for every simulated historical day, not a reconstructed
@@ -58,8 +51,10 @@ whichever was read first. Last synced: 2026-09-17.
   reliability diagram of stated confidence vs. realized correctness
   (live-only, not blended with backfilled data).
 - **[HIGH][Quant] The evidence-value logistic-regression ranking has never
-  cleared its own `MIN_SAMPLE_SIZE=50`** — real n has stayed in the 16-42
-  range across every run. Until this clears, there is no real evidence any
+  cleared its own `MIN_SAMPLE_SIZE=50`** — real n has stayed in the 16-46
+  range across every run (**re-checked live 2026-09-27: n=46**, closest
+  it's come yet, still below the 50 threshold). Until this clears, there
+  is no real evidence any
   of the Judge's current inputs (model_agreement, source_agreement,
   confidence, risk_score, uncertainty, investment_horizon_days) predict
   outcomes better than noise. **Fix**: re-run `scripts/run_evidence_value_ranking.py`
@@ -87,9 +82,11 @@ whichever was read first. Last synced: 2026-09-17.
 
 - **[MEDIUM] Portfolio-optimization sizing** (risk parity, constrained
   mean-variance) — explicitly not added; revisit once either (a) enough
-  live decisions resolve for evidence-value ranking to have a real sample,
-  or (b) real turnover/fee costs become material (last checked
-  2026-09-12: net-of-costs drag averages 0.25pp/decision, still trivial).
+  live decisions resolve for evidence-value ranking to have a real sample
+  (still not met, n=46 vs. 50 — see above), or (b) real turnover/fee costs
+  become material (re-checked live 2026-09-27: net-of-costs drag averages
+  0.26pp/decision across 312 resolved outcomes, essentially unchanged from
+  the 2026-09-12 figure — still trivial).
 - **[MEDIUM] `MAX_CONCURRENT_POSITIONS`/`MIN_REPLACEMENT_ALPHA_ADVANTAGE`
   sensitivity** — both are documented as a chosen convention, not fit or
   backtested. Needs enough resolved decisions across enough actual
@@ -172,12 +169,18 @@ whichever was read first. Last synced: 2026-09-17.
   rather than re-querying after insert). `GET /holdings`/`/holdings/history`
   correctly return the real id. Cosmetic only.
 - **`/calibration/summary` does one repository call per resolved
-  decision** (a real N+1 pattern) — measured at ~8.6 real seconds over
-  HTTP at 179 rows. Usable today at this scale; first thing to fix (a
-  proper join/batch method) if called more frequently or history grows
-  materially.
-- **`market_snapshots` (1266 rows) and `evidence_observations` (2749
-  rows) are already past Supabase's real ~1000-row-per-request cap** (see
+  decision** (a real N+1 pattern) — originally measured at ~8.6 real
+  seconds over HTTP at 179 rows; **re-measured 2026-09-27 with a direct
+  in-process call (not over HTTP, so not directly comparable) at the
+  current 323 resolved rows: ~29 seconds** — history has grown ~1.8x
+  since the original measurement but latency grew notably more than
+  proportionally. Still usable at this scale, but the "first thing to
+  fix if history grows materially" condition is closer to being met than
+  it was — worth re-prioritizing a proper join/batch method sooner rather
+  than later.
+- **`market_snapshots` (1725 rows, re-checked 2026-09-27) and
+  `evidence_observations` (3714 rows, re-checked 2026-09-27) are already
+  past Supabase's real ~1000-row-per-request cap** (see
   [`history.md`](history.md)'s Phase 5m section for the fix applied to
   `llm_analyses`/`judge_decisions`) — not fixed here, since neither has a
   reachable "fetch everything" API endpoint today (every real consumer is
