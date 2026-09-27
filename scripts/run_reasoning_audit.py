@@ -30,7 +30,12 @@ from app.benchmarks.reasoning_audit import (
 from app.benchmarks.schemas import JudgeReasoningAuditRecord, ReasoningAuditResult
 from app.config import get_settings
 from app.database.client import get_supabase_client
-from app.database.repository import JudgeReasoningAuditRepository, PromptTemplateRepository
+from app.database.repository import (
+    DecisionOutcomeRepository,
+    JudgeDecisionRepository,
+    JudgeReasoningAuditRepository,
+    PromptTemplateRepository,
+)
 from app.llm.cost import CostGuard, CostLedgerRepository
 from app.llm.structured_provider import OpenRouterStructuredProvider
 
@@ -40,25 +45,29 @@ PROMPT_VERSION = "v1"
 
 
 def fetch_candidates(client) -> list[AuditCandidate]:
-    decisions = (
-        client.table("judge_decisions")
-        .select("id,decision,thesis,key_evidence,contradictory_evidence,requires_review,model_agreement,source_agreement")
-        .eq("is_backfilled", True)
-        .execute()
-        .data
-    )
-    decision_ids = [d["id"] for d in decisions]
+    # Pagination-safe repository retrieval (2026-09-27 follow-up to B2). The
+    # raw query this replaced had no `.order()` at all -- Postgres/PostgREST
+    # give no ordering guarantee without one, so which decisions landed in
+    # which of select_audit_sample's priority-group tie-breaks was never
+    # actually deterministic, just accidentally stable. get_recent()'s
+    # deterministic `created_at DESC` order now reaches the sampler instead.
+    decisions = JudgeDecisionRepository(client).get_recent(limit=None, is_backfilled=True)
+    decision_ids = [d.id for d in decisions]
     if not decision_ids:
         return []
-    outcomes = (
-        client.table("decision_outcomes")
-        .select("decision_id,realized_return,outcome_label")
-        .in_("decision_id", decision_ids)
-        .neq("outcome_label", "UNRESOLVED")
-        .execute()
-        .data
-    )
-    outcome_by_decision = {o["decision_id"]: o for o in outcomes}
+    # Pagination-safe repository retrieval (2026-09-27 follow-up,
+    # DecisionOutcome consumer migration batch 3): the old raw
+    # `.in_(decision_ids)` query had no `.range()` -- the same dormant
+    # class already fixed for calibration_baseline.py's two identical
+    # queries. get_resolved_by_decision_ids preserves the exact same
+    # decision_ids join and resolved-only filter, now safe past
+    # Supabase's per-request row cap. Ordering here is irrelevant to
+    # candidate selection: `candidates` below is built by iterating
+    # `decisions` (already deterministically ordered by the judge_decisions
+    # migration), never by iterating `outcomes` -- outcome_by_decision is
+    # a pure lookup dict.
+    outcomes = DecisionOutcomeRepository(client).get_resolved_by_decision_ids(decision_ids)
+    outcome_by_decision = {o.decision_id: o for o in outcomes}
 
     # Phase 5b addendum: exclude decisions already audited in a previous
     # run. This candidate pool (resolved backfilled decisions) is fixed --
@@ -73,24 +82,24 @@ def fetch_candidates(client) -> list[AuditCandidate]:
 
     candidates = []
     for d in decisions:
-        if d["id"] in already_audited:
+        if d.id in already_audited:
             continue
-        outcome = outcome_by_decision.get(d["id"])
+        outcome = outcome_by_decision.get(d.id)
         if outcome is None:
             continue  # unresolved — nothing to weight "contradicted outcome" against yet
-        rr = outcome["realized_return"]
+        rr = outcome.realized_return
         contradicted = (
-            (d["decision"] == "BUY" and rr is not None and rr < 0)
-            or (d["decision"] == "SELL" and rr is not None and rr > 0)
+            (d.decision == "BUY" and rr is not None and rr < 0)
+            or (d.decision == "SELL" and rr is not None and rr > 0)
         )
         candidates.append(AuditCandidate(
-            decision_id=d["id"],
-            thesis=d["thesis"] or "",
-            key_evidence=d["key_evidence"] or [],
-            contradictory_evidence=d["contradictory_evidence"] or [],
-            requires_review=bool(d["requires_review"]),
-            model_agreement=d["model_agreement"],
-            source_agreement=d["source_agreement"],
+            decision_id=d.id,
+            thesis=d.thesis or "",
+            key_evidence=d.key_evidence or [],
+            contradictory_evidence=d.contradictory_evidence or [],
+            requires_review=bool(d.requires_review),
+            model_agreement=d.model_agreement,
+            source_agreement=d.source_agreement,
             outcome_contradicted_decision=contradicted,
         ))
     return candidates

@@ -86,6 +86,14 @@ def compute_benchmark_alpha(entry_price: float, exit_price: float, realized_retu
     return benchmark_return, effective_alpha
 
 
+def fetch_resolved_outcomes_without_benchmark_alpha(outcome_repo: DecisionOutcomeRepository):
+    """Pagination-safe repository retrieval (2026-09-27 follow-up to the
+    DecisionOutcome pagination work, Phase 2/consumer batch 1): every
+    resolved row still missing effective_alpha, not just the first 1000 --
+    see doc/decisions.md's 2026-09-27 entry."""
+    return outcome_repo.get_resolved_without_benchmark_alpha(limit=None)
+
+
 def main() -> int:
     settings = get_settings()
     client = get_supabase_client()
@@ -99,7 +107,7 @@ def main() -> int:
         print("BTC is not a tracked asset -- cannot compute a BTC benchmark.")
         return 1
 
-    resolved = outcome_repo.get_resolved_without_benchmark_alpha(limit=1000)
+    resolved = fetch_resolved_outcomes_without_benchmark_alpha(outcome_repo)
     print(f"Resolved decision_outcomes missing effective_alpha: {len(resolved)}")
 
     now = datetime.now(UTC)

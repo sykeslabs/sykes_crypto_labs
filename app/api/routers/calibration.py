@@ -38,9 +38,14 @@ def get_recent_calibration_runs(
 
 @router.get("/outcomes/recent", response_model=list[DecisionOutcome])
 def get_recent_outcomes(
-    limit: int = 200, is_backfilled: bool | None = None,
+    limit: int | None = None, is_backfilled: bool | None = None,
     repo: DecisionOutcomeRepository = Depends(get_decision_outcome_repo),
 ) -> list[DecisionOutcome]:
+    """Newest-first. `limit=None` (2026-09-27, matching `/judge/decisions/
+    recent` and `/assessments/research/recent`'s identical convention) now
+    returns the complete population via `DecisionOutcomeRepository`'s
+    pagination -- pass a real `limit` to cap the result if a caller wants
+    a genuinely bounded recent slice instead."""
     return repo.get_recent(limit=limit, is_backfilled=is_backfilled)
 
 
@@ -144,7 +149,11 @@ def get_calibration_summary(
     a Judge prompt edit (this project has already shipped v1 -> v2) could
     otherwise silently blend two different methodologies into one number
     the moment any decision made under the older version resolves."""
-    all_outcomes = outcome_repo.get_recent(limit=2000)
+    # limit=None (2026-09-27 follow-up, final DecisionOutcome migration
+    # fix): the complete population, not just the first 2000 -- see
+    # doc/decisions.md's 2026-09-27 entry. This was the one remaining
+    # consumer the earlier batched migration (Phase 5q-5t) missed.
+    all_outcomes = outcome_repo.get_recent(limit=None)
     resolved_backfilled = [o for o in all_outcomes if o.is_backfilled and o.outcome_label != "UNRESOLVED"]
     resolved_live = [o for o in all_outcomes if not o.is_backfilled and o.outcome_label != "UNRESOLVED"]
     unresolved_backfilled = [o for o in all_outcomes if o.is_backfilled and o.outcome_label == "UNRESOLVED"]

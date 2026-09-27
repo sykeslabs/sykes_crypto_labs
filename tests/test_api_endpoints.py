@@ -572,6 +572,57 @@ def test_get_calibration_summary_computes_real_hit_rate_from_directional_decisio
     assert body["hit_rate_live"] is None
 
 
+def test_get_calibration_summary_requests_the_complete_population_not_capped_at_2000(client):
+    # 2026-09-27 final fix: this endpoint's own DecisionOutcome retrieval
+    # was the one remaining consumer still hardcoded to limit=2000 after
+    # the earlier batched migration (Phase 5q-5t). Proves BOTH that the
+    # endpoint now requests limit=None, and that a population past the
+    # old 2000 ceiling is genuinely processed in full -- not merely that
+    # the mocked method was called with the right argument.
+    n = 2005
+    outcomes = [
+        DecisionOutcome(
+            decision_id=f"d-{i}", asset_id=f"a-{i}", decision_timestamp=datetime.now(UTC), horizon_days=30,
+            target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+            judge_confidence=0.6, is_backfilled=True,
+        )
+        for i in range(n)
+    ]
+    decisions = {f"d-{i}": _judge_decision(f"d-{i}", asset_id=f"a-{i}", is_backfilled=True) for i in range(n)}
+
+    class FakeOutcomeRepo:
+        def __init__(self):
+            self.calls = []
+
+        def get_recent(self, limit=2000, is_backfilled=None):
+            self.calls.append(limit)
+            return outcomes
+
+    class FakeJudgeRepo:
+        def get_by_id(self, decision_id):
+            return decisions.get(decision_id)
+
+        def get_recent(self, limit=2000, is_backfilled=None):
+            values = decisions.values()
+            if is_backfilled is not None:
+                values = [d for d in values if d.is_backfilled == is_backfilled]
+            return list(values)
+
+    outcome_repo = FakeOutcomeRepo()
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: outcome_repo
+    app.dependency_overrides[get_judge_decision_repo] = lambda: FakeJudgeRepo()
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert outcome_repo.calls == [None]  # limit=None, not the old hardcoded 2000
+    # Every one of the 2005 real, resolved, directional (BUY, correct)
+    # decisions must be counted -- if the old limit=2000 ceiling were still
+    # in effect, this would silently cap at 2000.
+    assert body["resolved_backfilled_count"] == n
+    assert body["directional_sample_size"] == n
+    assert body["hit_rate"] == pytest.approx(1.0)
+
+
 def test_get_calibration_summary_segments_backfilled_and_live_and_by_prompt_version(client):
     outcome_backfilled = DecisionOutcome(
         decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
@@ -865,6 +916,70 @@ def test_get_recent_calibration_runs(client):
     app.dependency_overrides[get_calibration_run_repo] = lambda: FakeRepo()
     response = client.get("/calibration/runs/recent")
     assert response.json()[0]["method"] == "TEST_METHOD"
+
+
+def test_get_recent_outcomes_default_permits_complete_retrieval(client):
+    # 2026-09-27 follow-up: the route's own default changed from a bounded
+    # 200 to limit=None (matching /judge/decisions/recent and
+    # /assessments/research/recent's identical, already-established
+    # convention) -- calling with no query param at all must now request
+    # the repository's own unlimited path, not silently cap at 200.
+    outcome = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
+        target_return=0.15, stop_return=-0.15, judge_confidence=0.6,
+    )
+
+    class FakeRepo:
+        def get_recent(self, limit=200, is_backfilled=None):
+            assert limit is None  # the route's new default, not the old 200
+            return [outcome]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeRepo()
+    response = client.get("/calibration/outcomes/recent")
+    assert response.status_code == 200
+    assert response.json()[0]["decision_id"] == "d1"
+
+
+def test_get_recent_outcomes_explicit_limit_still_works(client):
+    outcome = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=datetime.now(UTC), horizon_days=30,
+        target_return=0.15, stop_return=-0.15, judge_confidence=0.6,
+    )
+
+    class FakeRepo:
+        def get_recent(self, limit=200, is_backfilled=None):
+            assert limit == 50
+            return [outcome]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeRepo()
+    response = client.get("/calibration/outcomes/recent?limit=50")
+    assert response.status_code == 200
+    assert response.json()[0]["decision_id"] == "d1"
+
+
+def test_get_recent_outcomes_newest_first_ordering_preserved(client):
+    # The endpoint itself doesn't re-sort -- ordering is entirely the
+    # repository's own responsibility (already covered by
+    # tests/test_repository_pagination.py's DecisionOutcomeRepository
+    # tests). This just confirms the route passes through whatever order
+    # the repository returns, unchanged.
+    older = DecisionOutcome(
+        decision_id="older", asset_id="a1", decision_timestamp=datetime(2026, 1, 1, tzinfo=UTC),
+        horizon_days=30, target_return=0.15, stop_return=-0.15, judge_confidence=0.6,
+    )
+    newer = DecisionOutcome(
+        decision_id="newer", asset_id="a1", decision_timestamp=datetime(2026, 9, 1, tzinfo=UTC),
+        horizon_days=30, target_return=0.15, stop_return=-0.15, judge_confidence=0.6,
+    )
+
+    class FakeRepo:
+        def get_recent(self, limit=200, is_backfilled=None):
+            return [newer, older]  # already newest-first, as the real repository guarantees
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeRepo()
+    response = client.get("/calibration/outcomes/recent")
+    body = response.json()
+    assert [o["decision_id"] for o in body] == ["newer", "older"]
 
 
 def test_get_recent_evidence_value_reports(client):

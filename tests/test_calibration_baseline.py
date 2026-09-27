@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from app.benchmarks.schemas import DecisionOutcome
 from app.database import repository as repository_module
 from app.judge.schemas import JudgeDecisionRecord
 from scripts.calibration_baseline import run_backfill_baseline, run_live_baseline
@@ -84,7 +85,12 @@ class FakeSupabaseClient:
     def table(self, name):
         if name == "calibration_runs":
             return _FakeQuery([], sink=self.inserted_calibration_runs)
-        return _FakeQuery(list(self._tables.get(name, [])), capped=(name == "judge_decisions"))
+        # capped for judge_decisions AND decision_outcomes (2026-09-27,
+        # batch 2): both tables are subject to the same real Supabase
+        # per-request row cap when fetched without `.range()` -- this
+        # fake must reproduce that for whichever table a regression test
+        # needs to catch, not just the one Phase 5n originally fixed.
+        return _FakeQuery(list(self._tables.get(name, [])), capped=(name in ("judge_decisions", "decision_outcomes")))
 
 
 def _decision(
@@ -110,8 +116,19 @@ def _decision(
     return row
 
 
-def _outcome(decision_id, realized_return=0.05, outcome_label="HIT_TARGET"):
-    return {"decision_id": decision_id, "realized_return": realized_return, "outcome_label": outcome_label}
+def _outcome(decision_id, realized_return=0.05, outcome_label="HIT_TARGET", is_backfilled=False):
+    # Real fields required for DecisionOutcome.model_validate() to succeed
+    # -- run_live_baseline/run_backfill_baseline now fetch through
+    # DecisionOutcomeRepository.get_resolved_by_decision_ids() (2026-09-27,
+    # batch 2), which validates every raw row into a full DecisionOutcome,
+    # not just the 3 fields the old raw-dict-based code happened to select
+    # (same convention as _decision()'s own comment above).
+    record = DecisionOutcome(
+        decision_id=decision_id, asset_id="asset-1", decision_timestamp=datetime(2026, 9, 1, tzinfo=UTC),
+        horizon_days=30, target_return=0.1, stop_return=-0.1, realized_return=realized_return,
+        outcome_label=outcome_label, judge_confidence=0.6, is_backfilled=is_backfilled,
+    )
+    return record.to_row()
 
 
 def test_run_live_baseline_excludes_a_same_day_duplicate_group():
@@ -227,3 +244,96 @@ def test_run_backfill_baseline_uses_repository_pagination():
     records = [r for r in client.inserted_calibration_runs if r["method"] == "BACKFILL_BASELINE"]
     assert len(records) == 1
     assert records[0]["sample_size"] == 2  # both directional (BUY/SELL), both resolved
+
+
+def test_run_backfill_baseline_uses_repository_pagination_for_decision_outcomes_too(monkeypatch):
+    # 2026-09-27 follow-up (DecisionOutcome consumer migration batch 2):
+    # the judge_decisions side of this function was already pagination-safe
+    # (test above); the decision_outcomes side used a raw, unpaginated
+    # `.in_(decision_ids)` query until this batch. Same monkeypatched-tiny-
+    # page-size technique, but this time forcing the DECISION_OUTCOMES
+    # fetch across multiple pages -- proves get_resolved_by_decision_ids
+    # doesn't silently drop rows past the first page.
+    monkeypatch.setattr("app.database.repository._SUPABASE_MAX_ROWS_PER_REQUEST", 2)
+    day = datetime(2026, 9, 10, tzinfo=UTC)
+    tables = {
+        "judge_decisions": [
+            _decision("bf-1", "btc-id", day, is_backfilled=True),
+            _decision("bf-2", "eth-id", day, decision="SELL", is_backfilled=True),
+            _decision("bf-3", "sol-id", day, is_backfilled=True),
+            _decision("bf-4", "ada-id", day, decision="SELL", is_backfilled=True),
+            _decision("bf-5", "link-id", day, is_backfilled=True),
+        ],
+        "decision_outcomes": [
+            _outcome("bf-1", realized_return=0.03, is_backfilled=True),
+            _outcome("bf-2", realized_return=-0.02, is_backfilled=True),
+            _outcome("bf-3", realized_return=0.05, is_backfilled=True),
+            _outcome("bf-4", realized_return=-0.01, is_backfilled=True),
+            _outcome("bf-5", realized_return=0.02, is_backfilled=True),
+        ],
+    }
+    client = FakeSupabaseClient(tables)
+
+    run_backfill_baseline(client)
+
+    records = [r for r in client.inserted_calibration_runs if r["method"] == "BACKFILL_BASELINE"]
+    assert len(records) == 1
+    # All 5 directional/resolved outcomes must be found, not just the
+    # first _SUPABASE_MAX_ROWS_PER_REQUEST=2 rows a single unpaginated
+    # request would have silently returned.
+    assert records[0]["sample_size"] == 5
+
+
+def test_run_backfill_baseline_ignores_decision_outcomes_rows_outside_the_relevant_decision_ids():
+    # The .in_(decision_ids) join must stay correctly scoped: a
+    # decision_outcomes row for a LIVE decision (noise, not part of this
+    # backfilled run's own decision_ids) must never be picked up merely
+    # because it happens to sit in the same table.
+    day = datetime(2026, 9, 10, tzinfo=UTC)
+    tables = {
+        "judge_decisions": [
+            _decision("bf-1", "btc-id", day, is_backfilled=True),
+            _decision("live-1", "eth-id", day, is_backfilled=False),
+        ],
+        "decision_outcomes": [
+            _outcome("bf-1", realized_return=0.03, is_backfilled=True),
+            _outcome("live-1", realized_return=0.10, is_backfilled=False),  # noise -- must be excluded
+        ],
+    }
+    client = FakeSupabaseClient(tables)
+
+    run_backfill_baseline(client)
+
+    records = [r for r in client.inserted_calibration_runs if r["method"] == "BACKFILL_BASELINE"]
+    assert len(records) == 1
+    assert records[0]["sample_size"] == 1  # only bf-1 -- live-1 was never in this run's decision_ids
+
+
+def test_run_live_baseline_decision_outcomes_pagination_preserves_b2_duplicate_exclusion(monkeypatch):
+    # Combines both concerns the audit flagged for this file: decision_
+    # outcomes pagination AND B2 duplicate-group exclusion must both hold
+    # at the same time, not just in isolation.
+    monkeypatch.setattr("app.database.repository._SUPABASE_MAX_ROWS_PER_REQUEST", 2)
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    tables = {
+        "judge_decisions": [
+            _decision("btc-1", "btc-id", day),
+            _decision("btc-2", "btc-id", day.replace(hour=11)),  # same-day duplicate group with btc-1
+            _decision("eth-1", "eth-id", day),
+            _decision("sol-1", "sol-id", day),
+        ],
+        "decision_outcomes": [
+            _outcome("btc-1"), _outcome("btc-2"), _outcome("eth-1"), _outcome("sol-1"),
+        ],
+    }
+    client = FakeSupabaseClient(tables)
+
+    run_live_baseline(client)
+
+    post_3f_records = [r for r in client.inserted_calibration_runs if r["method"] == "LIVE_POST_3F_BASELINE"]
+    assert len(post_3f_records) == 1
+    # BTC's duplicate group (2 rows) excluded entirely; ETH and SOL remain
+    # -- proves decision_outcomes pagination retrieved every row (both
+    # BTC rows, not just whichever page happened to include one of them)
+    # while B2 exclusion still applies correctly on top of that.
+    assert post_3f_records[0]["sample_size"] == 2

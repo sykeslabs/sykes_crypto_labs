@@ -2,11 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.benchmarks.schemas import DecisionOutcome
 from scripts.apply_benchmark_alpha import (
     HISTORICAL_FETCH_DAYS,
     _required_fetch_days,
     compute_benchmark_alpha,
     fetch_historical_series,
+    fetch_resolved_outcomes_without_benchmark_alpha,
 )
 
 
@@ -108,3 +110,41 @@ def test_compute_benchmark_alpha_when_benchmark_fell():
     benchmark_return, effective_alpha = compute_benchmark_alpha(entry_price=100.0, exit_price=90.0, realized_return=0.05)
     assert benchmark_return == pytest.approx(-0.10)
     assert effective_alpha == pytest.approx(0.15)
+
+
+# --- fetch_resolved_outcomes_without_benchmark_alpha: DecisionOutcome
+# pagination migration, Phase 2/consumer batch 1 (2026-09-27) --------------
+
+def _resolved_outcome(decision_id):
+    return DecisionOutcome(
+        decision_id=decision_id, asset_id="asset-1", decision_timestamp=datetime(2026, 9, 1, tzinfo=UTC),
+        horizon_days=30, target_return=0.1, stop_return=-0.1, realized_return=0.05,
+        outcome_label="HIT_TARGET", judge_confidence=0.6,
+    )
+
+
+class _FakeDecisionOutcomeRepo:
+    def __init__(self, rows):
+        self._rows = rows
+        self.calls = []
+
+    def get_resolved_without_benchmark_alpha(self, limit=1000):
+        self.calls.append(limit)
+        return self._rows
+
+
+def test_fetch_resolved_outcomes_without_benchmark_alpha_calls_repository_with_limit_none():
+    repo = _FakeDecisionOutcomeRepo([])
+
+    fetch_resolved_outcomes_without_benchmark_alpha(repo)
+
+    assert repo.calls == [None]
+
+
+def test_fetch_resolved_outcomes_without_benchmark_alpha_does_not_truncate_past_the_old_1000_row_boundary():
+    rows = [_resolved_outcome(f"d-{i}") for i in range(1200)]
+    repo = _FakeDecisionOutcomeRepo(rows)
+
+    resolved = fetch_resolved_outcomes_without_benchmark_alpha(repo)
+
+    assert len(resolved) == 1200

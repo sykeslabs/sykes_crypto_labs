@@ -33,7 +33,8 @@ from app.benchmarks.evidence_value import (
 )
 from app.benchmarks.schemas import EvidenceValueReportRecord
 from app.database.client import get_supabase_client
-from app.database.repository import EvidenceValueReportRepository
+from app.database.repository import DecisionOutcomeRepository, EvidenceValueReportRepository, JudgeDecisionRepository
+from app.judge.schemas import JudgeDecisionRecord
 
 FEATURE_FIELDS = [
     "model_agreement", "source_agreement", "confidence", "risk_score",
@@ -41,32 +42,63 @@ FEATURE_FIELDS = [
 ]
 
 
+def fetch_backfilled_decisions_chronological(client) -> list[JudgeDecisionRecord]:
+    """Pagination-safe repository retrieval (2026-09-27 follow-up to B2).
+    get_recent() orders DESCENDING by created_at; this consumer's own
+    rolling-window drift analysis (task 1a) requires ASCENDING
+    chronological order for its windows to mean what they claim to --
+    reversed() restores that, it does not introduce a new query.
+
+    Note (2026-09-27, DecisionOutcome consumer migration batch 3): this
+    function's own ascending order is used only to build `dec_by_id`'s
+    lookup dict below (a plain `.get()` target, order-irrelevant there) --
+    it is NOT what makes `fetch_directional_examples`'s returned `examples`
+    list chronological. That list is now explicitly sorted by its own
+    `decision_outcomes.decision_timestamp` in `fetch_directional_examples`
+    itself, closing the ordering gap this docstring used to flag as
+    unresolved."""
+    return list(reversed(JudgeDecisionRepository(client).get_recent(limit=None, is_backfilled=True)))
+
+
 def fetch_directional_examples(client) -> list[TrainingExample]:
-    decisions = (
-        client.table("judge_decisions")
-        .select("id,decision,created_at,model_agreement,source_agreement,confidence,risk_score,uncertainty,investment_horizon_days")
-        .eq("is_backfilled", True)
-        .order("created_at")
-        .execute().data
-    )
-    dec_by_id = {d["id"]: d for d in decisions}
-    outcomes = (
-        client.table("decision_outcomes")
-        .select("decision_id,realized_return,outcome_label")
-        .eq("is_backfilled", True).neq("outcome_label", "UNRESOLVED")
-        .execute().data
-    )
+    decisions = fetch_backfilled_decisions_chronological(client)
+    dec_by_id = {record.id: record for record in decisions}
+
+    # Pagination-safe repository retrieval (2026-09-27 follow-up,
+    # DecisionOutcome consumer migration batch 3): the old raw query was a
+    # fully unbounded table scan (is_backfilled + resolved-only filter,
+    # no `.range()`/`.limit()` at all) -- subject to Supabase's implicit
+    # per-request row cap. get_recent() has no resolution filter of its
+    # own, so the UNRESOLVED exclusion is applied in Python here,
+    # preserving the exact original filter semantics.
+    outcomes = [
+        o for o in DecisionOutcomeRepository(client).get_recent(limit=None, is_backfilled=True)
+        if o.outcome_label != "UNRESOLVED"
+    ]
+    # Ascending chronological order by the outcome's own real
+    # decision_timestamp (2026-09-27): rolling_window_drift's own
+    # docstring requires "examples must be chronologically ordered" for
+    # its non-overlapping windows to mean what they claim to. The OLD raw
+    # query had no `.order()` at all -- Postgres/PostgREST give no
+    # ordering guarantee without one -- so this requirement was never
+    # actually honored; the "windows" it produced were arbitrary chunks of
+    # an undefined order, not real temporal slices. Sorting this complete,
+    # already-resolved historical population by its own real timestamp is
+    # not lookahead: every observation here already happened and already
+    # resolved: this only makes the code's own stated chronological-window
+    # intent actually true, for the first time.
+    outcomes.sort(key=lambda o: o.decision_timestamp)
 
     examples = []
     for o in outcomes:
-        d = dec_by_id.get(o["decision_id"])
-        if d is None or d["decision"] not in ("BUY", "SELL"):
+        d = dec_by_id.get(o.decision_id)
+        if d is None or d.decision not in ("BUY", "SELL"):
             continue
-        if any(d[f] is None for f in FEATURE_FIELDS):
+        if any(getattr(d, f) is None for f in FEATURE_FIELDS):
             continue
-        correct = (d["decision"] == "BUY" and o["realized_return"] > 0) or (d["decision"] == "SELL" and o["realized_return"] < 0)
+        correct = (d.decision == "BUY" and o.realized_return > 0) or (d.decision == "SELL" and o.realized_return < 0)
         examples.append(TrainingExample(
-            features={f: float(d[f]) for f in FEATURE_FIELDS},
+            features={f: float(getattr(d, f)) for f in FEATURE_FIELDS},
             label=1 if correct else 0,
         ))
     return examples

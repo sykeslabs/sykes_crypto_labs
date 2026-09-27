@@ -24,7 +24,8 @@ from datetime import UTC, datetime
 from app.benchmarks.historical_factors import HistoricalSeries
 from app.config import get_settings
 from app.database.client import get_supabase_client
-from app.database.repository import AssetRepository, DecisionOutcomeRepository
+from app.database.repository import AssetRepository, DecisionOutcomeRepository, JudgeDecisionRepository
+from app.judge.schemas import JudgeDecisionRecord
 from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.factors import compute_volatility
@@ -83,6 +84,27 @@ def volatility_and_volume_as_of(series: HistoricalSeries, as_of: datetime) -> tu
     return volatility, volume_24h_proxy
 
 
+def fetch_decisions_by_id(client) -> dict[str, JudgeDecisionRecord]:
+    """Pagination-safe repository retrieval (2026-09-27 follow-up to B2).
+    Intentionally spans BOTH live and backfilled decisions
+    (`is_backfilled=None`) -- every currently-resolved decision this
+    script processes is "all backfilled, plus any live ones once they
+    resolve" per this module's own docstring above, so filtering by
+    is_backfilled here would silently drop real live decisions."""
+    return {
+        record.id: record
+        for record in JudgeDecisionRepository(client).get_recent(limit=None, is_backfilled=None)
+    }
+
+
+def fetch_resolved_outcomes_without_net_of_costs(outcome_repo: DecisionOutcomeRepository):
+    """Pagination-safe repository retrieval (2026-09-27 follow-up to the
+    DecisionOutcome pagination work, Phase 2/consumer batch 1): every
+    resolved row still missing net_of_costs, not just the first 1000 --
+    see doc/decisions.md's 2026-09-27 entry."""
+    return outcome_repo.get_resolved_without_net_of_costs(limit=None)
+
+
 def main() -> int:
     settings = get_settings()
     client = get_supabase_client()
@@ -92,11 +114,9 @@ def main() -> int:
     coinbase = CoinbaseClient(settings)
 
     assets_by_id = {a.id: a for a in asset_repo.get_active_assets()}
-    decisions = {
-        d["id"]: d for d in client.table("judge_decisions").select("id,decision,target_allocation").execute().data
-    }
+    decisions = fetch_decisions_by_id(client)
 
-    resolved = outcome_repo.get_resolved_without_net_of_costs(limit=1000)
+    resolved = fetch_resolved_outcomes_without_net_of_costs(outcome_repo)
     print(f"Resolved decision_outcomes missing net_of_costs: {len(resolved)}")
 
     now = datetime.now(UTC)
@@ -136,7 +156,7 @@ def main() -> int:
 
         exchange = "BINANCE" if series.source == "BINANCE" else "COINBASE"
         fee_rate = TAKER_FEE_RATE_BY_EXCHANGE[exchange]
-        order_size_usd = abs(decision_row["target_allocation"] or 0.0) * ASSUMED_PORTFOLIO_NOTIONAL_USD
+        order_size_usd = abs(decision_row.target_allocation or 0.0) * ASSUMED_PORTFOLIO_NOTIONAL_USD
         if order_size_usd <= 0:
             order_size_usd = 0.01 * ASSUMED_PORTFOLIO_NOTIONAL_USD  # a minimal nonzero reference size
 

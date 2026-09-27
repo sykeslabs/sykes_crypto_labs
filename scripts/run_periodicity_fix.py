@@ -70,6 +70,19 @@ def pooled_daily_returns_for_decision(
     return daily_returns
 
 
+def fetch_resolved_backfilled_outcomes(outcome_repo: DecisionOutcomeRepository):
+    """Pagination-safe repository retrieval (2026-09-27 follow-up to the
+    DecisionOutcome pagination work, consumer migration batch 2): every
+    backfilled outcome, not just the first 2000 -- see doc/decisions.md's
+    2026-09-27 entry. No ordering dependency here: window_start/window_end
+    downstream are derived via an explicit Python sorted() over
+    `directional`'s own timestamps, not database order, so the new
+    deterministic tiebreaker this migration relies on for pagination
+    correctness has no other effect on this script."""
+    all_outcomes = outcome_repo.get_recent(limit=None, is_backfilled=True)
+    return [o for o in all_outcomes if o.outcome_label != "UNRESOLVED"]
+
+
 def main() -> int:
     settings = get_settings()
     client = get_supabase_client()
@@ -80,8 +93,7 @@ def main() -> int:
     outcome_repo = DecisionOutcomeRepository(client)
     calibration_run_repo = CalibrationRunRepository(client)
 
-    all_outcomes = outcome_repo.get_recent(limit=2000, is_backfilled=True)
-    resolved_backfilled = [o for o in all_outcomes if o.outcome_label != "UNRESOLVED"]
+    resolved_backfilled = fetch_resolved_backfilled_outcomes(outcome_repo)
     print(f"Resolved backfilled outcomes: {len(resolved_backfilled)}")
 
     directional = []

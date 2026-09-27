@@ -76,7 +76,15 @@ def fetch_joinable_directional_examples(client) -> list[dict]:
     outcome_repo = DecisionOutcomeRepository(client)
     judge_repo = JudgeDecisionRepository(client)
 
-    all_outcomes = outcome_repo.get_recent(limit=2000)
+    # limit=None (2026-09-27 follow-up to the DecisionOutcome pagination
+    # work, Phase 2): the complete decision_outcomes population, not just
+    # the first 2000 -- see doc/decisions.md's 2026-09-27 entry. No
+    # is_backfilled filter here, preserved exactly as before: this
+    # function's own population is intentionally MIXED live+backfilled
+    # (see main()'s n_backfilled/n_live breakdown and the "is_backfilled"
+    # field captured per example below) -- it is not, and was never,
+    # live-only, despite this function's own docstring wording above.
+    all_outcomes = outcome_repo.get_recent(limit=None)
     resolved = [o for o in all_outcomes if o.outcome_label != "UNRESOLVED"]
 
     # Computed from the FULL live decision population (not just resolved

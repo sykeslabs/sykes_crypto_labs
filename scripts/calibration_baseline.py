@@ -55,7 +55,12 @@ from datetime import UTC, datetime, timedelta
 
 from app.benchmarks.schemas import CalibrationRunRecord
 from app.database.client import get_supabase_client
-from app.database.repository import CalibrationRunRepository, JudgeDecisionRepository, compute_duplicate_group_decision_ids
+from app.database.repository import (
+    CalibrationRunRepository,
+    DecisionOutcomeRepository,
+    JudgeDecisionRepository,
+    compute_duplicate_group_decision_ids,
+)
 
 HORIZON_DAYS_DEFAULT = 7
 
@@ -188,23 +193,27 @@ def run_backfill_baseline(client) -> int:
         print("Nothing to calibrate against yet — run scripts/run_replay.py first.")
         return 0
 
+    # Pagination-safe repository retrieval (2026-09-27 follow-up,
+    # DecisionOutcome consumer migration batch 2): the old raw
+    # `.in_(decision_ids)` query had no `.range()` -- dormant risk of the
+    # same class already fixed for the judge_decisions side of this same
+    # function above. get_resolved_by_decision_ids (new method, added this
+    # pass) preserves the exact same decision_ids join and resolved-only
+    # filter, now safe past Supabase's per-request row cap.
     decision_ids = [d["id"] for d in decisions]
-    outcomes = (
-        client.table("decision_outcomes").select("decision_id,realized_return,outcome_label")
-        .in_("decision_id", decision_ids).neq("outcome_label", "UNRESOLVED").execute().data
-    )
-    outcome_by_decision = {o["decision_id"]: o for o in outcomes}
+    outcomes = DecisionOutcomeRepository(client).get_resolved_by_decision_ids(decision_ids)
+    outcome_by_decision = {o.decision_id: o for o in outcomes}
     print(f"Resolved (non-UNRESOLVED) backfilled outcomes: {len(outcomes)}")
 
     resolved = []
     for d in decisions:
         outcome = outcome_by_decision.get(d["id"])
-        if outcome is None or outcome["realized_return"] is None:
+        if outcome is None or outcome.realized_return is None:
             continue
         resolved.append({
             "action": d["decision"],
             "confidence": float(d["confidence"]),
-            "realized_return": float(outcome["realized_return"]),
+            "realized_return": float(outcome.realized_return),
         })
 
     directional = [r for r in resolved if r["action"] in ("BUY", "SELL")]
@@ -282,12 +291,13 @@ def run_live_baseline(client) -> int:
         )
     decisions = [d for d in decisions if d["id"] not in excluded_decision_ids]
 
+    # Pagination-safe repository retrieval (2026-09-27 follow-up,
+    # DecisionOutcome consumer migration batch 2) -- same fix, same
+    # reasoning as run_backfill_baseline above. decision_ids here is
+    # already the B2-deduplicated live population.
     decision_ids = [d["id"] for d in decisions]
-    outcomes = (
-        client.table("decision_outcomes").select("decision_id,realized_return,outcome_label")
-        .in_("decision_id", decision_ids).neq("outcome_label", "UNRESOLVED").execute().data
-    )
-    outcome_by_decision = {o["decision_id"]: o for o in outcomes}
+    outcomes = DecisionOutcomeRepository(client).get_resolved_by_decision_ids(decision_ids)
+    outcome_by_decision = {o.decision_id: o for o in outcomes}
     print(f"Resolved (non-UNRESOLVED) live outcomes: {len(outcomes)} of {len(decisions)}")
 
     regime_ids = {d["regime_id"] for d in decisions if d["regime_id"]}
@@ -305,11 +315,11 @@ def run_live_baseline(client) -> int:
         resolved = []
         for d in era_decisions:
             outcome = outcome_by_decision.get(d["id"])
-            if outcome is None or outcome["realized_return"] is None:
+            if outcome is None or outcome.realized_return is None:
                 continue
             resolved.append({
                 "action": d["decision"], "confidence": float(d["confidence"]),
-                "realized_return": float(outcome["realized_return"]),
+                "realized_return": float(outcome.realized_return),
                 "regime": regime_names.get(d["regime_id"], "UNKNOWN"),
             })
         directional = [r for r in resolved if r["action"] in ("BUY", "SELL")]

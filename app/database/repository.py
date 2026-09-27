@@ -892,15 +892,38 @@ class DecisionOutcomeRepository:
     def insert(self, outcome: DecisionOutcome) -> None:
         self._client.table("decision_outcomes").insert(outcome.to_row()).execute()
 
-    def get_unresolved(self, limit: int = 500) -> list[DecisionOutcome]:
-        response = (
-            self._client.table("decision_outcomes")
-            .select("*")
-            .eq("outcome_label", "UNRESOLVED")
-            .limit(limit)
-            .execute()
-        )
-        return [DecisionOutcome.model_validate(row) for row in response.data]
+    def get_unresolved(self, limit: int | None = 500) -> list[DecisionOutcome]:
+        """`limit=None` (2026-09-27 follow-up to the JudgeDecision pagination
+        work) retrieves every UNRESOLVED row via `_fetch_all_paginated`,
+        used by `OutcomeEvaluationService` so a real backlog can never be
+        silently left partially unprocessed by a hardcoded page size. The
+        `.order("decision_id")` below is ONLY the unique deterministic
+        tiebreaker `_fetch_all_paginated` itself requires for correct page
+        merging (see its own docstring) -- a pure pagination-correctness
+        detail, not a FIFO/business-priority processing order. No ordering
+        requirement was found anywhere in this codebase for which
+        unresolved rows get evaluated first (see doc/decisions.md's
+        2026-09-27 entry for the full investigation)."""
+        if limit is not None:
+            response = (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .eq("outcome_label", "UNRESOLVED")
+                .limit(limit)
+                .execute()
+            )
+            return [DecisionOutcome.model_validate(row) for row in response.data]
+
+        def build_query():
+            return (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .eq("outcome_label", "UNRESOLVED")
+                .order("decision_id")
+            )
+
+        rows = _fetch_all_paginated(build_query)
+        return [DecisionOutcome.model_validate(row) for row in rows]
 
     def update_outcome(
         self, decision_id: str, realized_return: float, outcome_label: str, evaluated_at: datetime
@@ -913,19 +936,36 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
-    def get_resolved_without_net_of_costs(self, limit: int = 500) -> list[DecisionOutcome]:
+    def get_resolved_without_net_of_costs(self, limit: int | None = 500) -> list[DecisionOutcome]:
         """Phase 4 task 2: resolved rows still missing a net-of-costs
         figure — lets `scripts/apply_execution_costs.py` be re-run safely
-        without recomputing already-processed rows."""
-        response = (
-            self._client.table("decision_outcomes")
-            .select("*")
-            .neq("outcome_label", "UNRESOLVED")
-            .is_("realized_return_net_of_costs", "null")
-            .limit(limit)
-            .execute()
-        )
-        return [DecisionOutcome.model_validate(row) for row in response.data]
+        without recomputing already-processed rows. `limit=None`
+        (2026-09-27 follow-up) retrieves the complete population via
+        `_fetch_all_paginated`; not yet wired into any consumer this pass
+        (see doc/decisions.md's 2026-09-27 entry -- that migration is a
+        separate, later batch)."""
+        if limit is not None:
+            response = (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .neq("outcome_label", "UNRESOLVED")
+                .is_("realized_return_net_of_costs", "null")
+                .limit(limit)
+                .execute()
+            )
+            return [DecisionOutcome.model_validate(row) for row in response.data]
+
+        def build_query():
+            return (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .neq("outcome_label", "UNRESOLVED")
+                .is_("realized_return_net_of_costs", "null")
+                .order("decision_id")
+            )
+
+        rows = _fetch_all_paginated(build_query)
+        return [DecisionOutcome.model_validate(row) for row in rows]
 
     def update_net_of_costs(
         self, decision_id: str, realized_return_net_of_costs: float, assumed_fill_method: str
@@ -937,20 +977,35 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
-    def get_resolved_without_benchmark_alpha(self, limit: int = 500) -> list[DecisionOutcome]:
+    def get_resolved_without_benchmark_alpha(self, limit: int | None = 500) -> list[DecisionOutcome]:
         """Phase 5b addendum: resolved rows still missing a real effective
         alpha -- lets `scripts/apply_benchmark_alpha.py` be re-run safely
         without recomputing already-processed rows, same convention as
-        `get_resolved_without_net_of_costs` above."""
-        response = (
-            self._client.table("decision_outcomes")
-            .select("*")
-            .neq("outcome_label", "UNRESOLVED")
-            .is_("effective_alpha", "null")
-            .limit(limit)
-            .execute()
-        )
-        return [DecisionOutcome.model_validate(row) for row in response.data]
+        `get_resolved_without_net_of_costs` above. `limit=None` (2026-09-27
+        follow-up) retrieves the complete population via
+        `_fetch_all_paginated`; not yet wired into any consumer this pass."""
+        if limit is not None:
+            response = (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .neq("outcome_label", "UNRESOLVED")
+                .is_("effective_alpha", "null")
+                .limit(limit)
+                .execute()
+            )
+            return [DecisionOutcome.model_validate(row) for row in response.data]
+
+        def build_query():
+            return (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .neq("outcome_label", "UNRESOLVED")
+                .is_("effective_alpha", "null")
+                .order("decision_id")
+            )
+
+        rows = _fetch_all_paginated(build_query)
+        return [DecisionOutcome.model_validate(row) for row in rows]
 
     def update_benchmark_alpha(self, decision_id: str, benchmark_return: float, effective_alpha: float) -> None:
         self._client.table("decision_outcomes").update(
@@ -960,21 +1015,62 @@ class DecisionOutcomeRepository:
             }
         ).eq("decision_id", decision_id).execute()
 
-    def get_recent(self, limit: int = 200, is_backfilled: bool | None = None) -> list[DecisionOutcome]:
+    def get_recent(self, limit: int | None = 200, is_backfilled: bool | None = None) -> list[DecisionOutcome]:
         """Phase 5: recent outcomes newest-first, for the calibration/ledger
         views — never mixes backfilled/live silently (see 3e.1's own
-        non-negotiable)."""
-        query = self._client.table("decision_outcomes").select("*")
-        if is_backfilled is not None:
-            query = query.eq("is_backfilled", is_backfilled)
-        response = query.order("decision_timestamp", desc=True).limit(limit).execute()
-        return [DecisionOutcome.model_validate(row) for row in response.data]
+        non-negotiable). `limit=None` (2026-09-27 follow-up, mirroring
+        `JudgeDecisionRepository.get_recent`'s identical convention) returns
+        the complete population via `_fetch_all_paginated`, with
+        `decision_id` as the unique deterministic tiebreaker after the
+        primary `decision_timestamp DESC` sort."""
+        if limit is not None:
+            query = self._client.table("decision_outcomes").select("*")
+            if is_backfilled is not None:
+                query = query.eq("is_backfilled", is_backfilled)
+            response = query.order("decision_timestamp", desc=True).limit(limit).execute()
+            return [DecisionOutcome.model_validate(row) for row in response.data]
+
+        def build_query():
+            q = self._client.table("decision_outcomes").select("*")
+            if is_backfilled is not None:
+                q = q.eq("is_backfilled", is_backfilled)
+            return q.order("decision_timestamp", desc=True).order("decision_id", desc=True)
+
+        rows = _fetch_all_paginated(build_query)
+        return [DecisionOutcome.model_validate(row) for row in rows]
 
     def get_by_decision_id(self, decision_id: str) -> DecisionOutcome | None:
         response = self._client.table("decision_outcomes").select("*").eq("decision_id", decision_id).limit(1).execute()
         if not response.data:
             return None
         return DecisionOutcome.model_validate(response.data[0])
+
+    def get_resolved_by_decision_ids(self, decision_ids: list[str]) -> list[DecisionOutcome]:
+        """Resolved decision_outcomes rows for a specific, already-known set
+        of decision_ids -- added 2026-09-27 (DecisionOutcome consumer
+        migration batch 2) because none of the other methods above can
+        express this exact `.in_(decision_ids)` join, which
+        `scripts/calibration_baseline.py`'s `run_backfill_baseline`/
+        `run_live_baseline` both need (a paginated JudgeDecision id list
+        joined to its own resolved outcomes). Pagination-safe via
+        `_fetch_all_paginated`: a decision_ids list large enough to make
+        the matching outcome population exceed Supabase's per-request row
+        cap would otherwise silently truncate, exactly as the earlier
+        JudgeDecisionRepository/LLMAnalysisRepository incidents did."""
+        if not decision_ids:
+            return []
+
+        def build_query():
+            return (
+                self._client.table("decision_outcomes")
+                .select("*")
+                .in_("decision_id", decision_ids)
+                .neq("outcome_label", "UNRESOLVED")
+                .order("decision_id")
+            )
+
+        rows = _fetch_all_paginated(build_query)
+        return [DecisionOutcome.model_validate(row) for row in rows]
 
 
 class CalibrationRunRepository:

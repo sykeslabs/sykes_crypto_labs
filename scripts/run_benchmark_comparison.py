@@ -8,12 +8,11 @@ Usage:
 """
 
 import sys
-from datetime import UTC, datetime
 
 from app.benchmarks.baseline_comparison import build_equal_weight_basket_path, compute_baseline_stats
 from app.config import get_settings
 from app.database.client import get_supabase_client
-from app.database.repository import AssetRepository
+from app.database.repository import AssetRepository, DecisionOutcomeRepository
 from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.factors import compute_volatility
@@ -37,6 +36,21 @@ def fetch_window_closes(binance, coinbase, symbol, window_start, window_end):
     return windowed, source
 
 
+def fetch_backfilled_decision_timestamps(outcome_repo: DecisionOutcomeRepository):
+    """Pagination-safe repository retrieval (2026-09-27 follow-up,
+    DecisionOutcome consumer migration batch 2): the old raw, unbounded
+    query had no `.range()`/`.limit()` at all -- feeding directly into a
+    min/max comparison window, a truncation would have silently shrunk
+    the real window, not just undercounted rows. No resolution filter
+    here, preserved exactly as before -- every backfilled decision's own
+    timestamp counts toward the window regardless of whether it has
+    resolved yet. Ordering doesn't matter for this min/max computation
+    (the caller's own sorted() is authoritative, not database order), so
+    the new pagination tiebreaker has no other effect on this script."""
+    outcomes = outcome_repo.get_recent(limit=None, is_backfilled=True)
+    return [o.decision_timestamp for o in outcomes]
+
+
 def main() -> int:
     settings = get_settings()
     client = get_supabase_client()
@@ -44,8 +58,7 @@ def main() -> int:
     coinbase = CoinbaseClient(settings)
     asset_repo = AssetRepository(client)
 
-    outcomes = client.table("decision_outcomes").select("decision_timestamp").eq("is_backfilled", True).execute().data
-    timestamps = sorted(datetime.fromisoformat(o["decision_timestamp"]) for o in outcomes)
+    timestamps = sorted(fetch_backfilled_decision_timestamps(DecisionOutcomeRepository(client)))
     window_start, window_end = timestamps[0], timestamps[-1]
     print(f"Real comparison window: {window_start.date()} to {window_end.date()} ({(window_end - window_start).days} days)")
 

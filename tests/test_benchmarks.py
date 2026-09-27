@@ -115,8 +115,10 @@ class FakeDecisionOutcomeRepo:
     def __init__(self, unresolved):
         self._unresolved = unresolved
         self.updated = []
+        self.get_unresolved_calls = []
 
     def get_unresolved(self, limit=500):
+        self.get_unresolved_calls.append(limit)
         return self._unresolved
 
     def update_outcome(self, decision_id, realized_return, outcome_label, evaluated_at):
@@ -181,3 +183,22 @@ def test_evaluation_service_skips_when_no_entry_price_available():
 
     assert result.evaluated == 0
     assert result.skipped_no_entry_price == 1
+
+
+def test_evaluation_service_requests_the_complete_unresolved_population():
+    # 2026-09-27 follow-up: run() must request limit=None (every genuinely
+    # unresolved row, via DecisionOutcomeRepository's own pagination), not
+    # the old hardcoded 500-row default -- proves the retrieval-completeness
+    # fix without asserting anything about processing order (no FIFO/
+    # priority policy was introduced).
+    decision_ts = datetime(2026, 1, 1, tzinfo=UTC)
+    outcome = DecisionOutcome(
+        decision_id="d1", asset_id="a1", decision_timestamp=decision_ts, horizon_days=7,
+        target_return=0.15, stop_return=-0.15, judge_confidence=0.6,
+    )
+    repo = FakeDecisionOutcomeRepo([outcome])
+    service = OutcomeEvaluationService(repo, FakeSnapshotRepoForEvaluation({}))
+
+    service.run(now=decision_ts + timedelta(days=10))
+
+    assert repo.get_unresolved_calls == [None]

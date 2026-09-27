@@ -346,6 +346,245 @@ outcomes, and are dated.
   tests: 11 passed. Full suite: 633 passed, no failures, no skips. No
   production run or database mutation was performed during validation. See
   [`history.md`](history.md)'s Phase 5n section for the full writeup.
+- **Remaining raw `judge_decisions` consumers: migrate all three to
+  `JudgeDecisionRepository.get_recent(limit=None, ...)` — adopted,
+  2026-09-27.** Follow-up to the 2026-09-19 entry above: a repository-wide
+  forensic search found `scripts/apply_execution_costs.py`, `scripts/
+  run_evidence_value_ranking.py`, and `scripts/run_reasoning_audit.py`
+  still bypassing the repository with their own raw, unpaginated queries —
+  the identical dormant-truncation pattern already closed for
+  `calibration_baseline.py`. None was near the 1000-row cap (488 total
+  judge_decisions today: 256 live / 232 backfilled).
+
+  **Decision**: no repository extension — `get_recent()` already covers
+  every required population (`is_backfilled=None` for
+  `apply_execution_costs.py`'s intentional live+backfilled mix,
+  `is_backfilled=True` for the other two's backfilled-only need). Each
+  call site was migrated individually, not via one shared textual
+  replacement, since each has different retrieval semantics:
+  `apply_execution_costs.py` needed only a dict-access → attribute-access
+  adaptation; `run_evidence_value_ranking.py` needed its result reversed
+  to restore the ascending chronological order its rolling-window drift
+  analysis requires (`get_recent()` returns descending); `run_reasoning_audit.py`
+  had no ordering guarantee at all before this fix (no `.order()` clause),
+  so `get_recent()`'s deterministic order is a genuine improvement, not
+  merely a pagination fix.
+
+  **Scope boundary found and deliberately left alone**: `run_evidence_value_ranking.py`'s
+  reversed `judge_decisions` order does not actually propagate to its own
+  returned example list — that list's order is driven by a separate
+  `decision_outcomes` query with no `.order()` clause, unrelated to
+  pagination and out of scope for this migration. Documented in-code, not
+  fixed here.
+
+  **Validation** (2026-09-27): 12 new focused tests (4 per consumer) using
+  mocked repositories, none touching a real Supabase connection. Full
+  suite: see [`history.md`](history.md)'s Phase 5p section for exact
+  pass/fail counts and live-population figures. No production run or
+  database mutation was performed.
+- **`DecisionOutcomeRepository` pagination, Phase 1 of a multi-batch
+  migration — adopted, 2026-09-27.** A forensic audit (same day, follow-up
+  to the above) found `DecisionOutcomeRepository` had no `limit=None`
+  pagination path at all — architecturally behind `JudgeDecisionRepository`/
+  `LLMAnalysisRepository` — and several production consumers relied on
+  hardcoded 500/1000/2000 ceilings, or raw unpaginated queries, to
+  approximate a complete population. Not yet active (488 total
+  `decision_outcomes` today), same dormant-growth-boundary class as B2/
+  Phase 5m/5n/5p.
+
+  **Decision**: fix the repository first (`get_recent`, `get_unresolved`,
+  `get_resolved_without_net_of_costs`, `get_resolved_without_benchmark_alpha`
+  all gained `limit: int | None` via the existing `_fetch_all_paginated`
+  helper — no second pagination implementation), then migrate only the two
+  consumers whose fix was unambiguous this pass: `/calibration/outcomes/
+  recent`'s default (`200` → `int | None = None`, following the
+  already-established `/judge/decisions/recent`/`/assessments/research/
+  recent` precedent exactly) and `OutcomeEvaluationService.run()`
+  (`get_unresolved(limit=None)`, so a real backlog is never silently
+  left partially unprocessed).
+
+  **Two design questions were investigated and resolved separately before
+  implementing** (2026-09-27, full writeup in that investigation's own
+  report): (1) does outcome evaluation need FIFO/oldest-first processing?
+  Traced the full invocation path (`--evaluate-outcomes` runs
+  unconditionally on every `scripts/run_daily.py` invocation), the
+  triple-barrier resolution logic, and searched code/docs/tests for any
+  deadline/priority requirement — found none. Since the evaluation step
+  is zero-cost and deterministic, the correct fix is simply "always fetch
+  everything" (`limit=None`), which makes the ordering question moot for
+  correctness — **no FIFO/business-priority ordering was introduced**; the
+  `.order("decision_id")` added for pagination correctness is a pure
+  unique tiebreaker `_fetch_all_paginated` itself requires, nothing more.
+  (2) is `/calibration/outcomes/recent`'s `200` default intentional or
+  accidental? The dashboard's own code comment proved it was a known,
+  already-worked-around symptom (`?limit=2000`, chosen to match
+  `/calibration/summary`'s own hardcoded 2000) — resolved by following the
+  existing sibling-endpoint convention rather than inventing a new one.
+
+  **Deliberately NOT migrated this pass** (a separate, later batch):
+  `GET /calibration/summary`, `run_composite_weights_validation.py`,
+  `run_periodicity_fix.py`, `apply_execution_costs.py`,
+  `apply_benchmark_alpha.py`, `calibration_baseline.py`,
+  `run_benchmark_comparison.py`, `run_evidence_value_ranking.py`,
+  `run_reasoning_audit.py` — all confirmed to require the complete
+  population by the forensic audit, but held out of this phase to keep
+  each migration batch small and independently verifiable, matching this
+  project's own established practice for the `judge_decisions` migration.
+
+  **Validation** (2026-09-27): 14 new focused tests (10 repository, 1
+  evaluation-service, 3 endpoint), none touching a real Supabase
+  connection. Full suite: see [`history.md`](history.md)'s Phase 5q
+  section for exact pass/fail counts and live-population figures. No
+  production run or database mutation was performed.
+- **DecisionOutcome consumer migration, batch 1: `apply_execution_costs.py`,
+  `apply_benchmark_alpha.py`, `run_composite_weights_validation.py` —
+  adopted, 2026-09-27.** First of several planned batches migrating the
+  nine consumers Phase 5q's audit confirmed require the complete
+  population. The remaining six (`GET /calibration/summary`,
+  `run_periodicity_fix.py`, `calibration_baseline.py`,
+  `run_benchmark_comparison.py`, `run_evidence_value_ranking.py`,
+  `run_reasoning_audit.py`) are explicitly **not** part of this batch.
+
+  **Decision**: the two `limit=1000` idempotent catch-up scripts moved to
+  `limit=None` with no other change — each wrapped in a small named helper
+  purely for testability, mirroring `apply_execution_costs.py`'s own
+  pre-existing `fetch_decisions_by_id` convention. `run_composite_weights_
+  validation.py`'s `limit=2000` moved to `limit=None`.
+
+  **A real discrepancy was found and corrected, not silently complied
+  with**: this batch's own task description assumed `run_composite_weights_
+  validation.py`'s population should become `is_backfilled=False`
+  (live-only). The function's actual, pre-existing, already-tested
+  behavior is an intentionally MIXED live+backfilled population (`main()`'s
+  own `n_backfilled`/`n_live` reporting, the per-example `is_backfilled`
+  field, and a test predating this migration all confirm this). Applying
+  `is_backfilled=False` would have silently dropped every backfilled
+  observation from the correlation/mean-score statistics — a real
+  regression, not a preservation of existing behavior. The migration
+  preserves the unfiltered population exactly as it already was.
+
+  **Validation** (2026-09-27): 6 new focused tests (2 per consumer, plus
+  one additional test locking in the mixed-population finding above), read
+  -only live validation against real Supabase data for all three (11
+  rows missing net_of_costs, 0 rows missing effective_alpha, 44 joinable
+  directional examples — 5 backfilled/39 live), zero remaining hardcoded
+  `limit=1000`/`2000`/`500` or raw `decision_outcomes` queries in any of
+  the three files. Full suite: see [`history.md`](history.md)'s Phase 5r
+  section for exact pass/fail counts. No production run or database
+  mutation was performed.
+- **DecisionOutcome consumer migration, batch 2:
+  `run_periodicity_fix.py`, `calibration_baseline.py`,
+  `run_benchmark_comparison.py` — adopted, 2026-09-27.** Second of several
+  planned batches. Two consumers (`run_evidence_value_ranking.py`,
+  `run_reasoning_audit.py`) remain deliberately deferred — the
+  DecisionOutcome migration is **not** complete after this batch.
+
+  **Decision**: `run_periodicity_fix.py`'s `limit=2000` and
+  `run_benchmark_comparison.py`'s fully unbounded raw query both moved to
+  the existing `get_recent(limit=None, is_backfilled=True)` — no
+  repository extension needed for either, since neither had any real
+  ordering dependency (both already re-derive their own chronological
+  window via an explicit Python `sorted()`, never trusting database
+  order). `calibration_baseline.py` genuinely required a new repository
+  method — `get_resolved_by_decision_ids(decision_ids)` — since no
+  existing method could express its actual "resolved outcomes for this
+  specific, already-paginated decision_ids set" join; both
+  `run_backfill_baseline` and `run_live_baseline` (whose `judge_decisions`
+  side Phase 5n already fixed) now use it for their `decision_outcomes`
+  side.
+
+  **Validation genuinely verified, not assumed**: temporarily reverted
+  `calibration_baseline.py` alone and re-ran its test suite — the new
+  pagination test failed exactly as predicted, confirming it real
+  regression protection rather than a call-signature-only assertion; a
+  pre-existing Phase 5n test also failed as useful collateral evidence
+  (its own fake client had to be extended to simulate the real Supabase
+  cap for `decision_outcomes`, not just `judge_decisions`, to make this
+  possible). Restored immediately afterward. 15 new focused tests, read
+  -only live validation against real Supabase data for all three
+  consumers (each cross-checked against an independent raw reference
+  query with an exact match, including a decision_ids-scoped B2-deduped
+  count: 127 resolved live outcomes for 196 decision_ids). Full suite:
+  see [`history.md`](history.md)'s Phase 5s section for exact pass/fail
+  counts. No production run or database mutation was performed.
+- **DecisionOutcome consumer migration, batch 3 (final):
+  `run_evidence_value_ranking.py`, `run_reasoning_audit.py` — adopted,
+  2026-09-27.** Completes the audited migration set — all 9 consumers
+  Phase 5q's audit confirmed require the complete population are now
+  migrated. Not a claim that no future raw query can ever be added
+  elsewhere, only that this specific audited set is closed.
+
+  **Decision**: `run_evidence_value_ranking.py`'s raw, fully unbounded
+  `decision_outcomes` query → `get_recent(limit=None, is_backfilled=True)`
+  (UNRESOLVED excluded in Python, no repository filter exists for it).
+  `run_reasoning_audit.py`'s raw `.in_(decision_ids)` query → the same
+  `get_resolved_by_decision_ids` method added in batch 2 — no new
+  repository capability needed for either.
+
+  **A genuine, deliberate ordering fix, not an accidental one**: mapping
+  `run_evidence_value_ranking.py`'s data flow before touching it revealed
+  that its `decision_outcomes` query — not the separately-paginated
+  `judge_decisions` retrieval — is the sole source of `fetch_directional_
+  examples`'s returned order, which `rolling_window_drift`'s own docstring
+  requires to be chronological. The old order was genuinely undefined
+  (no `.order()` at all), not "accidentally chronological." Since every
+  observation here is a real, historical, already-resolved decision,
+  explicitly sorting by `decision_timestamp` ascending introduces no
+  lookahead — it only makes the code's own pre-existing chronological
+  requirement actually true, for the first time. `run_reasoning_audit.py`
+  required no ordering change: its candidate order is driven entirely by
+  the already-fixed `judge_decisions` retrieval, never by the
+  `decision_outcomes` side.
+
+  **Validation genuinely verified, not assumed**: since `git stash` would
+  have reverted past the earlier JudgeDecision migration too, each
+  script's pre-migration form was reconstructed in place instead. All new
+  tests failed exactly as predicted against the reconstructed code —
+  most tellingly, feeding the same observations forwards vs. reversed
+  produced different output under the old code (`[3.0, 2.0, 1.0]` instead
+  of `[1, 2, 3]`), directly proving the old order was input-order-
+  dependent, not genuinely chronological. Restored immediately afterward.
+  3 new focused tests, read-only live validation against real Supabase
+  data for both consumers (each cross-checked against an independent raw
+  reference query with an exact match: 154 resolved backfilled outcomes,
+  confirmed strictly ascending; 154 resolved outcomes for 232 backfilled
+  decision_ids, confirmed zero rows outside the requested id set). Global
+  search confirms zero raw `decision_outcomes` queries remain anywhere in
+  `scripts/*.py`. Full suite: see [`history.md`](history.md)'s Phase 5t
+  section for exact pass/fail counts. No production run or database
+  mutation was performed.
+- **Correction: `GET /calibration/summary`'s hardcoded `limit=2000` was
+  the one consumer batches 1–3 missed — fixed, 2026-09-27.** The batch-3
+  entry above stated the audited migration was complete; a subsequent
+  application-wide audit found this endpoint was never assigned to any
+  batch and still called `outcome_repo.get_recent(limit=2000)`, despite
+  being the first consumer named in the original Phase 5q 9-item list.
+  Not retroactively corrected in the batch-3 entry itself — that record
+  stands as written, a real account of what was believed complete at the
+  time.
+
+  **Decision**: single-line fix, `limit=2000` → `limit=None`. No
+  repository or `_fetch_all_paginated` change needed — the capability
+  already existed. No calibration methodology, B2 exclusion, or response
+  schema changed.
+
+  **Validation genuinely verified, not assumed**: temporarily reverted
+  the one-line fix and re-ran the new test — failed exactly as predicted
+  (`[2000] == [None]`). Restored immediately afterward. 1 new focused
+  test (call contract + a 2005-row completeness proof, past the old
+  ceiling). Read-only live validation: endpoint retrieval returned all
+  488 real rows (matches raw count exactly), B2 exclusion confirmed still
+  excluding 60 live decisions, full calculation invoked directly against
+  real data and succeeded end to end. Repeat repository-wide search:
+  zero remaining `limit=500`/`1000`/`2000`/`5000` DecisionOutcome
+  ceilings anywhere in `app/` or `scripts/`. Full suite: see
+  [`history.md`](history.md)'s Phase 5u section for exact pass/fail
+  counts. No production run or database mutation was performed.
+
+  **This closes the application-wide DecisionOutcome pagination/
+  completeness issue** across every consumer identified by Phase 5q's
+  forensic audit and the later application-wide audit — not a claim that
+  no future code can ever introduce a new raw query.
 
 ---
 

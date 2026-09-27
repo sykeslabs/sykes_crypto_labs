@@ -168,3 +168,58 @@ def test_fetch_joinable_directional_examples_ignores_backfilled_rows_for_groupin
     assert skipped_duplicate_group == 0
     assert len(examples) == 2
     assert {e["is_backfilled"] for e in examples} == {False, True}
+
+
+def test_fetch_joinable_directional_examples_does_not_truncate_past_the_old_2000_row_boundary():
+    # 2026-09-27 follow-up (Phase 2/consumer batch 1): the DecisionOutcome
+    # retrieval used to be a hardcoded outcome_repo.get_recent(limit=2000).
+    # 2005 real, fully-joinable rows here -- past that old ceiling -- must
+    # ALL survive through to `examples`, proving the migration to
+    # get_recent(limit=None) actually removed the truncation rather than
+    # just changing the argument's spelling. Every row shares one run_id
+    # (with itself as its only screening peer) so the join/scoring logic
+    # stays trivial at this volume.
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    n = 2005
+    tables = {
+        "decision_outcomes": [_outcome_row(f"d-{i}", f"asset-{i}") for i in range(n)],
+        "judge_decisions": [_decision_row(f"d-{i}", f"asset-{i}", f"RUN-{i}", day) for i in range(n)],
+        "screened_universe": [_screened_row(f"RUN-{i}", f"asset-{i}", momentum=0.1) for i in range(n)],
+    }
+    client = FakeSupabaseClient(tables)
+
+    examples, skipped_no_screening_row, skipped_duplicate_group = fetch_joinable_directional_examples(client)
+
+    assert len(examples) == n  # not silently capped at the old 2000
+    assert skipped_no_screening_row == 0
+    assert skipped_duplicate_group == 0
+
+
+def test_fetch_joinable_directional_examples_still_reads_the_mixed_live_and_backfilled_population():
+    # Confirms the migration preserved this function's REAL existing
+    # semantics: it has never been live-only, despite its own docstring's
+    # wording -- main() explicitly reports n_backfilled/n_live and includes
+    # both in every correlation/mean-score figure (see also the
+    # ignores_backfilled_rows_for_grouping test above, which already
+    # proved this before this migration). get_recent(limit=None) must NOT
+    # have gained an is_backfilled=False filter as part of this change.
+    day = datetime(2026, 9, 16, 10, 0, tzinfo=UTC)
+    tables = {
+        "decision_outcomes": [
+            _outcome_row("live-1", "asset-1", is_backfilled=False),
+            _outcome_row("bf-1", "asset-2", is_backfilled=True),
+        ],
+        "judge_decisions": [
+            _decision_row("live-1", "asset-1", "RUN-1", day, is_backfilled=False),
+            _decision_row("bf-1", "asset-2", "BACKFILL-1", day, is_backfilled=True),
+        ],
+        "screened_universe": [
+            _screened_row("RUN-1", "asset-1", momentum=0.1),
+            _screened_row("BACKFILL-1", "asset-2", momentum=0.1),
+        ],
+    }
+    client = FakeSupabaseClient(tables)
+
+    examples, _, _ = fetch_joinable_directional_examples(client)
+
+    assert {e["is_backfilled"] for e in examples} == {False, True}

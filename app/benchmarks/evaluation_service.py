@@ -46,7 +46,13 @@ class OutcomeEvaluationService:
         now = now or datetime.now(UTC)
         result = EvaluationResult()
 
-        unresolved = self._decision_outcome_repo.get_unresolved()
+        # limit=None (2026-09-27 follow-up to the JudgeDecision pagination
+        # work): every currently UNRESOLVED row is evaluated every run, not
+        # just the first 500 -- this step is zero-cost/deterministic (no
+        # LLM or external API call), so there's no reason to leave any of
+        # a real backlog unprocessed. No FIFO/priority ordering is implied;
+        # see DecisionOutcomeRepository.get_unresolved's own docstring.
+        unresolved = self._decision_outcome_repo.get_unresolved(limit=None)
         for outcome in unresolved:
             horizon_end = outcome.decision_timestamp + timedelta(days=outcome.horizon_days)
 

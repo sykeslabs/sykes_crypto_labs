@@ -6,15 +6,19 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import scripts.run_reasoning_audit as run_reasoning_audit_module
 from app.benchmarks.reasoning_audit import (
     AuditCandidate,
     render_audit_prompt,
     select_audit_sample,
 )
-from app.benchmarks.schemas import JudgeReasoningAuditRecord, ReasoningAuditResult
+from app.benchmarks.schemas import DecisionOutcome, JudgeReasoningAuditRecord, ReasoningAuditResult
 from app.config.settings import Settings
+from app.database import repository as repository_module
+from app.judge.schemas import JudgeDecisionRecord
 from app.llm.cost import CostGuard, CostLedgerRepository
 from app.llm.structured_provider import OpenRouterStructuredProvider
+from scripts.run_reasoning_audit import fetch_candidates
 
 
 def _candidate(
@@ -70,6 +74,162 @@ def test_select_audit_sample_deduplicates_candidates_matching_multiple_criteria(
 def test_select_audit_sample_returns_fewer_than_requested_if_pool_is_smaller():
     sample = select_audit_sample([_candidate("d1")], sample_size=10)
     assert len(sample) == 1
+
+
+# --- fetch_candidates: pagination-safe repository retrieval (2026-09-27) -----
+
+def _decision_record(id_, decision="BUY", requires_review=False):
+    record = JudgeDecisionRecord(
+        run_id="RUN-TEST", asset_id="asset-1", created_at=datetime(2026, 9, 1, tzinfo=UTC),
+        decision=decision, confidence=0.6, target_allocation=0.1, expected_return=0.1,
+        expected_alpha=0.05, risk_score=0.4, uncertainty=0.3, model_agreement=0.8, source_agreement=0.7,
+        investment_horizon_days=30, key_evidence=["e1"], contradictory_evidence=[], key_risks=[],
+        invalidation_conditions=[], requires_review=requires_review, thesis="t", macro_sensitivity="n/a",
+        regime_id=None, prompt_template_id="p1", estimated_cost=Decimal("0.01"), is_backfilled=True,
+    )
+    record.id = id_
+    return record
+
+
+def _outcome_row(decision_id, realized_return=0.05, outcome_label="HIT_TARGET"):
+    # Real fields required for DecisionOutcome.model_validate() to succeed
+    # -- fetch_candidates now retrieves outcomes through
+    # DecisionOutcomeRepository.get_resolved_by_decision_ids() (2026-09-27,
+    # batch 3), which validates every raw row into a full DecisionOutcome,
+    # not just the 3 fields the old raw-dict-based code happened to select
+    # (same convention as _decision_record's own comment above).
+    record = DecisionOutcome(
+        decision_id=decision_id, asset_id="asset-1", decision_timestamp=datetime(2026, 9, 1, tzinfo=UTC),
+        horizon_days=30, target_return=0.1, stop_return=-0.1, realized_return=realized_return,
+        outcome_label=outcome_label, judge_confidence=0.6, is_backfilled=True,
+    )
+    return record.to_row()
+
+
+class _FakeJudgeDecisionRepository:
+    last_calls: list[dict] = []
+    records: list = []
+
+    def __init__(self, client):
+        self._client = client
+
+    def get_recent(self, limit=None, is_backfilled=None):
+        _FakeJudgeDecisionRepository.last_calls.append({"limit": limit, "is_backfilled": is_backfilled})
+        return _FakeJudgeDecisionRepository.records
+
+
+class _FakeAuditTableQuery:
+    def __init__(self, rows, capped=False):
+        self._rows = rows
+        self._capped = capped
+        self._ranged = False
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self._rows = [r for r in self._rows if r.get(column) == value]
+        return self
+
+    def neq(self, column, value):
+        self._rows = [r for r in self._rows if r.get(column) != value]
+        return self
+
+    def in_(self, column, values):
+        values = set(values)
+        self._rows = [r for r in self._rows if r.get(column) in values]
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def range(self, start, end):
+        self._rows = self._rows[start:end + 1]
+        self._ranged = True
+        return self
+
+    def execute(self):
+        rows = self._rows
+        if self._capped and not self._ranged:
+            rows = rows[:repository_module._SUPABASE_MAX_ROWS_PER_REQUEST]
+        return _FakeAuditResult(rows)
+
+
+class _FakeAuditResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeAuditClient:
+    def __init__(self, tables: dict):
+        self._tables = tables
+
+    def table(self, name):
+        # capped for decision_outcomes (2026-09-27, batch 3): reproduces
+        # the real Supabase per-request row cap for a query issued
+        # without `.range()` -- the exact regression
+        # get_resolved_by_decision_ids's pagination closes (same
+        # convention as tests/test_calibration_baseline.py's fake).
+        return _FakeAuditTableQuery(list(self._tables.get(name, [])), capped=(name == "decision_outcomes"))
+
+
+def _setup_fake_repository(monkeypatch, records):
+    _FakeJudgeDecisionRepository.last_calls = []
+    _FakeJudgeDecisionRepository.records = records
+    monkeypatch.setattr(run_reasoning_audit_module, "JudgeDecisionRepository", _FakeJudgeDecisionRepository)
+
+
+def test_fetch_candidates_calls_repository_with_limit_none_and_backfilled_true(monkeypatch):
+    _setup_fake_repository(monkeypatch, [])
+    client = _FakeAuditClient({})
+
+    fetch_candidates(client)
+
+    assert _FakeJudgeDecisionRepository.last_calls == [{"limit": None, "is_backfilled": True}]
+
+
+def test_fetch_candidates_reaches_sampler_with_deterministic_repository_order(monkeypatch):
+    # get_recent() supplies a defined `created_at DESC` order (unlike the
+    # old raw query, which had no `.order()` at all and no ordering
+    # guarantee). This proves that order reaches fetch_candidates's own
+    # returned list unchanged -- select_audit_sample's within-group
+    # tie-breaking now has something deterministic to depend on.
+    d1, d2, d3 = _decision_record("d1"), _decision_record("d2"), _decision_record("d3")
+    _setup_fake_repository(monkeypatch, [d1, d2, d3])
+    client = _FakeAuditClient({
+        "decision_outcomes": [_outcome_row("d1"), _outcome_row("d2"), _outcome_row("d3")],
+        "judge_reasoning_audits": [],
+    })
+
+    candidates = fetch_candidates(client)
+
+    assert [c.decision_id for c in candidates] == ["d1", "d2", "d3"]
+
+
+def test_fetch_candidates_excludes_already_audited_decisions(monkeypatch):
+    d1, d2 = _decision_record("d1"), _decision_record("d2")
+    _setup_fake_repository(monkeypatch, [d1, d2])
+    client = _FakeAuditClient({
+        "decision_outcomes": [_outcome_row("d1"), _outcome_row("d2")],
+        "judge_reasoning_audits": [{"decision_id": "d1"}],
+    })
+
+    candidates = fetch_candidates(client)
+
+    assert [c.decision_id for c in candidates] == ["d2"]
+
+
+def test_fetch_candidates_does_not_truncate_a_population_crossing_the_old_1000_row_boundary(monkeypatch):
+    records = [_decision_record(f"d-{i}") for i in range(1001)]
+    _setup_fake_repository(monkeypatch, records)
+    client = _FakeAuditClient({
+        "decision_outcomes": [_outcome_row(f"d-{i}") for i in range(1001)],
+        "judge_reasoning_audits": [],
+    })
+
+    candidates = fetch_candidates(client)
+
+    assert len(candidates) == 1001
 
 
 # --- render_audit_prompt ------------------------------------------------------
