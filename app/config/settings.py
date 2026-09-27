@@ -215,6 +215,20 @@ class Settings(BaseSettings):
     # Portfolio Construction in this sub-phase.
     max_stress_scenario_drawdown: float = 0.5
 
+    # Phase 5o (2026-09-27): a real position worth less than this (USD,
+    # current value) is dust, not a real holding to actively manage —
+    # found live: 15 positions from years of tiny staking rewards, ranging
+    # $0.0000000000-$0.062, were forcing Judge coverage (real LLM cost
+    # spent asking "should I trade $0.00 of REN") and cluttering My
+    # Portfolio with 0.00%-allocation rows. $1 sits well inside the real
+    # observed gap between the largest dust position (JTO, $0.062) and the
+    # smallest genuine holding (BONK, $15.58) at the time this was chosen.
+    # Applied at `_get_held_assets()` (Judge/screening coverage),
+    # `GET /holdings` (display), and `reconcile_in_asset.py` (`in_asset`) —
+    # deliberately NOT applied to market-data collection, which stays
+    # free/harmless to run for every real position regardless of size.
+    min_material_holding_usd: float = 1.0
+
     # Adversarial research, macro matrix, remaining fragile sources (Phase 3f,
     # used only with --with-adversarial / --with-macro)
     # A single model does the whole bull -> bear -> scenario research cycle

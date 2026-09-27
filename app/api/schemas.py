@@ -98,12 +98,30 @@ class HoldingsEntryView(BaseModel):
     fabricated 0).
 
     `platform` (Phase 5o): which real custody location this row is for —
-    on `GET /holdings`, the same asset can now appear as more than one row
-    (one per platform it's actually held on), each with its own `quantity`/
-    `cost_basis_usd`/`cost_per_unit`. `source_type` is the real original
-    transaction type where known (e.g. `"Staking Income"`), `None` for a
-    manual dashboard entry — purely descriptive, never affects any other
-    field on this row."""
+    a real, single, unambiguous value on `/holdings/history` (one real
+    transaction happened on exactly one platform). `None` on `GET
+    /holdings` instead (2026-09-27 revision: an asset held on more than
+    one platform is now ONE row there, not one per platform, so a single
+    `platform` value would be arbitrary/misleading) — `platforms` (every
+    platform this asset is actually held on, sorted) is the real field to
+    use there instead, `None` on `/holdings/history` for the same reason
+    in reverse.
+
+    `value_usd_by_platform`/`cost_basis_usd_by_platform` (2026-09-27,
+    `GET /holdings` only): this row's real value/cost basis broken out
+    PER platform (keyed by "coinbase"/"ledger_wallet") -- real bug fix,
+    found live: a caller that only wants one platform's real contribution
+    (e.g. a dashboard total filtered to just Ledger Wallet) must not use
+    this row's combined `value_usd`/`cost_basis_usd` for that, since an
+    asset held on two platforms would silently double-count the OTHER
+    platform's share into a single-platform total. A platform key is
+    simply absent (not zero) if no price was available to value that
+    platform's share -- same "unknown, not zero" convention as `value_usd`
+    itself.
+
+    `source_type` is the real original transaction type where
+    known (e.g. `"Staking Income"`), `None` for a manual dashboard entry —
+    purely descriptive, never affects any other field on this row."""
 
     id: str | None
     asset_id: str | None
@@ -113,7 +131,10 @@ class HoldingsEntryView(BaseModel):
     recorded_at: datetime
     purchased_at: datetime | None = None
     transaction_type: str = "BUY"
-    platform: str
+    platform: str | None = None
+    platforms: list[str] | None = None
+    value_usd_by_platform: dict[str, float] | None = None
+    cost_basis_usd_by_platform: dict[str, float] | None = None
     source_type: str | None = None
     allocation: float | None = None
     value_usd: float | None = None

@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, compute_current_allocations
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, compute_current_allocations, filter_materially_held
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 
@@ -239,3 +239,33 @@ def test_collapse_platforms_then_allocate_matches_pipeline_consumers_expectation
     result = compute_current_allocations(collapsed, price_by_asset_id={"btc": 100.0})
     # 2 BTC @ $100 = $200; cash = $800; total = $1000 -> BTC fraction = 0.2
     assert result["btc"] == pytest.approx(0.2)
+
+
+# --- Phase 5o (2026-09-27): filter_materially_held ---------------------------
+
+def test_filter_materially_held_excludes_a_priced_dust_position():
+    holdings = [_entry("ren", 0.0000002), _entry("btc", 1.0)]
+    result = filter_materially_held(holdings, {"ren": 3.0, "btc": 100.0}, min_value_usd=1.0)
+    assert [h.asset_id for h in result] == ["btc"]
+
+
+def test_filter_materially_held_keeps_a_position_with_no_price_available():
+    # "No price yet" and "priced below the threshold" are different --
+    # silently hiding a real, unpriced position would be worse than
+    # showing it.
+    holdings = [_entry("newasset", 5.0)]
+    result = filter_materially_held(holdings, {}, min_value_usd=1.0)
+    assert [h.asset_id for h in result] == ["newasset"]
+
+
+def test_filter_materially_held_keeps_a_value_exactly_at_the_threshold():
+    holdings = [_entry("btc", 0.01)]
+    result = filter_materially_held(holdings, {"btc": 100.0}, min_value_usd=1.0)  # exactly $1.00
+    assert [h.asset_id for h in result] == ["btc"]
+
+
+def test_filter_materially_held_filters_the_cash_line_by_its_own_quantity():
+    holdings = [_entry(None, 0.50), _entry(None, 5.0, platform="ledger_wallet")]
+    result = filter_materially_held(holdings, {}, min_value_usd=1.0)
+    assert len(result) == 1
+    assert result[0].quantity == pytest.approx(5.0)

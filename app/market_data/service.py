@@ -4,9 +4,10 @@ from datetime import datetime, timedelta
 
 from app.config import Settings
 from app.database.models import Asset
-from app.database.repository import AssetRepository, MarketSnapshotRepository
+from app.database.repository import AssetRepository, HoldingsLedgerRepository, MarketSnapshotRepository
 from app.market_data.coingecko import CoinGeckoClient
 from app.market_data.normalize import normalize_coingecko_entry
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
 
 logger = logging.getLogger("crypto_ai_portfolio.market_data")
 
@@ -36,21 +37,24 @@ class MarketDataCollectionService:
         asset_repo: AssetRepository,
         snapshot_repo: MarketSnapshotRepository,
         coingecko_client: CoinGeckoClient,
+        holdings_ledger_repo: HoldingsLedgerRepository,
     ) -> None:
         self._settings = settings
         self._asset_repo = asset_repo
         self._snapshot_repo = snapshot_repo
         self._coingecko = coingecko_client
+        self._holdings_ledger_repo = holdings_ledger_repo
 
     def run(self) -> CollectionResult:
         result = CollectionResult()
 
         assets = self._asset_repo.get_active_assets()
+        assets = self._include_held_but_inactive(assets)
         if not assets:
             logger.warning("No active assets found in the 'assets' table — nothing to collect.")
             return result
 
-        logger.info("Collecting market data for %d active asset(s): %s",
+        logger.info("Collecting market data for %d asset(s): %s",
                      len(assets), ", ".join(a.symbol for a in assets))
 
         try:
@@ -66,6 +70,29 @@ class MarketDataCollectionService:
 
         logger.info("Market data collection complete: %s", result.summary)
         return result
+
+    def _include_held_but_inactive(self, assets: list[Asset]) -> list[Asset]:
+        """Real gap found 2026-09-27: a real, nonzero position in an
+        `active=False` asset (e.g. the Phase 5o import's newly-onboarded
+        symbols, deliberately kept inactive so they don't get swept into
+        screening/Judge coverage) never got a `market_snapshots` row here,
+        so `GET /holdings` could never compute its Value/Allocation --
+        confirmed live for an 18.84 ETC position worth ~$177, showing "—"
+        for both. `active` staying false is still correct (this must not
+        expand the screening/Judge universe -- that's a separate,
+        already-decided gate, see `ScreeningService._get_held_assets`,
+        which already does the equivalent merge for Judge coverage); this
+        only makes sure a real held position still gets priced."""
+        already_covered = {a.id for a in assets}
+        held = collapse_platforms(aggregate_current_holdings(self._holdings_ledger_repo.get_all_history()))
+        for entry in held:
+            if entry.asset_id is None or entry.asset_id in already_covered:
+                continue
+            asset = self._asset_repo.get_by_id(entry.asset_id)
+            if asset is not None:
+                assets.append(asset)
+                already_covered.add(asset.id)
+        return assets
 
     def _process_asset(self, asset: Asset, markets: dict, result: CollectionResult) -> None:
         entry = markets.get(asset.coingecko_id)

@@ -120,6 +120,41 @@ def collapse_platforms(per_platform_holdings: list[HoldingsLedgerEntry]) -> list
     return collapsed
 
 
+def filter_materially_held(
+    holdings: list[HoldingsLedgerEntry],
+    price_by_asset_id: dict[str, float],
+    min_value_usd: float,
+) -> list[HoldingsLedgerEntry]:
+    """Phase 5o (2026-09-27): a position worth less than `min_value_usd`
+    (real current value, quantity * price) is dust, not a real holding to
+    actively manage -- real gap found live: years of tiny staking rewards
+    left 15 positions worth $0.0000000000-$0.062 that still counted as
+    "held" by `aggregate_current_holdings`'s own `quantity > 0` test,
+    forcing Judge coverage and cluttering My Portfolio with 0.00%-
+    allocation rows. This is a SEPARATE, later filtering step -- it never
+    changes `aggregate_current_holdings`'s own output (the underlying
+    quantity/cost-basis accounting stays exactly, honestly accurate no
+    matter how small a position is) -- only which of its rows count as
+    "worth actively managing" for a caller that has real prices in hand.
+
+    An asset with no price available (`price_by_asset_id` missing its key)
+    is KEPT, not dropped -- "no price yet" and "priced below the
+    threshold" are different, and silently hiding an unpriced real
+    position would be worse than showing it. The cash line is filtered by
+    its own quantity directly (quantity IS the USD amount already, no
+    price lookup needed or possible)."""
+    kept = []
+    for entry in holdings:
+        if entry.asset_id is None:
+            if entry.quantity >= min_value_usd:
+                kept.append(entry)
+            continue
+        price = price_by_asset_id.get(entry.asset_id)
+        if price is None or entry.quantity * price >= min_value_usd:
+            kept.append(entry)
+    return kept
+
+
 def compute_current_allocations(
     latest_holdings: list[HoldingsLedgerEntry],
     price_by_asset_id: dict[str, float],

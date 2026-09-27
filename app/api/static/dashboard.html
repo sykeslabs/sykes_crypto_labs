@@ -22,6 +22,7 @@
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #8884; vertical-align: top; }
   th.sortable-th { cursor: pointer; user-select: none; white-space: nowrap; }
   th.sortable-th:hover { color: #1565c0; }
+  tr.table-totals-row td { border-top: 2px solid #8888; }
   /* Caps a table to roughly N visible rows with a vertical scrollbar for
      the rest -- an approximation, not a pixel-exact row count, since real
      row height varies with content (e.g. a table with an expandable
@@ -48,6 +49,7 @@
   .badge.status-open { background: #1565c022; color: #1565c0; }
   .badge.status-declined { background: #c6282822; color: #c62828; }
   .badge.status-deferred { background: #6c6c6c22; color: #6c6c6c; }
+  .badge.platform { background: #6c6c6c22; color: #6c6c6c; margin-right: 2px; }
   .badge.status-proposed { background: #6a1b9a22; color: #6a1b9a; }
   /* Success/error status flash (Holdings form, Save key): a fading
      highlight so a sighted user glancing away when the message first
@@ -85,7 +87,7 @@
   .thesis { max-width: 420px; white-space: normal; }
   .thesis summary { cursor: pointer; }
   #key-status { font-size: 0.85rem; }
-  .donut-block { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .donut-block { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
   .donut-legend { list-style: none; margin: 0; padding: 0; font-size: 0.85rem; }
   .donut-legend li { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
   .donut-legend .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
@@ -124,7 +126,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   .modal-overlay { display: none; position: fixed; inset: 0; background: #00000088; z-index: 100; align-items: center; justify-content: center; padding: 24px; }
   .modal-box { background: Canvas; color: CanvasText; border: 1px solid #8888; border-radius: 8px; max-width: 720px; width: 100%; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 8px 32px #00000055; }
-  .modal-box-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #8884; }
+  .modal-box-header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #8884; cursor: move; touch-action: none; }
   .modal-box-header h3 { margin: 0; font-size: 1rem; }
   .modal-box-close { background: none; border: none; font-size: 1.3rem; line-height: 1; cursor: pointer; color: inherit; padding: 0 4px; }
   .modal-box-body { padding: 12px 16px; overflow-y: auto; font-size: 0.85rem; }
@@ -329,10 +331,7 @@
     <button type="submit" id="holdings-submit-btn">Record</button>
   </form>
   <div id="holdings-form-status" style="font-size:0.85rem;" aria-live="polite"></div>
-  <details style="margin-top:10px;">
-    <summary class="helper-text" style="cursor:pointer;">Show full transaction history</summary>
-    <div id="holdings-history" style="margin-top:8px;">Loading…</div>
-  </details>
+  <p style="margin-top:10px;"><button type="button" class="modal-link" onclick="openHoldingsHistoryModal();">Show full transaction history</button></p>
   <div id="portfolio-state-comparison"></div>
 </section>
 
@@ -490,18 +489,28 @@ function renderDonutBlock(slices, reversed) {
 // is just the price itself; the shared timestamp is shown once, above the
 // table (see buildHoldingsTable's own "Prices as of" line), not duplicated
 // on every row.
-function renderStoredPrice(priceUsd) {
-  if (priceUsd === null || priceUsd === undefined) return "—";
-  return `$${priceUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
+// Phase 5o (2026-09-27): shared, fixed-at-exactly-5-decimal-places
+// formatting for every numeric column common to both portfolio tables
+// (AI Portfolio and My Portfolio) -- Quantity, Cost/unit, Cost basis,
+// Price (collected), Value, Live price -- so the two can never drift to
+// different precision from each other. `prefix` is "$" for money, "" for
+// a raw quantity.
+const PORTFOLIO_TABLE_DECIMALS = 5;
+function formatPortfolioNumber(value, prefix = "") {
+  if (value === null || value === undefined) return "—";
+  return prefix + value.toLocaleString(undefined, {
+    minimumFractionDigits: PORTFOLIO_TABLE_DECIMALS, maximumFractionDigits: PORTFOLIO_TABLE_DECIMALS,
+  });
 }
 
 // A genuinely live spot price, fetched at request time -- kept visually and
 // semantically distinct from the stored price above. Source (Binance vs.
 // Coinbase) can genuinely differ per asset, so stays per-row; the "as of"
-// timestamp does not, for the same reason as renderStoredPrice above.
+// timestamp does not, for the same reason as the stored price.
 function renderLivePrice(liveUsd, source) {
-  if (liveUsd === null || liveUsd === undefined) return "—";
-  return `$${liveUsd.toLocaleString(undefined, { maximumFractionDigits: 8 })} <span class="metric-desc">(${source || "?"})</span>`;
+  const formatted = formatPortfolioNumber(liveUsd, "$");
+  if (formatted === "—") return "—";
+  return `${formatted} <span class="metric-desc">(${source || "?"})</span>`;
 }
 
 // Phase 5b: color-coded, sign-aware -- a quick "up or down" read alongside
@@ -553,15 +562,28 @@ const _sortableTables = {};
 // `columns`: [{ label, title? (header tooltip), value: row => comparable,
 // html?: row => cell HTML (defaults to `value`) }]. Returns a `<table>`
 // string with a stable id so `sortDashboardTable` can re-render it in place.
-function buildSortableTable(columns, rows) {
+function buildSortableTable(columns, rows, defaultSort = null, totals = null) {
+  // defaultSort: { col: <column index>, dir: 1 | -1 } -- renders already
+  // sorted by that column (with its own arrow shown) instead of the
+  // original row order, without changing any existing caller that omits
+  // it (still starts unsorted, exactly as before).
+  // totals: an array parallel to `columns` -- totals[i] is the footer
+  // cell's HTML for that column, or null/undefined for a blank cell.
+  // Omitted entirely (the default) means no totals row at all, exactly
+  // as before this was added.
   const id = "sortable-table-" + (++_sortableTableSeq);
-  _sortableTables[id] = { columns, rows, sortCol: null, sortDir: 1 };
+  _sortableTables[id] = {
+    columns, rows,
+    sortCol: defaultSort ? defaultSort.col : null,
+    sortDir: defaultSort ? defaultSort.dir : 1,
+    totals,
+  };
   return renderSortableTableHtml(id);
 }
 
 function renderSortableTableHtml(id) {
   const state = _sortableTables[id];
-  const { columns, rows, sortCol, sortDir } = state;
+  const { columns, rows, sortCol, sortDir, totals } = state;
   let displayRows = rows;
   if (sortCol !== null) {
     const col = columns[sortCol];
@@ -606,7 +628,10 @@ function renderSortableTableHtml(id) {
   const hasWidths = columns.some(col => col.width);
   const colgroup = hasWidths ? `<colgroup>${columns.map(col => `<col style="width:${col.width || "auto"};">`).join("")}</colgroup>` : "";
   const tableStyle = hasWidths ? ` style="table-layout:fixed;width:100%;"` : "";
-  return `<table id="${id}"${tableStyle}>${colgroup}<tr>${headHtml}</tr>${bodyHtml}</table>`;
+  const totalsHtml = totals
+    ? `<tr class="table-totals-row">${columns.map((col, i) => `<td>${totals[i] !== null && totals[i] !== undefined ? totals[i] : ""}</td>`).join("")}</tr>`
+    : "";
+  return `<table id="${id}"${tableStyle}>${colgroup}<tr>${headHtml}</tr>${bodyHtml}${totalsHtml}</table>`;
 }
 
 // Caps a `.scroll-table-wrap` to roughly `visibleRows` rows before it
@@ -649,10 +674,10 @@ function filterDistinctValues(rows, getValues) {
 // getValues returns an ARRAY since one row can carry multiple filter values
 // for the same column (e.g. News' Relevant assets: one article can match
 // several tracked symbols at once).
-function registerFilterableTable({ columns, rows, filters, wrapId, capRows, countElId }) {
+function registerFilterableTable({ columns, rows, filters, wrapId, capRows, countElId, defaultSort, computeTotals }) {
   const stateId = "filter-state-" + (++_filterStateSeq);
   _filterStates[stateId] = {
-    columns, allRows: rows, filters,
+    columns, allRows: rows, filters, defaultSort, computeTotals,
     selected: Object.fromEntries(filters.map(f => [f.key, new Set()])),
     wrapId, capRows, countElId, filterBarId: `${stateId}-bar`,
   };
@@ -715,7 +740,12 @@ function rerenderFilteredTable(stateId) {
     return vals.some(v => sel.has(v));
   }));
   const wrapEl = document.getElementById(state.wrapId);
-  wrapEl.innerHTML = buildSortableTable(state.columns, filtered);
+  // `state.selected` is passed through so a totals-computer can special-
+  // case a specific filter (e.g. My Portfolio's Platform filter needs to
+  // know WHICH platform(s) are selected to sum each row's correct slice,
+  // not its combined total -- see computePortfolioTotals).
+  const totals = state.computeTotals ? state.computeTotals(filtered, state.selected) : null;
+  wrapEl.innerHTML = buildSortableTable(state.columns, filtered, state.defaultSort, totals);
   if (state.capRows) capTableWrapToRows(wrapEl, state.capRows);
   const countEl = document.getElementById(state.countElId);
   if (countEl) countEl.textContent = `Showing ${filtered.length} of ${state.allRows.length}`;
@@ -748,8 +778,22 @@ function openTextModal(id) {
 // back to <body> instead of the trigger they were just on.
 let _modalTriggerEl = null;
 
-function openDashboardModal(title, bodyHtml) {
+function openDashboardModal(title, bodyHtml, wide = false) {
   _modalTriggerEl = document.activeElement;
+  // Reset any position a previous open left behind (see setUpModalDragging
+  // below) -- a fresh open is fresh content, not the same window
+  // persisting, so it starts centered again every time, never wherever
+  // the last modal happened to be dragged to.
+  const box = document.querySelector("#dashboard-modal-overlay .modal-box");
+  box.style.position = "";
+  box.style.left = "";
+  box.style.top = "";
+  box.style.margin = "";
+  // Wide flag for the Portfolio section's own modals (full transaction
+  // history, recommended allocation history) -- both hold table data too
+  // dense for the default 720px width; reset on every open so the default
+  // width isn't left widened for the next, unrelated modal (info popups etc).
+  box.style.maxWidth = wide ? "1200px" : "";
   document.getElementById("dashboard-modal-title").textContent = title;
   document.getElementById("dashboard-modal-body").innerHTML = bodyHtml;
   document.getElementById("dashboard-modal-overlay").style.display = "flex";
@@ -765,6 +809,50 @@ function closeDashboardModal() {
 function isDashboardModalOpen() {
   return document.getElementById("dashboard-modal-overlay").style.display === "flex";
 }
+
+// Drag-to-move for every modal on the page -- they all share this one
+// overlay/box, so wiring this up once here applies everywhere (info
+// modals, factor breakdowns, the full transaction history, all of it).
+// Grabbing the header repositions the box anywhere on screen (clamped so
+// the header itself can never be dragged fully off-screen and lost);
+// releasing stops it. Position resets to centered on every new open (see
+// openDashboardModal), so a drag never persists across different modals.
+(function setUpModalDragging() {
+  const header = document.querySelector("#dashboard-modal-overlay .modal-box-header");
+  const box = document.querySelector("#dashboard-modal-overlay .modal-box");
+  let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+  header.addEventListener("pointerdown", (e) => {
+    if (e.target.closest(".modal-box-close")) return;  // don't start a drag from the close button itself
+    dragging = true;
+    const rect = box.getBoundingClientRect();
+    startX = e.clientX; startY = e.clientY;
+    startLeft = rect.left; startTop = rect.top;
+    // Switch from flex-centered to explicitly positioned at its current
+    // on-screen spot, so pointer movement can reposition it freely
+    // without the overlay's own centering fighting it.
+    box.style.position = "fixed";
+    box.style.left = `${startLeft}px`;
+    box.style.top = `${startTop}px`;
+    box.style.margin = "0";
+    header.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+
+  header.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const rect = box.getBoundingClientRect();
+    const minVisible = 60;  // keep at least this much of the header reachable on every edge
+    const newLeft = startLeft + (e.clientX - startX);
+    const newTop = startTop + (e.clientY - startY);
+    box.style.left = `${Math.min(Math.max(newLeft, minVisible - rect.width), window.innerWidth - minVisible)}px`;
+    box.style.top = `${Math.min(Math.max(newTop, 0), window.innerHeight - minVisible)}px`;
+  });
+
+  const stopDragging = () => { dragging = false; };
+  header.addEventListener("pointerup", stopDragging);
+  header.addEventListener("pointercancel", stopDragging);
+})();
 
 document.addEventListener("keydown", e => {
   if (e.key === "Escape") { closeDashboardModal(); return; }
@@ -1784,26 +1872,27 @@ async function loadPortfolioState() {
       { label: "Asset", width: HOLDINGS_TABLE_COLUMN_WIDTHS[0], value: r => r.symbol },
       { label: "Platform", width: HOLDINGS_TABLE_COLUMN_WIDTHS[1], title: "Not applicable -- a recommended target has no real custody location, since it was never actually bought. See My Portfolio for real platform.",
         value: () => null, html: () => "—" },
-      { label: "Quantity", width: HOLDINGS_TABLE_COLUMN_WIDTHS[2], title: "An IMPLIED quantity -- this target's dollar Value divided by the collected Price -- not a real position. This system never places real orders; nothing in this row has actually been bought. See My Portfolio for real quantities.",
+      { label: "Quantity", width: HOLDINGS_TABLE_COLUMN_WIDTHS[2], title: "An IMPLIED quantity -- this target's dollar Value divided by the collected Price -- not a real position. This system never places real orders; nothing in this row has actually been bought. See My Portfolio for real quantities. Shown to 5 decimal places, the same convention as every other numeric column in this table.",
         value: r => (r.price_usd && r.value_usd !== null) ? r.value_usd / r.price_usd : null,
-        html: r => (r.price_usd && r.value_usd !== null) ? (r.value_usd / r.price_usd).toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
-      { label: "Cost / unit", width: HOLDINGS_TABLE_COLUMN_WIDTHS[3], title: "Not applicable -- a recommended target was never actually bought, so it has no real acquisition cost. See My Portfolio for real cost/unit.",
+        html: r => (r.price_usd && r.value_usd !== null) ? formatPortfolioNumber(r.value_usd / r.price_usd) : "—" },
+      { label: "Avg. price / unit", width: HOLDINGS_TABLE_COLUMN_WIDTHS[3], title: "Not applicable -- a recommended target was never actually bought, so it has no real acquisition cost. See My Portfolio for real cost/unit.",
         value: () => null, html: () => "—" },
-      { label: "Cost basis", width: HOLDINGS_TABLE_COLUMN_WIDTHS[4], title: "Not applicable, for the same reason as Cost / unit -- see My Portfolio for real cost basis.",
+      { label: "Real cost basis", width: HOLDINGS_TABLE_COLUMN_WIDTHS[4], title: "Not applicable, for the same reason as Avg. price / unit -- see My Portfolio for real cost basis.",
         value: () => null, html: () => "—" },
-      { label: "Price (collected)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[5], title: "The price the last time the collector ran (python -m app.main) -- not live. This is what Value/Allocation below are computed from, the same convention as My Portfolio's own Price (collected) column.",
-        value: r => r.price_usd, html: r => renderStoredPrice(r.price_usd) },
-      { label: "Value (USD)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[6], title: "This target's dollar value -- Allocation x total portfolio value (the same total shown in the AI Portfolio heading above and in My Portfolio's own title).",
-        value: r => r.value_usd, html: r => r.value_usd !== null && r.value_usd !== undefined ? "$" + r.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
-      { label: "Live price", width: HOLDINGS_TABLE_COLUMN_WIDTHS[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Allocation, which use the stored price instead, same convention as My Portfolio's own Live price column.",
+      { label: "Price (collected)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[5], title: "The price the last time the collector ran (python -m app.main) -- not live. This is what Value/Allocation below are computed from, the same convention as My Portfolio's own Price (collected) column. Shown to 5 decimal places.",
+        value: r => r.price_usd, html: r => formatPortfolioNumber(r.price_usd, "$") },
+      { label: "Value (USD)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[6], title: "This target's dollar value -- Allocation x total portfolio value (the same total shown in the AI Portfolio heading above and in My Portfolio's own title). Shown to 5 decimal places.",
+        value: r => r.value_usd, html: r => formatPortfolioNumber(r.value_usd, "$") },
+      { label: "Live price", width: HOLDINGS_TABLE_COLUMN_WIDTHS[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Allocation, which use the stored price instead, same convention as My Portfolio's own Live price column. Shown to 5 decimal places.",
         value: r => r.live_price_usd, html: r => renderLivePrice(r.live_price_usd, r.live_price_source) },
       { label: "Unrealized P&L", width: HOLDINGS_TABLE_COLUMN_WIDTHS[8], title: "Not applicable -- with no real cost basis (this is a recommended target, never an executed trade), there is nothing real to compute a gain/loss against. See My Portfolio for real Unrealized P&L.",
         value: () => null, html: () => "—" },
-      { label: "Allocation", width: HOLDINGS_TABLE_COLUMN_WIDTHS[9], title: "This system's own current recommended target -- what fraction of the portfolio it currently thinks this asset should be, as a percentage. Directly comparable to My Portfolio's own Allocation column, since both are fractions of the same total.",
-        value: r => r.allocation, html: r => r.allocation !== null && r.allocation !== undefined ? (r.allocation * 100).toFixed(2) + "%" : "—" },
+      { label: "Allocation", width: HOLDINGS_TABLE_COLUMN_WIDTHS[9], title: "This system's own current recommended target -- what fraction of the portfolio it currently thinks this asset should be, as a percentage. Directly comparable to My Portfolio's own Allocation column, since both are fractions of the same total. Shown to 10 decimal places.",
+        value: r => r.allocation, html: r => r.allocation !== null && r.allocation !== undefined ? (r.allocation * 100).toFixed(10) + "%" : "—" },
       { label: "Recorded at", width: HOLDINGS_TABLE_COLUMN_WIDTHS[10], title: "portfolio_positions.updated_at -- the last time this position's target allocation actually changed, not the last time the Judge looked at it; a HOLD/WATCH re-confirmation that leaves the number unchanged does not update this. CASH has no row of its own in portfolio_positions, so this is always \"--\" for it.",
         value: r => r.updated_at, html: r => r.updated_at ? new Date(r.updated_at).toLocaleString() : "—" },
-    ], aiPortfolioRows);
+    ], aiPortfolioRows, { col: 9, dir: -1 },  // default: highest Allocation first
+      computePortfolioTotals(aiPortfolioRows, { hasPnl: false, allocationDecimals: 10 }));
     // Mirrored copy of My Portfolio's own table, reusing this same
     // already-fetched `holdings` -- shown directly underneath the AI
     // Portfolio table above so the two are one scroll apart. My Portfolio's
@@ -1917,22 +2006,24 @@ async function loadPortfolioState() {
         <p class="metric-desc" style="margin:0;">Real trailing-week turnover was ${(turnoverCapEvents[0].turnover_used_this_week * 100).toFixed(2)}% against a ${(turnoverCapEvents[0].max_weekly_turnover * 100).toFixed(2)}% cap (${(turnoverCapEvents[0].remaining_budget * 100).toFixed(4)}% remaining) -- affected: ${turnoverCapEvents[0].capped_symbols.join(", ")}. ${turnoverCapEvents[0].fully_blocked ? "Every proposed change that run was reverted, not just scaled down." : "Proposed changes were scaled down, not fully reverted."} ${turnoverCapEvents.length > 1 ? `${turnoverCapEvents.length - 1} earlier event(s) also on record.` : ""}</p>
       </div>` : "";
 
+    // Cached for openAllocationHistoryModal() below -- the link that opens
+    // it lives outside this function's scope, right after the turnover-cap
+    // banner, per the user's requested layout.
+    _allocationHistoryTableHtml = allocationHistoryTable;
+
     document.getElementById("ai-portfolio-heading-label").textContent = `Portfolio (${fmtUsd2(totalPortfolioValueUsd)})`;
     target.innerHTML = `
       <h3 class="panel-subheading">AI Portfolio</h3>
       <div class="scroll-table-wrap nowrap-table-wrap">${aiPortfolioTable}</div>
       ${turnoverCapBanner}
+      <p><button type="button" class="modal-link" onclick="openAllocationHistoryModal();">Show recommended allocation history</button></p>
       <h3 class="panel-subheading">My Portfolio</h3>
-      <div class="scroll-table-wrap nowrap-table-wrap">${myPortfolioTableMirror}</div>`;
+      ${myPortfolioTableMirror}`;
     // Rendered into its own element below the input fields/transaction
     // history, per the user's requested layout.
     comparisonTarget.innerHTML = `
       <h3 class="panel-subheading">Comparison</h3>
-      <div class="scroll-table-wrap nowrap-table-wrap">${comparisonTable}</div>
-      <details style="margin-top:10px;">
-        <summary class="helper-text" style="cursor:pointer;">Show recommended allocation history</summary>
-        <div class="scroll-table-wrap nowrap-table-wrap" style="margin-top:8px;">${allocationHistoryTable}</div>
-      </details>`;
+      <div class="scroll-table-wrap nowrap-table-wrap">${comparisonTable}</div>`;
   } catch (e) {
     document.getElementById("portfolio-state-donut").innerHTML = ""; // never leave a stale chart showing while the table below reports a fresh failure
     document.getElementById("portfolio-state-my-portfolio-donut").innerHTML = "";
@@ -2338,38 +2429,131 @@ const HOLDINGS_TABLE_COLUMN_WIDTHS = ["6%", "8%", "9%", "8%", "8%", "9%", "9%", 
 // Shared between My Portfolio's own section and the mirrored copy embedded
 // in the combined "Portfolio" section (loadPortfolioState) -- one column
 // definition so the two can never silently drift apart.
-function buildHoldingsTable(holdings) {
-  const w = HOLDINGS_TABLE_COLUMN_WIDTHS;
-  return buildSortableTable([
-    { label: "Asset", width: w[0], value: h => h.symbol },
-    { label: "Platform", width: w[1], title: "Which real custody location this position is actually held on (Coinbase, Ledger wallet) -- entered by hand at transaction time, purely descriptive; has no effect on Value, Allocation, or any other column.",
-      value: h => h.platform, html: h => renderPlatform(h.platform) },
-    { label: "Quantity", width: w[2], value: h => h.quantity },
-    { label: "Cost / unit", width: w[3], title: "Cost basis divided by current quantity -- the weighted-average price per unit this position was really bought at.",
-      value: h => h.cost_per_unit, html: h => h.cost_per_unit !== null && h.cost_per_unit !== undefined ? "$" + h.cost_per_unit.toLocaleString(undefined, { maximumFractionDigits: 8 }) : "—" },
-    { label: "Cost basis", width: w[4], title: "The TOTAL cost basis of this whole aggregated position -- the sum of every BUY's cost basis, reduced proportionally by any SELLs.",
-      value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
-    { label: "Price (collected)", width: w[5], title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from. Timestamp shown once, above the table, not repeated per row -- one collector run prices every holding at essentially the same moment.",
-      value: h => h.price_usd, html: h => renderStoredPrice(h.price_usd) },
-    { label: "Value (USD)", width: w[6], title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below.",
-      value: h => h.value_usd, html: h => h.value_usd !== null && h.value_usd !== undefined ? "$" + h.value_usd.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—" },
-    { label: "Live price", width: w[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead. Timestamp shown once, above the table, not repeated per row.",
-      value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_source) },
-    { label: "Unrealized P&L", width: w[8], title: "Value (USD) minus Cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
-      value: h => h.unrealized_pnl_usd, html: h => renderPnl(h.unrealized_pnl_usd, h.unrealized_pnl_pct) },
-    { label: "Allocation", width: w[9], title: "What fraction of your total portfolio value (across every holding plus cash) this one row represents, as a percentage -- the same asset held on two platforms gets its own separate row/percentage.",
-      value: h => h.allocation, html: h => h.allocation !== null ? (h.allocation * 100).toFixed(2) + "%" : "—" },
-    { label: "Recorded at", width: w[10], value: h => h.recorded_at ? new Date(h.recorded_at).getTime() : null,
-      html: h => h.recorded_at ? new Date(h.recorded_at).toLocaleString() : "—" },
-  ], holdings);
+const HOLDINGS_TABLE_COLUMNS = [
+  { label: "Asset", width: HOLDINGS_TABLE_COLUMN_WIDTHS[0], value: h => h.symbol },
+  { label: "Platform", width: HOLDINGS_TABLE_COLUMN_WIDTHS[1], title: "Every real custody location this position is actually held on -- CB = Coinbase, LW = Ledger wallet. An asset held on both shows two badges in one row (see the full transaction history below for the real per-platform quantities/cost basis); purely descriptive, has no effect on Value, Allocation, or any other column.",
+    value: h => (h.platforms || []).join(","), html: h => renderPlatformBadges(h.platforms) },
+  { label: "Quantity", width: HOLDINGS_TABLE_COLUMN_WIDTHS[2], title: "Shown to 5 decimal places, the same convention as every other numeric column in this table.",
+    value: h => h.quantity, html: h => formatPortfolioNumber(h.quantity) },
+  { label: "Avg. price / unit", width: HOLDINGS_TABLE_COLUMN_WIDTHS[3], title: "Real cost basis divided by current quantity -- the weighted-average price per unit this position was really bought at. Shown to 5 decimal places.",
+    value: h => h.cost_per_unit, html: h => formatPortfolioNumber(h.cost_per_unit, "$") },
+  { label: "Real cost basis", width: HOLDINGS_TABLE_COLUMN_WIDTHS[4], title: "The real money still tied up in what you CURRENTLY hold -- not the lifetime total you've ever spent on this asset. Each BUY adds its own real cost; each SELL removes its proportional SHARE of the accumulated cost basis (e.g. selling 40% of a position removes 40% of the cost basis), never the sale proceeds, and never leaves the sold-off portion's cost sitting in the total. For a position only ever bought into, this equals the literal sum of real dollars spent. Shown to 5 decimal places.",
+    value: h => h.cost_basis_usd, html: h => formatPortfolioNumber(h.cost_basis_usd, "$") },
+  { label: "Price (collected)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[5], title: "The price the last time you ran the collector (python -m app.main) -- not live. This is what Value/Unrealized P&L/Allocation are computed from. Timestamp shown once, above the table, not repeated per row -- one collector run prices every holding at essentially the same moment. Shown to 5 decimal places.",
+    value: h => h.price_usd, html: h => formatPortfolioNumber(h.price_usd, "$") },
+  { label: "Value (USD)", width: HOLDINGS_TABLE_COLUMN_WIDTHS[6], title: "quantity x Price (collected) -- this position's real dollar value right now, using the same stored price as Unrealized P&L and Allocation below. Shown to 5 decimal places.",
+    value: h => h.value_usd, html: h => formatPortfolioNumber(h.value_usd, "$") },
+  { label: "Live price", width: HOLDINGS_TABLE_COLUMN_WIDTHS[7], title: "A genuinely live spot price, fetched from Binance/Coinbase right now -- shown separately so it never contradicts Value/Unrealized P&L/Allocation, which all use the stored price instead. Timestamp shown once, above the table, not repeated per row. Shown to 5 decimal places.",
+    value: h => h.live_price_usd, html: h => renderLivePrice(h.live_price_usd, h.live_price_source) },
+  { label: "Unrealized P&L", width: HOLDINGS_TABLE_COLUMN_WIDTHS[8], title: "Value (USD) minus Real cost basis -- gain/loss against the stored/collected price, never the live spot price, so it always agrees with Value and Allocation.",
+    value: h => h.unrealized_pnl_usd, html: h => renderPnl(h.unrealized_pnl_usd, h.unrealized_pnl_pct) },
+  { label: "Allocation", width: HOLDINGS_TABLE_COLUMN_WIDTHS[9], title: "What fraction of your total portfolio value (across every holding plus cash) this one row represents, as a percentage -- the same asset held on two platforms gets its own separate row/percentage.",
+    value: h => h.allocation, html: h => h.allocation !== null ? (h.allocation * 100).toFixed(2) + "%" : "—" },
+  { label: "Recorded at", width: HOLDINGS_TABLE_COLUMN_WIDTHS[10], value: h => h.recorded_at ? new Date(h.recorded_at).getTime() : null,
+    html: h => h.recorded_at ? new Date(h.recorded_at).toLocaleString() : "—" },
+];
+const HOLDINGS_TABLE_DEFAULT_SORT = { col: 9, dir: -1 };  // highest Allocation first
+
+// Phase 5o (2026-09-27): filterable (Asset, Platform) with a totals row
+// (Value/Unrealized P&L/Allocation, recomputed against whichever rows are
+// actually visible after filtering) -- returns filter bar + wrap markup,
+// not a bare <table>, so the caller renders it directly into the DOM.
+function buildHoldingsTable(holdings, { wrapId = "my-portfolio-table-wrap", countElId = "my-portfolio-filter-count" } = {}) {
+  const stateId = registerFilterableTable({
+    columns: HOLDINGS_TABLE_COLUMNS, rows: holdings,
+    filters: [
+      { key: "asset", label: "Asset", getValues: h => [h.symbol] },
+      { key: "platform", label: "Platform", getValues: h => (h.platforms || []).map(p => p === "coinbase" ? "Coinbase" : p === "ledger_wallet" ? "Ledger wallet" : p) },
+    ],
+    wrapId, countElId,
+    defaultSort: HOLDINGS_TABLE_DEFAULT_SORT,
+    computeTotals: (rows, selected) => computePortfolioTotals(rows, { hasPnl: true, allocationDecimals: 2 }, selected),
+  });
+  return `${renderFilterBar(stateId)}
+    <div class="scroll-table-wrap nowrap-table-wrap" id="${wrapId}">${buildSortableTable(HOLDINGS_TABLE_COLUMNS, holdings, HOLDINGS_TABLE_DEFAULT_SORT, computePortfolioTotals(holdings, { hasPnl: true, allocationDecimals: 2 }))}</div>`;
 }
 
-// Platform is purely descriptive (see buildHoldingsTable's own tooltip) --
-// rendered as plain text, not a badge, since it carries no status/health
-// meaning the way e.g. renderPnl's colored badge does.
+// Used by the transaction history modal, where one real row is always
+// exactly one real platform -- plain text, not a badge, since it carries
+// no status/health meaning the way e.g. renderPnl's colored badge does.
 function renderPlatform(platform) {
   if (!platform) return "—";
   return platform === "coinbase" ? "Coinbase" : platform === "ledger_wallet" ? "Ledger wallet" : platform;
+}
+
+// Phase 5o (2026-09-27): My Portfolio is now one row per asset even when
+// held on more than one platform (see GET /holdings's own docstring) --
+// CB/LW badges show every real custody location that one row spans,
+// rather than splitting back into multiple rows.
+function renderPlatformBadges(platforms) {
+  if (!platforms || platforms.length === 0) return "—";
+  return platforms.map(p => {
+    const short = p === "coinbase" ? "CB" : p === "ledger_wallet" ? "LW" : p;
+    const full = p === "coinbase" ? "Coinbase" : p === "ledger_wallet" ? "Ledger wallet" : p;
+    return `<span class="badge platform" title="${full}">${short}</span>`;
+  }).join(" ");
+}
+
+const PLATFORM_CODE_BY_LABEL = { "Coinbase": "coinbase", "Ledger wallet": "ledger_wallet" };
+
+// Phase 5o (2026-09-27): shared totals-row builder for both portfolio
+// tables -- Asset/Platform/Recorded at stay blank (a "Total" for those
+// isn't a meaningful concept), Real cost basis/Value/Unrealized P&L/
+// Allocation are summed against whichever rows are actually being shown
+// (post-filter, for My Portfolio). `allocationDecimals` matches each
+// table's own per-row Allocation precision (My Portfolio: 2, AI
+// Portfolio: 10). `hasPnl=false` (AI Portfolio) shows "—" instead of a
+// fabricated $0 sum of a column that's "—" on every real row; Real cost
+// basis needs no such flag since it's simply absent from every AI
+// Portfolio row already (never "—" turned into 0 by the sum).
+//
+// `selectedFilters` (My Portfolio only, from registerFilterableTable's
+// own `state.selected`) -- real bug fix: filtering to one platform must
+// NOT sum each matching row's combined value/cost basis, since a row
+// spanning two platforms would silently double-count the OTHER
+// platform's share into a single-platform total. When the Platform
+// filter has a selection, each row's contribution is restricted to just
+// the selected platform(s)' own slice, using GET /holdings's real
+// per-platform breakdown (value_usd_by_platform/cost_basis_usd_by_platform)
+// instead of the row's own combined value_usd/cost_basis_usd.
+function computePortfolioTotals(rows, { hasPnl = true, allocationDecimals = 2 } = {}, selectedFilters = null) {
+  const totals = new Array(11).fill(null);
+  totals[0] = "<strong>Total</strong>";
+
+  const selectedPlatforms = selectedFilters && selectedFilters.platform;
+  if (!selectedPlatforms || selectedPlatforms.size === 0) {
+    // No platform filter active -- each row's own combined totals are
+    // already the real, correct figures for whatever it represents.
+    const sum = key => rows.reduce((acc, r) => acc + (typeof r[key] === "number" ? r[key] : 0), 0);
+    const anyNonNull = key => rows.some(r => r[key] !== null && r[key] !== undefined);
+    totals[4] = anyNonNull("cost_basis_usd") ? `<strong>${formatPortfolioNumber(sum("cost_basis_usd"), "$")}</strong>` : "—";
+    totals[6] = anyNonNull("value_usd") ? `<strong>${formatPortfolioNumber(sum("value_usd"), "$")}</strong>` : "—";
+    totals[8] = hasPnl && anyNonNull("unrealized_pnl_usd") ? `<strong>${formatPortfolioNumber(sum("unrealized_pnl_usd"), "$")}</strong>` : "—";
+    totals[9] = anyNonNull("allocation") ? `<strong>${(sum("allocation") * 100).toFixed(allocationDecimals)}%</strong>` : "—";
+    return totals;
+  }
+
+  const platformCodes = [...selectedPlatforms].map(label => PLATFORM_CODE_BY_LABEL[label] || label);
+  const platformValue = r => platformCodes.reduce((s, p) => s + ((r.value_usd_by_platform && r.value_usd_by_platform[p]) || 0), 0);
+  const platformCostBasis = r => platformCodes.reduce((s, p) => s + ((r.cost_basis_usd_by_platform && r.cost_basis_usd_by_platform[p]) || 0), 0);
+  const hasAnyValue = rows.some(r => r.value_usd_by_platform && platformCodes.some(p => p in r.value_usd_by_platform));
+  const hasAnyCostBasis = rows.some(r => r.cost_basis_usd_by_platform && platformCodes.some(p => p in r.cost_basis_usd_by_platform));
+
+  const totalValue = rows.reduce((s, r) => s + platformValue(r), 0);
+  const totalCostBasis = rows.reduce((s, r) => s + platformCostBasis(r), 0);
+  // This platform-slice's share of the row's OWN total value, applied to
+  // the row's own (whole-portfolio) allocation -- derives the platform's
+  // real share of total allocation without a separate backend field.
+  const totalAllocation = rows.reduce((s, r) => {
+    if (typeof r.value_usd !== "number" || r.value_usd <= 0 || typeof r.allocation !== "number") return s;
+    return s + r.allocation * (platformValue(r) / r.value_usd);
+  }, 0);
+
+  totals[4] = hasAnyCostBasis ? `<strong>${formatPortfolioNumber(totalCostBasis, "$")}</strong>` : "—";
+  totals[6] = hasAnyValue ? `<strong>${formatPortfolioNumber(totalValue, "$")}</strong>` : "—";
+  totals[8] = hasPnl && hasAnyValue ? `<strong>${formatPortfolioNumber(totalValue - totalCostBasis, "$")}</strong>` : "—";
+  totals[9] = hasAnyValue ? `<strong>${(totalAllocation * 100).toFixed(allocationDecimals)}%</strong>` : "—";
+  return totals;
 }
 
 // Phase 5b: populates the entry form's symbol autocomplete from the real
@@ -2385,19 +2569,54 @@ async function populateHoldingsSymbolList() {
   }
 }
 
-// Phase 5b: the full append-only transaction history -- proves the
-// transactional model (every BUY/SELL summed, none overwritten) is real,
-// not just correctly computed server-side and invisible in the UI.
-async function loadHoldingsHistory() {
-  const target = document.getElementById("holdings-history");
+// Prefetched in the background (page load + after every holdings
+// mutation) so opening the modal below is instant in the common case,
+// instead of waiting on a fresh fetch of 1300+ real rows every time the
+// link is clicked. A rejected promise here is expected and harmless --
+// openHoldingsHistoryModal falls back to a fresh fetch (with its own
+// real error handling) whenever this prefetch is missing or failed.
+let _holdingsHistoryPrefetch = null;
+function prefetchHoldingsHistory() {
+  _holdingsHistoryPrefetch = apiGet("/holdings/history");
+  _holdingsHistoryPrefetch.catch(() => {});
+}
+
+// Phase 5o (2026-09-27): the allocation-history table is already built as
+// part of loadPortfolioState()'s own single render pass, so this just opens
+// it in the shared modal (same pattern as the full transaction history)
+// rather than re-fetching -- there's no separate endpoint for it.
+let _allocationHistoryTableHtml = "";
+function openAllocationHistoryModal() {
+  openDashboardModal("Recommended allocation history", _allocationHistoryTableHtml || "<p>No history recorded yet.</p>", true);
+}
+
+// Phase 5o (2026-09-27): opened on click as a filterable modal instead of
+// an always-expanded inline section -- the full Coinbase + Ledger Wallet
+// import (1300+ real transactions) made the old inline <details> view
+// impractical to scroll through unfiltered. Proves the transactional
+// model (every BUY/SELL summed, none overwritten) is real, not just
+// correctly computed server-side and invisible in the UI.
+async function openHoldingsHistoryModal() {
+  openDashboardModal("Full transaction history", '<p class="helper-text">Loading…</p>', true);
+  const body = document.getElementById("dashboard-modal-body");
   try {
-    const history = await apiGet("/holdings/history");
+    let history;
+    try {
+      history = await (_holdingsHistoryPrefetch || Promise.reject());
+    } catch {
+      history = await apiGet("/holdings/history");  // no prefetch yet, or it failed -- fetch fresh instead
+    }
     if (history.length === 0) {
-      target.innerHTML = "<p>No transactions recorded yet.</p>";
+      body.innerHTML = "<p>No transactions recorded yet.</p>";
       return;
     }
-    const historyTable = buildSortableTable([
-      { label: "Recorded at", value: h => h.recorded_at },
+    // Date first, Recorded at last -- per the requested column order;
+    // "Date" is `purchased_at` (the real date this was bought/sold),
+    // distinct from `recorded_at` (when the row was entered into the
+    // ledger, which for the bulk import is the same import-run moment
+    // for every row, not the real transaction date).
+    const columns = [
+      { label: "Date", value: h => h.purchased_at, html: h => h.purchased_at ? h.purchased_at.slice(0, 10) : "—" },
       { label: "Asset", value: h => h.symbol },
       { label: "Platform", value: h => h.platform, html: h => renderPlatform(h.platform) },
       { label: "Type", value: h => h.transaction_type, html: h => `<span class="badge ${h.transaction_type === "SELL" ? "backfilled" : "live"}">${h.transaction_type}</span>` },
@@ -2405,11 +2624,26 @@ async function loadHoldingsHistory() {
         value: h => h.source_type, html: h => h.source_type || "Manual entry" },
       { label: "Quantity", value: h => h.quantity },
       { label: "Cost basis (this txn)", value: h => h.cost_basis_usd, html: h => h.cost_basis_usd !== null ? "$" + h.cost_basis_usd : "—" },
-      { label: "Purchased at", value: h => h.purchased_at, html: h => h.purchased_at ? h.purchased_at.slice(0, 10) : "—" },
-    ], history);
-    target.innerHTML = historyTable;
+      { label: "Recorded at", value: h => h.recorded_at },
+    ];
+    const stateId = registerFilterableTable({
+      columns, rows: history,
+      filters: [
+        { key: "date", label: "Date", getValues: h => [h.purchased_at ? h.purchased_at.slice(0, 10) : null] },
+        { key: "asset", label: "Asset", getValues: h => [h.symbol] },
+        { key: "platform", label: "Platform", getValues: h => [h.platform === "ledger_wallet" ? "Ledger wallet" : h.platform === "coinbase" ? "Coinbase" : h.platform] },
+        { key: "type", label: "Type", getValues: h => [h.transaction_type] },
+        { key: "source", label: "Source", getValues: h => [h.source_type || "Manual entry"] },
+        { key: "recordedAt", label: "Recorded at", getValues: h => [h.recorded_at ? h.recorded_at.slice(0, 10) : null] },
+      ],
+      wrapId: "holdings-history-modal-scroll", capRows: 15, countElId: "holdings-history-modal-count",
+    });
+    body.innerHTML = `
+      ${renderFilterBar(stateId)}
+      <div class="scroll-table-wrap" id="holdings-history-modal-scroll">${buildSortableTable(columns, history)}</div>`;
+    capTableWrapToRows(document.getElementById("holdings-history-modal-scroll"), 15);
   } catch (e) {
-    renderError(target, e);
+    renderError(body, e);
   }
 }
 
@@ -2454,14 +2688,16 @@ document.getElementById("holdings-form").addEventListener("submit", async (event
     document.getElementById("holdings-quantity").value = "";
     document.getElementById("holdings-cost-basis").value = "";
     document.getElementById("holdings-purchased-at").value = "";
-    // Every one of these independently fetches /holdings and derives its
-    // own total-portfolio-value figure from it (the Portfolio section's
-    // tables/bars/comparison table, Screened tokens' Layer 3 HELD column)
-    // -- both must refresh together after any holdings mutation, or one
-    // would show a stale total until the next full page load.
-    loadHoldingsHistory();
+    // Both independently fetch real holdings data and derive their own
+    // totals from it (the Portfolio section's tables/bars/comparison
+    // table, Screened tokens' Layer 3 HELD column) -- both must refresh
+    // together after any holdings mutation, or one would show a stale
+    // total until the next full page load. The transaction history
+    // modal's own prefetch is re-triggered here too, so its next open
+    // reflects this new transaction instead of a stale cache.
     loadPortfolioState();
     loadScreenedTokens();
+    prefetchHoldingsHistory();
   } catch (e) {
     statusEl.innerHTML = `<span class="error">${e.message}</span>`;
     flashStatus(statusEl);
@@ -2472,9 +2708,15 @@ document.getElementById("holdings-form").addEventListener("submit", async (event
 });
 
 async function loadAll() {
+  // Fire-and-forget, not one of the tracked/counted loaders below -- it
+  // renders nothing itself, just warms openHoldingsHistoryModal's cache
+  // in the background so the panel-load progress line isn't held up
+  // waiting on 1300+ transaction rows nothing on this page displays yet.
+  prefetchHoldingsHistory();
+
   const loaders = [
     loadScreenedTokens, loadMarketRegime, loadJudgeDecisions, loadCalibrationSummary, loadLlmPromptsAndAnswers,
-    loadPortfolioState, loadHoldingsHistory, populateHoldingsSymbolList,
+    loadPortfolioState, populateHoldingsSymbolList,
     loadRecentNews, loadCostSummary, loadSignalSources,
   ];
   const total = loaders.length;

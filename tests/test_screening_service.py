@@ -38,6 +38,21 @@ class FakeHoldingsLedgerRepository:
         return self._history
 
 
+class FakeMarketSnapshotRepository:
+    """Empty by default -- `_get_held_assets`'s materiality filter KEEPS
+    an asset with no price available (see filter_materially_held's own
+    docstring), so an empty fake doesn't change any existing test's
+    behavior; real materiality-filtering tests pass real prices in."""
+    def __init__(self, price_by_asset_id=None):
+        self._price_by_asset_id = price_by_asset_id or {}
+
+    def get_latest_snapshot(self, asset_id):
+        price = self._price_by_asset_id.get(asset_id)
+        if price is None:
+            return None
+        return type("FakeSnapshot", (), {"price": price})()
+
+
 class FakeAssetStatusRepository:
     def __init__(self):
         self.changes = []
@@ -136,6 +151,7 @@ def _make_service(
     entries, cmc=None, binance=None, coinbase=None,
     asset_repo=None, asset_status_repo=None, screened_repo=None, regime_repo=None, signal_repo=None,
     holdings_ledger_repo=None, top_candidates_size=2, coingecko=None, coingecko_extra_by_id=None,
+    snapshot_repo=None,
 ):
     settings = Settings(_env_file=None, screening_universe_size=10, top_candidates_size=top_candidates_size)
     return settings, ScreeningService(
@@ -150,6 +166,7 @@ def _make_service(
         coinbase_client=coinbase or FakeVenueClient(set()),
         binance_client=binance or FakeVenueClient(set()),
         holdings_ledger_repo=holdings_ledger_repo or FakeHoldingsLedgerRepository(),
+        snapshot_repo=snapshot_repo or FakeMarketSnapshotRepository(),
     )
 
 
@@ -315,6 +332,70 @@ def test_held_asset_already_in_top_n_universe_is_not_fetched_again_or_duplicated
     assert [row.symbol for row in screened_repo.inserted].count("BTC") == 1
 
 
+def test_dust_position_below_materiality_threshold_does_not_force_judge_coverage():
+    # Phase 5o (2026-09-27): a real position worth less than
+    # MIN_MATERIAL_HOLDING_USD ($1 default) must not be swept into
+    # today's TOP_CANDIDATES just because `quantity > 0` -- real gap found
+    # live (years of tiny staking rewards left several positions worth
+    # $0.0000000000-$0.062). REN (dust, real price known) stays out; BTC
+    # (a real, material position) still gets forced in as before.
+    entries = [_entry("GOOD", momentum_30d=0.80)]  # neither REN nor BTC ranks in the top-N on its own
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "ren-id": Asset(
+            id="ren-id", symbol="REN", name="Ren", coingecko_id="republic-protocol",
+            active=False, in_asset=True, created_at=datetime.now(UTC),
+        ),
+        "btc-id": Asset(
+            id="btc-id", symbol="BTC", name="Bitcoin", coingecko_id="bitcoin",
+            active=True, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="ren-id", quantity=0.0000002, recorded_at=datetime.now(UTC), platform="coinbase"),
+        HoldingsLedgerEntry(asset_id="btc-id", quantity=1.0, recorded_at=datetime.now(UTC), platform="coinbase"),
+    ])
+    snapshot_repo = FakeMarketSnapshotRepository(price_by_asset_id={
+        "ren-id": 0.003,  # $0.0000006 -- real dust
+        "btc-id": 80000.0,  # $80,000 -- clearly material
+    })
+    coingecko = FakeCoinGeckoClient(entries, extra_by_id={"bitcoin": _entry("BTC", coingecko_id="bitcoin")})
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo,
+        snapshot_repo=snapshot_repo, coingecko=coingecko, top_candidates_size=1,
+    )
+
+    result = service.run("RUN-1")
+
+    assert "REN" not in result.top_candidates
+    assert "BTC" in result.top_candidates
+
+
+def test_held_asset_with_no_price_available_still_gets_judge_coverage():
+    # filter_materially_held's own rule: "no price yet" is kept, not
+    # dropped -- a genuinely unpriced real position must not silently lose
+    # Judge coverage just because materiality can't be evaluated yet.
+    entries = [_entry("GOOD", momentum_30d=0.80)]
+    asset_repo = FakeAssetRepository(existing_by_id={
+        "new-id": Asset(
+            id="new-id", symbol="NEWASSET", name="New Asset", coingecko_id="new-asset",
+            active=False, in_asset=True, created_at=datetime.now(UTC),
+        ),
+    })
+    holdings_ledger_repo = FakeHoldingsLedgerRepository([
+        HoldingsLedgerEntry(asset_id="new-id", quantity=5.0, recorded_at=datetime.now(UTC), platform="coinbase"),
+    ])
+    coingecko = FakeCoinGeckoClient(entries, extra_by_id={"new-asset": _entry("NEWASSET", coingecko_id="new-asset")})
+    _, service = _make_service(
+        entries, asset_repo=asset_repo, holdings_ledger_repo=holdings_ledger_repo,
+        snapshot_repo=FakeMarketSnapshotRepository(),  # no price for "new-id" at all
+        coingecko=coingecko, top_candidates_size=1,
+    )
+
+    result = service.run("RUN-1")
+
+    assert "NEWASSET" in result.top_candidates
+
+
 def test_promotes_genuinely_new_candidate_as_asset_with_candidate_status():
     entries = [_entry("BTC"), _entry("NEWCOIN", momentum_30d=0.90)]
     asset_repo = FakeAssetRepository()
@@ -474,6 +555,7 @@ def test_coingecko_failure_does_not_crash_the_run():
         coinbase_client=FakeVenueClient(set()),
         binance_client=FakeVenueClient(set()),
         holdings_ledger_repo=FakeHoldingsLedgerRepository(),
+        snapshot_repo=FakeMarketSnapshotRepository(),
     )
 
     result = service.run("RUN-1")

@@ -21,14 +21,16 @@ from app.api.dependencies import (
     get_coingecko_client,
     get_holdings_ledger_repo,
     get_market_snapshot_repo,
+    get_settings_dependency,
 )
 from app.api.schemas import HoldingsEntryView
+from app.config import Settings
 from app.database.repository import AssetRepository, AssetStatusRepository, HoldingsLedgerRepository, MarketSnapshotRepository
 from app.market_data.binance import BinanceClient
 from app.market_data.coinbase import CoinbaseClient
 from app.market_data.coingecko import CoinGeckoClient
 from app.market_data.live_price import fetch_live_price
-from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, filter_materially_held
 from app.portfolio.schemas import HoldingsLedgerEntry
 
 router = APIRouter(prefix="/holdings", tags=["holdings"], dependencies=[Depends(verify_api_key)])
@@ -102,6 +104,8 @@ def record_holding(
     asset_status_repo: AssetStatusRepository = Depends(get_asset_status_repo),
     ledger_repo: HoldingsLedgerRepository = Depends(get_holdings_ledger_repo),
     coingecko_client: CoinGeckoClient = Depends(get_coingecko_client),
+    snapshot_repo: MarketSnapshotRepository = Depends(get_market_snapshot_repo),
+    settings: Settings = Depends(get_settings_dependency),
 ) -> HoldingsEntryView:
     """Append-only: this always INSERTS a new row, never updates or
     deletes a prior one — editing a position is a new BUY (or SELL)
@@ -172,9 +176,16 @@ def record_holding(
         # forward (a confirmed-stale column before this fix -- it was
         # previously only ever set once, at asset-creation time). Collapsed
         # across every platform -- in_asset means "held anywhere," not
-        # "held on this specific platform."
+        # "held on this specific platform." Phase 5o (2026-09-27): also
+        # filtered through filter_materially_held -- a dust position isn't
+        # "held" for in_asset purposes either.
         aggregated_after = collapse_platforms(aggregate_current_holdings(ledger_repo.get_all_history()))
-        currently_held_after = next((h.quantity for h in aggregated_after if h.asset_id == asset_id), 0.0)
+        price_by_asset_id = {}
+        snapshot = snapshot_repo.get_latest_snapshot(asset_id)
+        if snapshot is not None:
+            price_by_asset_id[asset_id] = float(snapshot.price)
+        material_after = filter_materially_held(aggregated_after, price_by_asset_id, settings.min_material_holding_usd)
+        currently_held_after = next((h.quantity for h in material_after if h.asset_id == asset_id), 0.0)
         asset_repo.update_in_asset(asset_id, currently_held_after > 0)
 
     return HoldingsEntryView(
@@ -192,34 +203,50 @@ def get_current_holdings(
     snapshot_repo: MarketSnapshotRepository = Depends(get_market_snapshot_repo),
     binance_client: BinanceClient = Depends(get_binance_client),
     coinbase_client: CoinbaseClient = Depends(get_coinbase_client),
+    settings: Settings = Depends(get_settings_dependency),
 ) -> list[HoldingsEntryView]:
-    """The current AGGREGATED position per asset PER PLATFORM (including a
-    cash line per platform) — every BUY/SELL transaction ever recorded for
-    that asset on that specific custody location summed together (Phase
-    5b's transactional model, extended Phase 5o for platform, see
-    `aggregate_current_holdings`), not just the latest row. This is the
-    real ground-truth holdings state Portfolio Construction actually
-    reasons against (collapsed across platforms there, via
-    `collapse_platforms`, since it only ever wants one number per asset).
+    """The current AGGREGATED position per asset (including one combined
+    cash row) — every BUY/SELL transaction ever recorded for that asset,
+    on every platform, summed together (Phase 5b's transactional model,
+    see `aggregate_current_holdings`/`collapse_platforms`), not just the
+    latest row. This is the real ground-truth holdings state Portfolio
+    Construction actually reasons against.
+
+    Phase 5o (2026-09-27, revised): an asset held on more than one
+    platform is ONE row here, not one per platform — `platforms` lists
+    every real custody location it's actually held on (sorted, e.g.
+    `["coinbase", "ledger_wallet"]`); `platform` is left `None` on this
+    endpoint since a single value would be arbitrary once two platforms
+    are merged (see `HoldingsEntryView`'s own docstring). The per-platform
+    breakdown itself is never lost — it's what `/holdings/history` shows,
+    real transaction by real transaction.
 
     `value_usd`/`allocation` are computed directly here, per row, against
-    the total portfolio value summed across every row (including every
-    platform) — not via `compute_current_allocations` (Phase 5a), whose
-    dict keyed by `asset_id` alone would silently overwrite one platform's
-    value with another's whenever the same asset is held in two places.
-    Summing every row's `value_usd` still gives the real total portfolio
-    value, which cannot be derived from `allocation` (a fraction) alone.
-    `price_usd` is the real current price behind that math, exposed
-    directly rather than making a caller re-derive it from value/quantity.
-    `live_price_usd` (Phase 5b, by explicit user choice) is a separate,
-    genuinely live spot price fetched from Binance/Coinbase at request
-    time — deliberately not used for `value_usd`/`allocation` above, so
-    those stay consistent with the real pipeline's own stored-snapshot
-    basis (see `app/market_data/live_price.py`). `cost_per_unit`/
-    `unrealized_pnl_usd`/`unrealized_pnl_pct` are computed from this row's
-    own weighted-average cost basis against `value_usd` — `None` whenever
-    no cost basis was ever entered."""
-    latest_holdings = aggregate_current_holdings(repo.get_all_history())
+    the total portfolio value summed across every row. `price_usd` is the
+    real current price behind that math, exposed directly rather than
+    making a caller re-derive it from value/quantity. `live_price_usd`
+    (Phase 5b, by explicit user choice) is a separate, genuinely live spot
+    price fetched from Binance/Coinbase at request time — deliberately
+    not used for `value_usd`/`allocation` above, so those stay consistent
+    with the real pipeline's own stored-snapshot basis (see
+    `app/market_data/live_price.py`). `cost_per_unit`/`unrealized_pnl_usd`/
+    `unrealized_pnl_pct` are computed from this row's own weighted-average
+    cost basis (summed across every platform) against `value_usd` — `None`
+    whenever no cost basis was ever entered.
+
+    Rows below `MIN_MATERIAL_HOLDING_USD` are dropped from the returned
+    list entirely (real dust from years of tiny staking rewards, not a
+    real position to display) -- but `total_value`/`allocation` for the
+    rows that DO remain are computed against the true total including
+    that dust, so percentages stay honestly accurate against everything
+    you really hold, not just what's shown."""
+    per_platform = aggregate_current_holdings(repo.get_all_history())
+    platforms_by_asset: dict[str, list[str]] = {}
+    for entry in per_platform:
+        if entry.asset_id is not None:
+            platforms_by_asset.setdefault(entry.asset_id, []).append(entry.platform)
+    latest_holdings = collapse_platforms(per_platform)
+
     price_by_asset_id = {}
     price_as_of_by_asset_id = {}
     for entry in latest_holdings:
@@ -229,11 +256,31 @@ def get_current_holdings(
                 price_by_asset_id[entry.asset_id] = float(snapshot.price)
                 price_as_of_by_asset_id[entry.asset_id] = snapshot.timestamp
 
+    # Real bug fix (2026-09-27): a caller that wants just ONE platform's
+    # real contribution (e.g. a dashboard total filtered to Ledger Wallet)
+    # must not use the collapsed row's combined value/cost basis for that
+    # -- an asset held on two platforms would silently double-count the
+    # other platform's share. Computed from `per_platform` (pre-collapse)
+    # directly, using the same prices as everything else on this endpoint.
+    value_by_platform_by_asset: dict[str, dict[str, float]] = {}
+    cost_basis_by_platform_by_asset: dict[str, dict[str, float]] = {}
+    for entry in per_platform:
+        if entry.asset_id is None:
+            continue
+        cost_basis_by_platform_by_asset.setdefault(entry.asset_id, {})[entry.platform] = entry.cost_basis_usd or 0.0
+        price = price_by_asset_id.get(entry.asset_id)
+        if price is not None:
+            value_by_platform_by_asset.setdefault(entry.asset_id, {})[entry.platform] = entry.quantity * price
+
     # `_with_symbols` is a 1:1, order-preserving map over `latest_holdings`,
-    # so zipping the two together pairs each raw entry with its own view --
-    # this is what lets the same asset_id appear more than once (one row
-    # per platform) without one row's value clobbering another's.
+    # so zipping the two together pairs each raw entry with its own view.
     views = _with_symbols(latest_holdings, asset_repo)
+    for entry, view in zip(latest_holdings, views):
+        if entry.asset_id is not None:
+            view.platform = None  # arbitrary/misleading once merged -- see docstring above
+            view.platforms = sorted(platforms_by_asset.get(entry.asset_id, []))
+            view.value_usd_by_platform = value_by_platform_by_asset.get(entry.asset_id)
+            view.cost_basis_usd_by_platform = cost_basis_by_platform_by_asset.get(entry.asset_id)
     total_value = 0.0
     for entry, view in zip(latest_holdings, views):
         if entry.asset_id is None:
@@ -260,7 +307,10 @@ def get_current_holdings(
             if view.value_usd is not None:
                 view.unrealized_pnl_usd = view.value_usd - view.cost_basis_usd
                 view.unrealized_pnl_pct = (view.unrealized_pnl_usd / view.cost_basis_usd) * 100 if view.cost_basis_usd > 0 else None
-    return views
+
+    material = filter_materially_held(latest_holdings, price_by_asset_id, settings.min_material_holding_usd)
+    material_ids = {id(entry) for entry in material}
+    return [view for entry, view in zip(latest_holdings, views) if id(entry) in material_ids]
 
 
 @router.get("/history", response_model=list[HoldingsEntryView])

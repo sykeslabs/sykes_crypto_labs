@@ -9,6 +9,7 @@ from app.database.repository import (
     AssetStatusRepository,
     HoldingsLedgerRepository,
     MarketRegimeRepository,
+    MarketSnapshotRepository,
     ScreenedUniverseRepository,
     SignalSourceRepository,
 )
@@ -28,7 +29,7 @@ from app.market_data.regime import (
 )
 from app.market_data.screening_schemas import MarketRegimeSnapshot, ScreenedAsset
 from app.market_data.stablecoins import is_stablecoin
-from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms
+from app.portfolio.holdings import aggregate_current_holdings, collapse_platforms, filter_materially_held
 
 logger = logging.getLogger("crypto_ai_portfolio.market_data")
 
@@ -92,6 +93,7 @@ class ScreeningService:
         coinbase_client: CoinbaseClient,
         binance_client: BinanceClient,
         holdings_ledger_repo: HoldingsLedgerRepository,
+        snapshot_repo: MarketSnapshotRepository,
     ) -> None:
         self._settings = settings
         self._asset_repo = asset_repo
@@ -99,6 +101,7 @@ class ScreeningService:
         self._screened_universe_repo = screened_universe_repo
         self._regime_repo = regime_repo
         self._signal_source_repo = signal_source_repo
+        self._snapshot_repo = snapshot_repo
         self._coingecko = coingecko_client
         self._coinmarketcap = coinmarketcap_client
         self._coinbase = coinbase_client
@@ -335,10 +338,25 @@ class ScreeningService:
         which also needs each held asset's `coingecko_id`) — matched by
         symbol at the `_rank_and_tag_candidates` call site, not asset_id,
         since that method runs before `_promote_new_candidates` assigns
-        `row.asset_id` for the day's rows."""
+        `row.asset_id` for the day's rows.
+
+        Phase 5o (2026-09-27): filtered through `filter_materially_held` --
+        a dust position (years of tiny staking rewards, real examples
+        found live worth $0.0000000000-$0.062) is a real position but not
+        one worth spending real Judge/assessment cost deciding on every
+        day; this closes exactly that gap."""
         aggregated = collapse_platforms(aggregate_current_holdings(self._holdings_ledger_repo.get_all_history()))
-        held_assets: list[Asset] = []
+        price_by_asset_id = {}
         for entry in aggregated:
+            if entry.asset_id is None:
+                continue
+            snapshot = self._snapshot_repo.get_latest_snapshot(entry.asset_id)
+            if snapshot is not None:
+                price_by_asset_id[entry.asset_id] = float(snapshot.price)
+        material = filter_materially_held(aggregated, price_by_asset_id, self._settings.min_material_holding_usd)
+
+        held_assets: list[Asset] = []
+        for entry in material:
             if entry.asset_id is None:  # the cash line, not a real asset position
                 continue
             asset = self._asset_repo.get_by_id(entry.asset_id)

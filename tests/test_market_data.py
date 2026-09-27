@@ -5,6 +5,7 @@ from app.config.settings import Settings
 from app.database.models import Asset
 from app.market_data.normalize import normalize_coingecko_entry
 from app.market_data.service import MarketDataCollectionService
+from app.portfolio.schemas import HoldingsLedgerEntry
 
 RAW_ENTRY = {
     "id": "bitcoin",
@@ -55,11 +56,15 @@ def test_snapshot_to_row_is_json_safe():
 
 
 class FakeAssetRepository:
-    def __init__(self, assets):
+    def __init__(self, assets, inactive_assets=None):
         self._assets = assets
+        self._all_assets = assets + (inactive_assets or [])
 
     def get_active_assets(self):
         return self._assets
+
+    def get_by_id(self, asset_id):
+        return next((a for a in self._all_assets if a.id == asset_id), None)
 
 
 class FakeSnapshotRepository:
@@ -80,6 +85,16 @@ class FakeCoinGeckoClient:
 
     def fetch_markets(self, coingecko_ids):
         return self._markets
+
+
+class FakeHoldingsLedgerRepo:
+    """Empty by default for every existing test above -- the held-but-
+    inactive merge below is what actually exercises real entries."""
+    def __init__(self, entries=None):
+        self._entries = entries or []
+
+    def get_all_history(self):
+        return self._entries
 
 
 def _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1", in_asset=True):
@@ -103,6 +118,7 @@ def test_service_inserts_new_snapshot():
         asset_repo=FakeAssetRepository([asset]),
         snapshot_repo=snapshot_repo,
         coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY}),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
@@ -123,6 +139,7 @@ def test_service_skips_duplicate_within_interval():
         asset_repo=FakeAssetRepository([asset]),
         snapshot_repo=snapshot_repo,
         coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY}),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
@@ -142,6 +159,7 @@ def test_service_inserts_when_outside_interval():
         asset_repo=FakeAssetRepository([asset]),
         snapshot_repo=snapshot_repo,
         coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY}),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
@@ -159,6 +177,7 @@ def test_service_handles_missing_market_data_without_crashing():
         asset_repo=FakeAssetRepository([asset]),
         snapshot_repo=snapshot_repo,
         coingecko_client=FakeCoinGeckoClient({}),  # no data returned for XRP
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
@@ -180,6 +199,7 @@ def test_service_handles_coingecko_failure_gracefully():
         asset_repo=FakeAssetRepository([asset]),
         snapshot_repo=FakeSnapshotRepository(),
         coingecko_client=FailingCoinGeckoClient(),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
@@ -196,9 +216,88 @@ def test_service_no_active_assets_returns_empty_result():
         asset_repo=FakeAssetRepository([]),
         snapshot_repo=FakeSnapshotRepository(),
         coingecko_client=FakeCoinGeckoClient({}),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo(),
     )
 
     result = service.run()
 
     assert result.inserted == []
     assert result.failed == []
+
+
+# --- Phase 5o (2026-09-27): held-but-inactive assets still get priced --------
+
+def test_held_but_inactive_asset_is_included_in_collection():
+    # Real gap found live: an 18.84 ETC position (active=False, kept that
+    # way deliberately so it doesn't enter screening/Judge coverage) never
+    # got a market_snapshots row, so GET /holdings could never compute its
+    # Value/Allocation. A real nonzero holding must still get priced.
+    active_asset = _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1")
+    held_inactive = Asset(
+        id="asset-2", symbol="ETC", name="Ethereum Classic", coingecko_id="ethereum-classic",
+        active=False, in_asset=True, created_at=datetime.now(UTC),
+    )
+    holdings_repo = FakeHoldingsLedgerRepo([
+        HoldingsLedgerEntry(
+            asset_id="asset-2", quantity=18.84, recorded_at=datetime.now(UTC), platform="ledger_wallet",
+        ),
+    ])
+    snapshot_repo = FakeSnapshotRepository()
+    service = MarketDataCollectionService(
+        settings=Settings(_env_file=None),
+        asset_repo=FakeAssetRepository([active_asset], inactive_assets=[held_inactive]),
+        snapshot_repo=snapshot_repo,
+        coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY, "ethereum-classic": {**RAW_ENTRY, "id": "ethereum-classic"}}),
+        holdings_ledger_repo=holdings_repo,
+    )
+
+    result = service.run()
+
+    assert sorted(result.inserted) == ["BTC", "ETC"]
+
+
+def test_inactive_asset_with_no_real_holding_is_not_included():
+    active_asset = _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1")
+    untouched_inactive = Asset(
+        id="asset-3", symbol="RANDOM", name="Random", coingecko_id="random-coin",
+        active=False, in_asset=False, created_at=datetime.now(UTC),
+    )
+    service = MarketDataCollectionService(
+        settings=Settings(_env_file=None),
+        asset_repo=FakeAssetRepository([active_asset], inactive_assets=[untouched_inactive]),
+        snapshot_repo=FakeSnapshotRepository(),
+        coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY}),
+        holdings_ledger_repo=FakeHoldingsLedgerRepo([]),  # nothing ever held
+    )
+
+    result = service.run()
+
+    assert result.inserted == ["BTC"]  # RANDOM never touched -- no real holding, no reason to price it
+
+
+def test_zero_quantity_position_in_an_inactive_asset_is_not_included():
+    # A fully-exited historical position (net quantity 0 after aggregation)
+    # is not "held" -- must not force a price fetch either.
+    active_asset = _make_asset(symbol="BTC", coingecko_id="bitcoin", asset_id="asset-1")
+    fully_exited = Asset(
+        id="asset-4", symbol="CGLD", name="Celo", coingecko_id="celo",
+        active=False, in_asset=False, created_at=datetime.now(UTC),
+    )
+    holdings_repo = FakeHoldingsLedgerRepo([
+        HoldingsLedgerEntry(asset_id="asset-4", quantity=10.0, recorded_at=datetime.now(UTC), platform="coinbase"),
+        HoldingsLedgerEntry(
+            asset_id="asset-4", quantity=10.0, recorded_at=datetime.now(UTC),
+            transaction_type="SELL", platform="coinbase",
+        ),
+    ])
+    service = MarketDataCollectionService(
+        settings=Settings(_env_file=None),
+        asset_repo=FakeAssetRepository([active_asset], inactive_assets=[fully_exited]),
+        snapshot_repo=FakeSnapshotRepository(),
+        coingecko_client=FakeCoinGeckoClient({"bitcoin": RAW_ENTRY}),
+        holdings_ledger_repo=holdings_repo,
+    )
+
+    result = service.run()
+
+    assert result.inserted == ["BTC"]

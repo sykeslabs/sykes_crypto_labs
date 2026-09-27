@@ -12,8 +12,10 @@ from app.api.dependencies import (
     get_coingecko_client,
     get_holdings_ledger_repo,
     get_market_snapshot_repo,
+    get_settings_dependency,
 )
 from app.api.main import app
+from app.config.settings import Settings
 from app.database.models import Asset
 from app.portfolio.schemas import HoldingsLedgerEntry
 
@@ -44,6 +46,18 @@ def _default_new_asset_dependencies():
     # new-asset-creation path.
     app.dependency_overrides[get_coingecko_client] = lambda: FakeCoinGeckoClient()
     app.dependency_overrides[get_asset_status_repo] = lambda: FakeAssetStatusRepo()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _default_materiality_dependencies():
+    # Default: no price known for anything (filter_materially_held KEEPS
+    # an unpriced position, so this never changes an existing test's
+    # in_asset/SELL-guard behavior), real $1 threshold. Individual tests
+    # override `get_market_snapshot_repo` again to exercise materiality
+    # filtering itself.
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeMarketSnapshotRepo()
+    app.dependency_overrides[get_settings_dependency] = lambda: Settings(_env_file=None)
     yield
 
 
@@ -435,6 +449,44 @@ def test_editing_a_holding_appends_a_new_row_never_overwrites(client):
     assert quantities == [1.0, 2.0]
 
 
+def test_get_current_holdings_excludes_dust_below_materiality_threshold(client):
+    # Phase 5o (2026-09-27): a real position worth less than
+    # MIN_MATERIAL_HOLDING_USD must not appear in the response at all --
+    # but the surviving rows' Allocation still divides against the TRUE
+    # total (including the dust), not just what's shown.
+    seed = [
+        _tx("dust-id", 0.0000002, minutes_ago=60),  # $0.0000006 at the price below -- real dust
+        _tx("btc-id", 1.0, minutes_ago=60),  # $100 -- clearly material
+    ]
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([
+        _asset(asset_id="dust-id", symbol="REN"), _asset(asset_id="btc-id", symbol="BTC"),
+    ])
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeMarketSnapshotRepo({"dust-id": 3.0, "btc-id": 100.0})
+    app.dependency_overrides[get_settings_dependency] = lambda: Settings(_env_file=None, min_material_holding_usd=1.0)
+
+    response = TestClient(app).get("/holdings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [r["symbol"] for r in body] == ["BTC"]
+    assert body[0]["allocation"] == pytest.approx(1.0)  # 100 / (100 + 0.0000006) ~= 1.0, dust still counted in the denominator
+
+
+def test_get_current_holdings_keeps_a_real_position_with_no_price_available(client):
+    # filter_materially_held's own rule: "no price yet" is kept, not
+    # dropped -- must not silently vanish from My Portfolio.
+    seed = [_tx("unpriced-id", 5.0, minutes_ago=60)]
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(asset_id="unpriced-id", symbol="NEWASSET")])
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeMarketSnapshotRepo({})  # no price for it
+
+    response = TestClient(app).get("/holdings")
+
+    assert response.status_code == 200
+    assert [r["symbol"] for r in response.json()] == ["NEWASSET"]
+
+
 def test_get_current_holdings_sums_multiple_buy_transactions(client):
     # Phase 5b: this is the whole point of the transactional model -- two
     # separate BUYs for the same asset must sum, not the second replacing
@@ -454,11 +506,12 @@ def test_get_current_holdings_sums_multiple_buy_transactions(client):
     assert body[0]["cost_basis_usd"] == pytest.approx(860.0)
 
 
-def test_get_current_holdings_returns_one_row_per_platform_for_the_same_asset(client):
-    # Real Phase 5o behavior: the same asset held on two platforms shows
-    # as two separate rows, each with its own cost basis/value/allocation
-    # -- never merged into one, and never one platform's value silently
-    # overwriting the other's (the real bug this endpoint's rewrite fixes).
+def test_get_current_holdings_returns_one_row_for_an_asset_held_on_two_platforms(client):
+    # Real Phase 5o (2026-09-27 revision) behavior: the same asset held on
+    # two platforms is now ONE row -- quantity/cost basis summed across
+    # both (via collapse_platforms), `platform` left None (a single value
+    # would be arbitrary/misleading once merged), `platforms` lists every
+    # real custody location it's actually held on.
     seed = [
         _tx("a1", 1.0, cost_basis=1000.0, platform="coinbase"),
         _tx("a1", 3.0, cost_basis=3000.0, platform="ledger_wallet"),
@@ -469,16 +522,32 @@ def test_get_current_holdings_returns_one_row_per_platform_for_the_same_asset(cl
     response = TestClient(app).get("/holdings")
     assert response.status_code == 200
     body = response.json()
-    assert len(body) == 2
-    by_platform = {r["platform"]: r for r in body}
-    assert by_platform["coinbase"]["quantity"] == pytest.approx(1.0)
-    assert by_platform["coinbase"]["value_usd"] == pytest.approx(100.0)
-    assert by_platform["ledger_wallet"]["quantity"] == pytest.approx(3.0)
-    assert by_platform["ledger_wallet"]["value_usd"] == pytest.approx(300.0)
-    # Allocation is each row's own share of the TOTAL (400) -- not
-    # recomputed independently per platform.
-    assert by_platform["coinbase"]["allocation"] == pytest.approx(100.0 / 400.0)
-    assert by_platform["ledger_wallet"]["allocation"] == pytest.approx(300.0 / 400.0)
+    assert len(body) == 1
+    row = body[0]
+    assert row["quantity"] == pytest.approx(4.0)
+    assert row["cost_basis_usd"] == pytest.approx(4000.0)
+    assert row["value_usd"] == pytest.approx(400.0)
+    assert row["allocation"] == pytest.approx(1.0)
+    assert row["platform"] is None
+    assert sorted(row["platforms"]) == ["coinbase", "ledger_wallet"]
+    # Real bug fix (2026-09-27): the per-platform breakdown must reflect
+    # each platform's OWN share, not the combined row total -- otherwise a
+    # caller filtering to one platform would silently double-count the
+    # other platform's contribution.
+    assert row["value_usd_by_platform"] == {"coinbase": pytest.approx(100.0), "ledger_wallet": pytest.approx(300.0)}
+    assert row["cost_basis_usd_by_platform"] == {"coinbase": pytest.approx(1000.0), "ledger_wallet": pytest.approx(3000.0)}
+
+
+def test_get_current_holdings_platforms_is_a_single_entry_list_for_a_one_platform_asset(client):
+    seed = [_tx("a1", 1.0, cost_basis=100.0, platform="coinbase")]
+    app.dependency_overrides[get_holdings_ledger_repo] = lambda: FakeHoldingsLedgerRepo(seed)
+    app.dependency_overrides[get_asset_repo] = lambda: FakeAssetRepo([_asset(symbol="BTC")])
+    app.dependency_overrides[get_market_snapshot_repo] = lambda: FakeMarketSnapshotRepo({"a1": 100.0})
+    response = TestClient(app).get("/holdings")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["platforms"] == ["coinbase"]
 
 
 def test_get_current_holdings_reflects_a_sell(client):

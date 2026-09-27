@@ -206,6 +206,7 @@ def main() -> int:
         asset_repo=asset_repo,
         snapshot_repo=snapshot_repo,
         coingecko_client=CoinGeckoClient(settings),
+        holdings_ledger_repo=HoldingsLedgerRepository(client),
     )
     market_result = market_service.run()
 
@@ -227,6 +228,7 @@ def main() -> int:
             coinbase_client=CoinbaseClient(settings),
             binance_client=BinanceClient(settings),
             holdings_ledger_repo=HoldingsLedgerRepository(client),
+            snapshot_repo=snapshot_repo,
         )
         screening_result = screening_service.run(run_id)
         logger.info("Screening finished: %s", screening_result.summary)
