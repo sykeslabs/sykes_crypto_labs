@@ -154,7 +154,18 @@ def test_macro_observations_not_implemented_without_fred_key():
 
 
 def test_forward_calendar_only_includes_future_dates_within_horizon():
-    fred = FakeFredClient(configured=True, release_dates={10: ["2020-01-01", "2026-10-01", "2030-01-01"]})
+    # Dates computed relative to the real clock (service.run() uses
+    # datetime.now(UTC) internally, not injectable) -- a hardcoded date
+    # eventually becomes "past" as real calendar time passes, which is
+    # exactly the false failure this once produced. FORWARD_CALENDAR_
+    # HORIZON_DAYS is 120 (app/market_data/macro_service.py); the filter is
+    # inclusive (today <= d <= horizon), so +30d/-30d/+200d are all safely
+    # on one side of each boundary.
+    today = datetime.now(UTC).date()
+    past_date = (today - timedelta(days=30)).isoformat()
+    within_horizon_date = (today + timedelta(days=30)).isoformat()
+    beyond_horizon_date = (today + timedelta(days=200)).isoformat()
+    fred = FakeFredClient(configured=True, release_dates={10: [past_date, within_horizon_date, beyond_horizon_date]})
     evidence_repo = FakeEvidenceRepo()
     service = _make_service(fred=fred, evidence_repo=evidence_repo)
 
@@ -162,9 +173,9 @@ def test_forward_calendar_only_includes_future_dates_within_horizon():
 
     calendar_entries = [o for o in evidence_repo.inserted if o.source == "scheduled_macro_event"]
     dates = {o.payload["scheduled_date"] for o in calendar_entries}
-    assert "2026-10-01" in dates
-    assert "2020-01-01" not in dates  # past
-    assert "2030-01-01" not in dates  # beyond the horizon
+    assert within_horizon_date in dates
+    assert past_date not in dates  # past
+    assert beyond_horizon_date not in dates  # beyond the horizon
 
 
 def test_global_liquidity_series_persisted():
