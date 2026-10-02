@@ -24,6 +24,8 @@ Do not assume a component contributes signal merely because it produces a predic
 
 Your job is to determine what the evidence actually supports.
 
+Follow `CLAUDE.md` throughout: ask, don't assume; simplest solution first; don't touch unrelated code; flag uncertainty explicitly.
+
 ---
 
 # 0. IMPORTANT: START FROM THE CURRENT PROJECT STATE
@@ -31,17 +33,20 @@ Your job is to determine what the evidence actually supports.
 Before reviewing anything:
 
 1. Inspect the repository structure.
-2. Read the existing documentation.
-3. Read the current `TODO` section.
-4. Read relevant architecture/history/decision documentation.
-5. Inspect the current implementation rather than relying on documentation alone.
+2. Read the existing documentation in `doc/`: `architecture.md`, `methodology.md`, `decisions.md`, `history.md`, `operations.md`, `scripts.md`.
+3. Read the current TODO: **`doc/todo.md` is the canonical action list** (the dashboard's `#todo-section` is a stale static snapshot — do not treat it as current).
+4. Read the implementation-prompt set in **`doc/prompts/`** (see §0.2): `00_INDEX.md` first, then every open numbered prompt (`01_…` through the highest number present), then the list of files in `doc/prompts/done/` (including `PHASE3_LOCKED_DECISIONS.md` and `EMBARGO_HOLDOUT_COHORT_PROMPT.md`).
+5. Inspect the current implementation rather than relying on documentation or prompts alone.
 6. Inspect the current tests.
 7. Inspect the actual persisted data and evaluation outputs available to the project.
 8. Understand the complete production pipeline from data ingestion through portfolio construction and evaluation.
 9. Identify the current implementation/version of each major component.
 10. Establish which previous findings have already been fixed and validated.
+11. Run `git status` / `git log` (read-only) and record which relevant work is committed vs. only in the working tree. `00_INDEX.md` states the embargo work (`TRAINING_WINDOW_END`, `HOLDOUT_COHORT_START`, `holdout_cohort_*`, replay guard) was uncommitted at the time it was written — verify the current state; do not assume.
 
 Do **not** assume that the previous review's conclusions are still correct.
+
+Do **not** assume that a prompt's "Context — verified 2026-10-02" claims are still correct.
 
 Verify the current code.
 
@@ -95,13 +100,71 @@ Treat them as **closed unless your current inspection discovers a regression or 
 * `/calibration/summary` final 2,000-row ceiling.
 * `/calibration/outcomes/recent` intentional caller-supplied bounds.
 
-The final migration state has been validated with a **704-test suite**, including a meaningful >2,000-row regression test for the final endpoint defect.
+### Completed prompts in `doc/prompts/done/`
+
+* Every `PHASE*_PROMPT.md` and `EMBARGO_HOLDOUT_COHORT_PROMPT.md` is completed work. Do not re-run or rewrite them. Use them as history only (what was decided, when, and why), and to reconstruct researcher degrees of freedom (§19).
+* The embargo/holdout-cohort implementation counts as closed **infrastructure** — but per `doc/todo.md` its underlying statistical problem (backfilled and live windows overlap; holdout results directional only) is still open. Keep those two things separate.
+
+The final migration state has been validated with a **704-test suite**, including a meaningful >2,000-row regression test for the final endpoint defect. Re-count the current test suite rather than trusting this number.
 
 Do not spend the review rediscovering these issues.
 
 If you find a regression, interaction, or previously overlooked consequence, document it precisely.
 
 Otherwise treat them as established infrastructure.
+
+---
+
+# 0.2 THE EXISTING EXPERIMENT PROGRAM — `doc/prompts/`
+
+**Every open item in `doc/todo.md` has a matching implementation prompt in `doc/prompts/`**, linked from the item (`**Implementation prompt**: [prompts/NN_….md](…)`) and listed in `doc/prompts/00_INDEX.md` in the same order as `doc/todo.md`. Together those prompts already *are* the project's planned research program. This review must treat them as such.
+
+### Rules
+
+1. **A prompt is a plan, not evidence.** A prompt that has not been run yields no result. If a question in this review depends on an unrun prompt, the answer is **"Evidence unavailable in current project state"** — and you name that prompt as how to obtain it. Do not use a prompt's Context section, or its expected outcome, as evidence.
+2. **Critique before you add.** If an existing prompt already specifies an experiment this review would otherwise propose, do not design a parallel one. Evaluate the existing prompt instead and recommend changes to it.
+3. **Do not run the prompts.** This review must not execute any prompt's implementation, replays, or LLM calls. Those prompts have their own Step-0 gates, cost approvals and stop-and-wait points.
+4. **Respect the index's cross-cutting risks** in every experiment you design or revise. Re-verify them against the code first:
+   * new replays add `is_backfilled=true` rows that contaminate the backfilled hit-rate/Sharpe, the evidence-value pool and the reasoning-audit pool, and no tag currently separates experiment rows from the main backfill;
+   * replays must end on or before `TRAINING_WINDOW_END`;
+   * nothing may be tuned, selected or fitted on decisions with `decision_timestamp >= HOLDOUT_COHORT_START`;
+   * every replay inherits item 01's survivorship bias until that is fixed.
+
+### Expected mapping (verify; do not assume)
+
+Use this as a starting map from review sections to existing prompts. Confirm each mapping by reading the prompt, and record any section that **no** prompt covers.
+
+| Review section | Likely existing prompt(s) |
+| --- | --- |
+| §14 universe integrity / survivorship | `01_PIT_CANDIDATE_UNIVERSE` |
+| §8 baselines, Q6, §16 economic validity | `02_BASELINE_LADDER` |
+| §7 LLM ablation, Q8 | `03_LLM_ABLATION`, `07_ADVERSARIAL_INCREMENTAL_VALUE` |
+| §5 signal decomposition, factor weights | `04_COMPOSITE_WEIGHTS_VALIDATION` |
+| §9 information-source ablation | `05_EVIDENCE_VALUE_RANKING`, `03`, `07` |
+| §11 calibration | `06_LLM_SELF_REPORTED_CALIBRATION` |
+| §17 regime robustness | `08_REGIME_ROBUSTNESS` (gated on 02) |
+| §16 sensitivity, §19 degrees of freedom | `09_PARAMETER_SENSITIVITY` (gated on 02) |
+| §18 cross-asset generalization | `10_CROSS_ASSET_GENERALIZATION` (gated on 02) |
+| §14 temporal integrity, §15 LLM leakage/non-determinism | `11_LLM_LEAKAGE_REVALIDATION` |
+| §12–13 portfolio/risk attribution, decision tracing | `12_FORENSIC_EXPLAINABILITY`, `13_STRESS_TEST_REAL_HOLDINGS` |
+| §4 news/information advantage, §20 complexity cost | `17_FAISS_SIMILARITY_RETRIEVAL`, `18_RETRIEVAL_LAYER_EVALUATION` |
+| Engineering backlog (outside this review's scope unless material) | `14`, `15`, `16` |
+
+Likely gaps to check explicitly: §7 variants **D (simplified single-call LLM)** and **E (news-only LLM)**; §10 dependence-adjusted inference (effective N, block bootstrap, autocorrelation); §13 return attribution (alpha / beta / risk-control / timing); §16 execution-delay and cost-multiplier sensitivity; §19 a count of implicit hypotheses tested; a frozen forward-test protocol (Q7).
+
+### Per-prompt audit (required)
+
+For **every open prompt**, record:
+
+* **Question answered** — which of Q1–Q8 (or none).
+* **Still correct?** — do its code/data claims still hold today? List any stale `file:line`, schema or number.
+* **Pre-specified success criterion?** — is the pass/fail threshold fixed *before* the data is seen, or left open (which creates researcher degrees of freedom)?
+* **Statistical adequacy** — given real N and dependence (§10), can it produce a decisive result, or only noise?
+* **Gate / dependency correct?** — is it gated on the right prerequisite? Should it be (un)gated given this review's findings?
+* **Contamination handling** — does it handle the cross-cutting risks above?
+* **Priority** — expected information value × feasibility, relative to the question "is there an edge?"
+* **Complexity check** — does it add sophistication (e.g. 17, 18) before an edge is shown? Apply §30.
+* **Verdict** — one of **KEEP / REVISE / MERGE / REPRIORITIZE / RETIRE / ALREADY DONE**, with evidence.
 
 ---
 
@@ -155,6 +218,8 @@ A strategy can have:
 * useful quantitative signals while the AI components add no measurable value.
 
 Identify which situation actually applies.
+
+For each of Q1–Q8, also state which existing prompt (if any) is designed to answer it, and whether it has been run.
 
 ---
 
@@ -254,6 +319,8 @@ For each major prediction/decision determine:
 
 If different components use different implicit targets, document the mismatch.
 
+Also check whether the open prompts (02, 03, 05, 06, 07 in particular) all evaluate against the **same** target/label. If they use different implicit targets, their results will not be comparable — flag which prompts need aligning.
+
 Then answer:
 
 > **Is the system optimizing one coherent objective or combining several objectives without a clearly defined hierarchy?**
@@ -295,9 +362,13 @@ Review at minimum:
 * LLM interpretations;
 * external model outputs.
 
+Include each source's real status tag (`OK` / `UNAVAILABLE` / `NOT_IMPLEMENTED`) from the code. A `NOT_IMPLEMENTED` source contributes nothing and cannot have demonstrated value.
+
 Do not merely state that a feature "could be useful."
 
 Ask whether the project has actually demonstrated that it is useful.
+
+Where prompts 17 (FAISS similarity retrieval) and 18 (web/financial retrieval layer) propose to *expand* an information source, state whether this review's evidence supports doing so before the source's current version has demonstrated value.
 
 ---
 
@@ -352,6 +423,8 @@ This may look like multiple independent signals while actually being one signal 
 
 Identify all such cases.
 
+Check whether prompt 03's layer ladder (factors → + assessments → + adversarial → full Judge) and prompt 05's evidence-value features account for this double counting, or whether they would credit a layer for re-expressing momentum.
+
 ---
 
 # 6. AI / ML VALUE AUDIT
@@ -367,6 +440,7 @@ For **every AI/ML component**, answer:
 7. What would falsify the hypothesis?
 8. What is the simplest replacement?
 9. Does the component justify its complexity and cost?
+10. Which existing prompt tests it, and is that test adequate?
 
 Explicitly inspect:
 
@@ -417,6 +491,8 @@ One LLM call with a minimal structured task rather than multiple reasoning stage
 
 Test whether the value comes specifically from interpreting unstructured news.
 
+**Start from prompts `03_LLM_ABLATION.md` and `07_ADVERSARIAL_INCREMENTAL_VALUE.md`** (and their dependency on `02_BASELINE_LADDER.md`). For each of A–E, state whether those prompts already cover it, partly cover it, or don't cover it. Design only the uncovered variants, and propose them as **revisions to 03/07** where they share the same harness, or as a new prompt only if they cannot.
+
 Do not implement all experiments automatically.
 
 First determine whether the existing data permits valid experiments.
@@ -431,7 +507,8 @@ For each experiment specify:
 * metrics;
 * costs;
 * statistical test;
-* success criterion.
+* success criterion;
+* existing prompt that implements it (or "new prompt required").
 
 ---
 
@@ -471,6 +548,8 @@ Do not add every baseline merely for completeness.
 
 Identify the **minimum set of baselines necessary to determine whether the current system adds value**.
 
+Compare that minimum set against the rungs **prompt `02_BASELINE_LADDER.md`** already specifies. Recommend additions or removals of rungs to 02 rather than a separate baseline project. Because 08, 09 and 10 are gated on 02, flag explicitly whether 02 is the single most important unrun experiment in the project.
+
 ---
 
 # 9. ABLATION OF INFORMATION SOURCES
@@ -503,6 +582,8 @@ For each available ablation, determine whether removing the component changes:
 * transaction costs.
 
 A component that increases complexity but does not improve economically relevant metrics should be questioned or removed.
+
+Map each ablation to the prompt that would perform it (03, 04, 05, 07, or none). Note `05`'s known limitation (per its own context and `scripts/run_evidence_value_ranking.py`): per-source assessment and composite factor score are not joinable to resolved decisions, so it cannot ablate individual evidence sources today. Verify this, and say whether that gap needs its own TODO + prompt.
 
 ---
 
@@ -542,6 +623,8 @@ A strategy with 1,000 correlated daily observations does not necessarily have 1,
 
 Explicitly investigate autocorrelation and cross-sectional dependence where relevant.
 
+For every open prompt, estimate whether the realistic N it will run on can detect an effect of economically meaningful size. If not, say so in that prompt's audit (§0.2) — an experiment that can only return noise is low priority until more data accrues.
+
 ---
 
 # 11. CALIBRATION
@@ -570,6 +653,8 @@ Also determine whether calibration is being measured on:
 * mixed populations.
 
 Do not treat a good Brier score on a tiny or selected sample as convincing evidence.
+
+Check `06_LLM_SELF_REPORTED_CALIBRATION.md` against these requirements, particularly population separation (backfilled / live pre-cohort / holdout cohort).
 
 ---
 
@@ -602,6 +687,8 @@ Look for situations where:
 Quantify where possible:
 
 > **How much of observed portfolio behavior is attributable to prediction versus risk/portfolio rules?**
+
+Check whether `12_FORENSIC_EXPLAINABILITY.md` (decision-level tracing) would produce this quantification, or only per-decision explanations. If the latter, specify what is missing.
 
 ---
 
@@ -640,6 +727,8 @@ Determine how much performance comes from:
 5. portfolio construction;
 6. randomness.
 
+If no existing prompt performs this attribution, propose a TODO + prompt.
+
 ---
 
 # 14. BACKTEST / REPLAY METHODOLOGY
@@ -665,6 +754,8 @@ Look specifically for:
 * historical market-cap availability;
 * universe entry/exit timing.
 
+Assess whether `01_PIT_CANDIDATE_UNIVERSE.md` (the CRITICAL survivorship item) fully fixes this, and whether results of every other prompt should be treated as provisional until it runs.
+
 ### Model fitting
 
 Determine exactly where parameters/models are fitted.
@@ -678,7 +769,7 @@ training
 → forward / production
 ```
 
-Look for hidden tuning on the evaluation period.
+Look for hidden tuning on the evaluation period. Verify the actual values and enforcement of `TRAINING_WINDOW_END` and `HOLDOUT_COHORT_START`, and check every open prompt for any step that could fit, select or tune on the holdout cohort.
 
 ### Replay determinism
 
@@ -693,6 +784,8 @@ If not, identify all sources of non-determinism:
 * provider differences;
 * timestamps;
 * database state.
+
+Relate this to `11_LLM_LEAKAGE_REVALIDATION.md` (LLM parametric-knowledge leakage during replay): does replay of pre-cutoff dates with current LLMs make LLM-layer replay results fundamentally unreliable?
 
 ---
 
@@ -728,6 +821,8 @@ These are different.
 
 Determine whether the system requires either one for credible research.
 
+(Here "prompts" means the system's **LLM prompts** used in production, not the implementation prompts in `doc/prompts/`. Keep the two separate in the report.)
+
 ---
 
 # 16. ECONOMIC VALIDITY
@@ -752,6 +847,8 @@ Calculate or inspect evidence for:
 * hit rate;
 * profit factor.
 
+Note `doc/todo.md`'s recorded periodicity correction (old decision-level Sharpe ≈ 1.846 vs. periodicity-corrected pooled-daily ≈ 0.295 vs. BTC buy-and-hold ≈ 0.313). Re-verify these figures and their populations; do not quote them unchecked.
+
 Then ask:
 
 > Would the strategy still look attractive if its estimated edge were reduced substantially?
@@ -765,6 +862,8 @@ Perform sensitivity where possible:
 * one-period execution delay;
 * reduced signal strength;
 * different thresholds.
+
+Check which of these `09_PARAMETER_SENSITIVITY.md` and `02_BASELINE_LADDER.md` already cover, and propose the missing ones as revisions there.
 
 Do not claim robustness without evidence.
 
@@ -787,6 +886,8 @@ At minimum investigate:
 Determine whether performance is concentrated in one narrow historical regime.
 
 A strategy that only works in one regime should not be described as generally robust.
+
+Check `08_REGIME_ROBUSTNESS.md` (gated on 02, uses RISK_ON / RISK_OFF / NEUTRAL). Is that regime taxonomy adequate for the regimes listed above? Does the available history actually contain enough of each regime to test?
 
 ---
 
@@ -812,6 +913,8 @@ and/or
 
 ### Completely unseen asset testing.
 
+Check whether `10_CROSS_ASSET_GENERALIZATION.md` already specifies these; propose them as revisions to it if not.
+
 ---
 
 # 19. MULTIPLE TESTING AND RESEARCHER DEGREES OF FREEDOM
@@ -830,6 +933,8 @@ Look for:
 * evaluation-window changes;
 * repeated experiments where only successful versions were retained.
 
+Use `doc/history.md`, `doc/decisions.md`, `doc/prompts/done/` (including `PHASE3_LOCKED_DECISIONS.md`) and `git log` as the primary record.
+
 Ask:
 
 > How many implicit hypotheses have effectively been tested?
@@ -837,6 +942,8 @@ Ask:
 A high-performing final configuration after many iterations is not equivalent to a pre-specified hypothesis.
 
 If possible, reconstruct the research degrees of freedom.
+
+Also count the hypotheses the **open** prompts will add if all are run (01–18 and any new ones). Recommend how to control multiple testing across the whole program — e.g. a pre-registered primary experiment, a fixed hypothesis family, or a correction method — and which prompts need a pre-specified success criterion added.
 
 ---
 
@@ -858,6 +965,8 @@ Then ask:
 > What measurable investment benefit justifies this complexity?
 
 If a simple deterministic strategy could produce similar results, explicitly recommend simplification.
+
+Also estimate the cost of the **open experiment program** itself (the `LLM cost` column in `00_INDEX.md`: which prompts need paid replays, roughly how many replay-days). Recommend the order that yields the most information per franc spent.
 
 ---
 
@@ -885,6 +994,8 @@ For each determine:
 2. What evidence supports that claim?
 3. What simpler alternative exists?
 4. What experiment would falsify its usefulness?
+
+Apply the same audit to the experiment program: are there prompts that make the project *look* rigorous (many planned analyses) without being able to produce decisive evidence at current N?
 
 ---
 
@@ -926,9 +1037,9 @@ Identify every component that the current architecture contains that the minimal
 
 Do not merely produce recommendations.
 
-Construct a prioritized research program.
+Construct a prioritized research program **as a revision of the existing `doc/prompts/` program**, not a replacement for it.
 
-For every proposed experiment provide:
+For every experiment in the program provide:
 
 * hypothesis;
 * baseline;
@@ -937,9 +1048,12 @@ For every proposed experiment provide:
 * period;
 * metric;
 * statistical method;
-* success criterion;
+* success criterion (fixed in advance);
 * expected information value;
-* implementation effort.
+* implementation effort;
+* LLM cost;
+* dependencies / gate;
+* **prompt file**: existing (`NN_…`, with verdict KEEP / REVISE / MERGE / REPRIORITIZE) or new.
 
 Prioritize by:
 
@@ -951,23 +1065,25 @@ The highest priority experiments should answer:
 
 before experiments that merely make the system more sophisticated.
 
+Output the program as a proposed replacement for the "Suggested order" table in `doc/prompts/00_INDEX.md` (same columns: `#`, `File`, `doc/todo.md section`, `Todo item`, `Depends on`, `LLM cost`), plus a short rationale for every row that moved, was added, merged or retired.
+
 ---
 
-# 24. TODO — CENTRAL ACTION LIST
+# 24. TODO AND PROMPTS — CENTRAL ACTION LIST
 
-The project's existing TODO is the canonical action list.
+`doc/todo.md` is the canonical action list, and **every open TODO item has exactly one implementation prompt in `doc/prompts/`**. Treat the two as one system that must stay in sync.
 
 Before adding anything:
 
-1. Read the complete existing TODO.
-2. Understand each existing item.
-3. Identify duplicates.
+1. Read the complete existing `doc/todo.md`.
+2. Understand each existing item **and read its linked prompt**.
+3. Identify duplicates (in TODO and among prompts).
 4. Identify obsolete items.
 5. Identify items whose assumptions have now been disproven.
-6. Update existing items rather than duplicating them.
+6. Update existing items (and their prompts) rather than duplicating them.
 7. Add only genuinely new findings from this review.
 
-Every actionable finding must be represented in TODO.
+Every actionable finding must be represented in TODO, **and every new or changed open TODO item must have a matching new or updated prompt**.
 
 Use:
 
@@ -989,6 +1105,8 @@ Use domain tags where useful:
 * `[LLM]`
 * `[Research]`
 
+Place items in `doc/todo.md`'s existing structure (A. Active research — investment validity: CRITICAL / HIGH / MEDIUM / Confirmed finding; B. Engineering backlog; Deferred / gated with a revisit condition; Declined / Not planned). Read its "Methodological principle" section first and follow it.
+
 Every quantitative TODO should include a validation criterion whenever possible.
 
 Examples:
@@ -999,17 +1117,43 @@ Examples:
 
 > **[HIGH][Quant] Establish confidence intervals for strategy Sharpe and alpha and account for multiple testing and serial/cross-sectional dependence.**
 
+(These examples may already exist in `doc/todo.md` in some form, e.g. the embargo item or prompt 03. Check before adding.)
+
 Do not add TODO items simply because they sound sophisticated.
 
-If the evidence indicates that something should be removed, create a removal TODO.
+If the evidence indicates that something should be removed, create a removal TODO (with its own prompt).
 
 If the evidence indicates that a component is useful, do not create unnecessary work around it.
 
+### Prompt-file conventions (match the existing files)
+
+* **Filename**: `doc/prompts/NN_UPPER_SNAKE_CASE.md`, using the next free number (currently 19 onward unless that has changed). Never reuse or renumber an existing number, because `doc/todo.md` links them by filename.
+* **Title**: `# Build: …` / `# Analyze: …` / `# Evaluate: …` followed by the todo tag, e.g. `(todo [HIGH][Quant])`, plus `— GATED` where it applies.
+* **Sections**, as in the existing prompts:
+  * `## Context`: which `doc/todo.md` item to read first; the question; what already exists, as "verified YYYY-MM-DD" claims with `file:line` citations that you actually checked.
+  * `## Step 0`: gate check / read-only inspection, with explicit stop conditions and **"Wait for my OK."**
+  * `## Implementation` (or Parts / Phases with their own stop points).
+  * `## Tests`.
+  * `## Docs (show diff first)`.
+  * `## Ground rules`: simplest solution, don't touch unrelated code, flag uncertainty, and explicit DB-write and LLM-cost rules.
+* Any prompt involving replay must address every cross-cutting risk in §0.2 and route open design choices to a Step-0 "ask the user" gate rather than deciding them silently.
+* Any experiment prompt must state its success criterion **before** the data is seen.
+
+### Keeping TODO and prompts in sync
+
+* **New TODO** → new prompt; add the `**Implementation prompt**: [prompts/NN_….md](prompts/NN_….md)` link in the item; add a row to the `00_INDEX.md` table **in the same position as the item appears in `doc/todo.md`**.
+* **Modified TODO** → update its prompt (Context claims, gate, dependencies, success criterion) and its index row.
+* **Merged TODOs** → one surviving prompt; the absorbed prompt is retired (see below) with a pointer to the survivor.
+* **Obsolete / disproven / removed TODO** → do not delete the prompt silently. Move it to `doc/prompts/done/` **only if the work was actually implemented**. Otherwise propose either deletion or a `RETIRED — <reason, date>` header, and **ask me which**.
+* **Reprioritized TODO** → move the item in `doc/todo.md` and its row in the index; update the prompt's `Depends on` / gate if it changed.
+* **Index** → add a dated entry to `00_INDEX.md`'s "Revision log" describing this review's changes; update its "Cross-cutting risks" section if you found new ones or found any existing one stale.
+* Do not edit anything in `doc/prompts/done/`.
+
 After completing the review:
 
-### Re-read TODO.
+### Re-read TODO and the prompt set.
 
-Verify that every major actionable recommendation is represented.
+Verify that every major actionable recommendation is represented, every open TODO item links an existing prompt, every open prompt (other than `00_INDEX.md`) is linked from exactly one TODO item, and the index order matches `doc/todo.md`.
 
 Report:
 
@@ -1017,11 +1161,14 @@ Report:
 * TODOs modified;
 * TODOs removed;
 * TODOs explicitly closed as obsolete;
+* prompts added (filename);
+* prompts revised (filename + what changed);
+* prompts merged / retired / moved to `done/`;
 * CRITICAL count;
 * HIGH count;
 * MEDIUM count;
 * LOW count;
-* top five TODOs.
+* top five TODOs (with their prompt files).
 
 ---
 
@@ -1055,6 +1202,8 @@ Do not turn "unvalidated" into "false".
 
 Do not turn a backtest into proof of future performance.
 
+Do not turn a planned experiment (an unrun prompt) into evidence of anything.
+
 ---
 
 # 26. IMPORTANT: DO NOT INVENT EVIDENCE
@@ -1069,7 +1218,7 @@ Then specify:
 
 * what evidence is missing;
 * why it matters;
-* how it should be obtained.
+* how it should be obtained (name the existing prompt, or the new one you are proposing).
 
 Do not estimate missing results.
 
@@ -1089,16 +1238,17 @@ Numerical scores create false precision and encourage optimization toward arbitr
 
 Instead provide an evidence-based status for each dimension:
 
-| Dimension              | Status         | Evidence | Main uncertainty |
-| ---------------------- | -------------- | -------- | ---------------- |
-| Quantitative validity  | VERIFIED / ... | ...      | ...              |
-| AI/ML validity         | ...            | ...      | ...              |
-| Data quality           | ...            | ...      | ...              |
-| Backtesting rigor      | ...            | ...      | ...              |
-| Portfolio construction | ...            | ...      | ...              |
-| Risk management        | ...            | ...      | ...              |
-| Software architecture  | ...            | ...      | ...              |
-| Practical usefulness   | ...            | ...      | ...              |
+| Dimension              | Status         | Evidence | Main uncertainty | Resolving prompt(s) |
+| ---------------------- | -------------- | -------- | ---------------- | ------------------- |
+| Quantitative validity  | VERIFIED / ... | ...      | ...              | ...                 |
+| AI/ML validity         | ...            | ...      | ...              | ...                 |
+| Data quality           | ...            | ...      | ...              | ...                 |
+| Backtesting rigor      | ...            | ...      | ...              | ...                 |
+| Portfolio construction | ...            | ...      | ...              | ...                 |
+| Risk management        | ...            | ...      | ...              | ...                 |
+| Software architecture  | ...            | ...      | ...              | ...                 |
+| Practical usefulness   | ...            | ...      | ...              | ...                 |
+| Experiment program     | ...            | ...      | ...              | ...                 |
 
 ---
 
@@ -1134,7 +1284,8 @@ For each:
 
 * hypothesis;
 * evidence;
-* uncertainty.
+* uncertainty;
+* the prompt that tests it.
 
 ---
 
@@ -1162,7 +1313,7 @@ For each:
 * evidence;
 * consequence;
 * confidence;
-* experiment required.
+* experiment required (prompt file).
 
 ---
 
@@ -1194,7 +1345,7 @@ Prioritize simplification where evidence is absent.
 
 ## J. Highest-value experiments
 
-Provide the **5–10 experiments that should happen before adding significant new complexity**.
+Provide the **5–10 experiments that should happen before adding significant new complexity**, each mapped to its prompt file.
 
 Prioritize experiments that can answer whether the system actually works.
 
@@ -1208,7 +1359,7 @@ Do not add technology for its own sake.
 
 ---
 
-## L. TODO verification
+## L. TODO and prompt verification
 
 Report:
 
@@ -1216,11 +1367,13 @@ Report:
 * modified TODOs;
 * removed TODOs;
 * obsolete TODOs closed;
+* new / revised / merged / retired prompts;
 * CRITICAL;
 * HIGH;
 * MEDIUM;
 * LOW;
-* five highest-priority TODOs.
+* five highest-priority TODOs;
+* confirmation that `doc/todo.md`, the prompt files and `00_INDEX.md` are consistent (every item ↔ one prompt, same order).
 
 ---
 
@@ -1228,8 +1381,8 @@ Report:
 
 Create a table:
 
-| Claim | Evidence | Status | What would prove/disprove it |
-| ----- | -------- | ------ | ---------------------------- |
+| Claim | Evidence | Status | What would prove/disprove it | Prompt |
+| ----- | -------- | ------ | ---------------------------- | ------ |
 
 Include claims such as:
 
@@ -1247,7 +1400,13 @@ Include claims such as:
 
 ---
 
-## N. REAL-MONEY DECISION
+## N. Per-prompt audit
+
+The table from §0.2 for every open prompt: question answered, still correct, pre-specified success criterion, statistical adequacy, gate, contamination handling, priority, verdict, and required changes.
+
+---
+
+## O. REAL-MONEY DECISION
 
 Answer exactly:
 
@@ -1257,7 +1416,7 @@ Do not answer based on how impressive the software is.
 
 Base the answer exclusively on the evidence available in the project.
 
-If the evidence is insufficient, specify the exact evidence that is missing.
+If the evidence is insufficient, specify the exact evidence that is missing, and which prompts, run in which order, would produce it.
 
 ---
 
@@ -1269,10 +1428,12 @@ Throughout the review:
 * Inspect actual data.
 * Inspect actual tests.
 * Inspect actual TODOs.
+* Inspect the actual prompt files, and verify their claims rather than inheriting them.
 * Prefer evidence over architecture diagrams.
 * Prefer experiments over opinions.
 * Prefer simple baselines over sophisticated assumptions.
 * Treat backtests as hypotheses, not proof.
+* Treat planned experiments as plans, not evidence.
 * Treat LLM reasoning as unvalidated unless empirically demonstrated.
 * Separate predictive accuracy from portfolio performance.
 * Separate portfolio performance from risk-control effects.
@@ -1280,7 +1441,7 @@ Throughout the review:
 * Separate reproducibility from determinism.
 * Separate historical replay from genuinely out-of-sample forward testing.
 * Distinguish independent observations from correlated rows.
-* Explicitly account for multiple testing.
+* Explicitly account for multiple testing, including across the planned prompt program.
 * Do not add complexity merely because it is technically interesting.
 * Do not change production behavior merely to make the review easier.
 * Do not refactor unrelated code.
@@ -1288,7 +1449,7 @@ Throughout the review:
 * Preserve the current production implementation while establishing the baseline.
 * Make experiments reproducible.
 * Record exact parameters and populations for experiments.
-* Keep documentation synchronized with conclusions.
+* Keep documentation, TODO and prompts synchronized with conclusions.
 
 ---
 
@@ -1313,6 +1474,8 @@ Only recommend such changes if they materially affect:
 * risk;
 * maintainability of the research system.
 
+For section-B engineering prompts (`12`–`16`), only audit them as far as they materially affect research validity; otherwise mark them "out of scope — unchanged".
+
 The highest priority is:
 
 > **Prove whether the existing system has an edge before making it more sophisticated.**
@@ -1327,13 +1490,18 @@ This review is primarily an **assessment and experiment-design exercise**.
 
 Do not automatically implement major strategy changes during the review.
 
+Do not execute any prompt in `doc/prompts/`, run any replay, or make any LLM call.
+
 You MAY make small, non-behavioral changes required to:
 
-* add TODO entries;
+* add or update TODO entries in `doc/todo.md`;
+* add or revise prompt files in `doc/prompts/` and update `00_INDEX.md`;
 * add documentation;
 * add read-only audit scripts;
 * expose existing data for analysis;
 * create isolated experiment infrastructure where clearly necessary.
+
+For every write to `doc/todo.md`, `doc/prompts/` or other `doc/` files: **show the diff first and wait for my OK**, as the existing prompts' "Docs (show diff first)" convention requires. Do not commit.
 
 You MUST NOT silently modify:
 
@@ -1342,12 +1510,13 @@ You MUST NOT silently modify:
 * portfolio rules;
 * risk limits;
 * evaluation methodology;
-* prompts;
+* production LLM prompts;
 * universe definitions;
+* anything in `doc/prompts/done/`;
 
 merely because you believe they should be different.
 
-If a change is recommended, document it as a controlled experiment or TODO.
+If a change is recommended, document it as a controlled experiment or TODO, with its prompt.
 
 ---
 
@@ -1355,7 +1524,7 @@ If a change is recommended, document it as a controlled experiment or TODO.
 
 Before finishing:
 
-1. Re-read the TODO section.
+1. Re-read `doc/todo.md`.
 2. Verify every major actionable finding is represented.
 3. Verify no duplicate TODOs were created.
 4. Verify previously closed infrastructure issues were not unnecessarily reopened.
@@ -1365,10 +1534,15 @@ Before finishing:
 8. Verify no backtest result is presented as proof of future performance.
 9. Verify all AI/LLM claims distinguish plausible usefulness from demonstrated usefulness.
 10. Verify the strongest conclusions are supported directly by code/data/evaluation evidence.
-11. Report exactly what remains unknown.
-12. Report the five highest-value experiments.
-13. Report the five highest-priority TODOs.
-14. Provide the final real-money evidence assessment.
+11. Verify every open TODO item links exactly one existing prompt file, and every open prompt is linked from exactly one TODO item.
+12. Verify `00_INDEX.md`'s table order matches `doc/todo.md`, and it has a dated revision-log entry for this review.
+13. Verify every new or revised experiment prompt has a pre-specified success criterion, a Step-0 stop gate, and explicit handling of the cross-cutting replay/holdout/survivorship risks.
+14. Verify no unrun prompt was cited as evidence.
+15. Verify nothing in `doc/prompts/done/` was changed.
+16. Report exactly what remains unknown.
+17. Report the five highest-value experiments (with prompt files).
+18. Report the five highest-priority TODOs (with prompt files).
+19. Provide the final real-money evidence assessment.
 
 The standard is not:
 
