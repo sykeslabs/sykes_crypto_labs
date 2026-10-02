@@ -2743,6 +2743,34 @@ CONDITIONS** (re-apply the hardened migration file — done live 2026-09-15,
 confirmed a no-op against current data; track the Judge-context finding
 below as a separate follow-up).
 
+**The migration file itself had a real, concrete defect, found and fixed
+during this same pre-production audit**: `migrations/0020_turnover_
+baseline_fix.sql`'s original backfill `UPDATE` matched only on
+`baseline_semantics = 'system_target'`, with no guard against rows the
+fixed code itself creates — re-running it after the fixed code had
+already written new rows would have silently mislabeled them. Fixed by
+adding `AND actual_allocation_before is null`, making the migration
+genuinely idempotent at any point in time. Applied live 2026-09-15 via
+the Supabase SQL Editor (direct `psycopg2` application blocked by a
+recurring auth failure — same manual-apply process already used for
+0019/0020) and verified afterward: still 24 rows, all correctly labeled
+`actual_holdings`, 0 rows matching the old unguarded condition — a
+genuine no-op against current live data, as expected, closing the latent
+future risk without touching any already-correct row.
+
+**Also undocumented until now, same window**: `MAX_CONCURRENT_POSITIONS`
+(8) and `MIN_REPLACEMENT_ALPHA_ADVANTAGE` (0.03) had no stated empirical
+basis — same category of arbitrary-but-undocumented constant as
+`COMPOSITE_FACTOR_WEIGHTS`. Documented honestly (2026-09-13, `app/config/
+settings.py`) rather than fit or backtested: `max_concurrent_positions`
+is a conservative starting cap so the replacement rule has any teeth at
+all; `min_replacement_alpha_advantage` is a hysteresis/switching-cost
+buffer preventing a marginally-better candidate from generating real
+turnover/fee cost every run for a negligible expected-alpha gain. Real
+sensitivity-testing needs enough resolved decisions across enough actual
+*replacement events* specifically (narrower than the general
+resolved-decision count) — not yet available, still open.
+
 19 new/updated tests this phase; 524 passing at the time.
 
 ## Phase 5d — Judge-context "current allocation" fix
@@ -3802,4 +3830,89 @@ against the current code and confirmed still accurately open.
 See [`decisions.md`](decisions.md)'s A2 entry for the original design
 analysis — unchanged, this is a live-exercise confirmation, not a policy
 revision.
+
+## Phase 5w — Genuine embargoed holdout cohort, `EMBARGO_HOLDOUT_COHORT_PROMPT.md` (2026-10-02)
+
+Implements option (a) of the "no genuine temporal embargo" CRITICAL
+finding (`doc/todo.md`'s "A. Active research" section) — a real,
+pre-assessed implementation prompt, not improvised. Full design
+reasoning, the frozen constants, and the no-migration/n≥50 criterion are
+recorded in [`decisions.md`](decisions.md)'s corresponding entry; this
+section covers what was actually built and verified.
+
+**Step 0 (read-only, before any code)**: live query against real
+`decision_outcomes` on 2026-10-02 — 232 backfilled rows (max
+`decision_timestamp` = 2026-09-23T00:00:00Z), 326 live rows (min
+`decision_timestamp` = 2026-09-05T17:07:49Z). `TRAINING_WINDOW_END` set
+to the backfilled max; `HOLDOUT_COHORT_START` = that + 45 days =
+2026-11-07T00:00:00Z. A pre-existing open question (whether
+`TRAILING_WINDOW_DAYS`, the live feature trailing window, could exceed
+the 45-day embargo and leave feature-window overlap uncovered) was
+resolved favorably during pre-assessment: `TRAILING_WINDOW_DAYS = 31`
+(`app/benchmarks/historical_factors.py`) < 45, so no embargo-length
+change was needed.
+
+**Built**:
+- `TRAINING_WINDOW_END`/`HOLDOUT_EMBARGO_DAYS`/`HOLDOUT_COHORT_START` as
+  frozen module constants in `app/benchmarks/schemas.py` (not
+  `app/config/settings.py` — these are data-derived, not env-var-tunable,
+  same convention as `IN_HOLDOUT_WINDOW` in `app/judge/service.py`).
+- `/calibration/summary` (`app/api/routers/calibration.py`) gains
+  `holdout_cohort_start`, `holdout_cohort_decision_count`,
+  `directional_sample_size_holdout_cohort`, `hit_rate_holdout_cohort`,
+  `brier_score_holdout_cohort`, `sharpe_decision_level_holdout_cohort`,
+  `deflated_sharpe_ratio_holdout_cohort`, `holdout_cohort_contaminated`,
+  `holdout_cohort_confirmatory` (`app/api/schemas.py`'s
+  `CalibrationSummary`) — computed at read time, reusing the existing
+  `_directional_stats`/`pairs_for` machinery so B2's same-day-duplicate
+  exclusion applies to the cohort exactly as it does to every other
+  directional slice. `held_out_window_note` now also states the cohort's
+  start date and resolved-directional count.
+- `HistoricalReplayService.run()` (`app/benchmarks/replay.py`) refuses
+  `end_date > TRAINING_WINDOW_END` unless a new `allow_post_training_
+  cutoff: bool = False` parameter is passed — checked at the service
+  level (not just the CLI), so a direct caller is blocked too. Using the
+  override logs a loud warning and permanently taints the cohort.
+  `scripts/run_replay.py` adds the same check up front (fails fast,
+  before the cost-estimate/confirmation prompt) plus a new
+  `--allow-post-training-cutoff` CLI flag.
+- Dashboard (`app/api/static/dashboard.html`): a "Directional only — not
+  confirmatory" badge now appears on the Calibration summary's Hit rate/
+  Brier/Sharpe/Deflated Sharpe Ratio rows and the "By prompt version"
+  table's Hit rate column whenever `holdout_cohort_confirmatory` is
+  false; a new "Holdout cohort (embargoed, clean)" row shows the cohort's
+  start date, decision count, contamination/confirmatory badges, and its
+  own hit rate/Sharpe once computable. `scripts/run_periodicity_fix.py`
+  and `scripts/calibration_baseline.py` each print one caveat line next
+  to their system-level Sharpe/hit-rate output.
+
+**Tests**: 8 new, all genuinely regression-proving. 5 in
+`tests/test_api_endpoints.py` — cohort membership boundary (exactly at
+`HOLDOUT_COHORT_START` is in, one second before is out, a backfilled row
+at the same instant is never in), an empty cohort (null stats, `false`
+flags, no crash), contamination (blocks `confirmatory` even at a
+sufficient sample), the `confirmatory` flip at exactly `MIN_SAMPLE_SIZE`
+(49 → false, 50 → true), and B2 duplicate-group exclusion applying
+inside the cohort. 3 in `tests/test_replay.py` — refuses past
+`TRAINING_WINDOW_END` without the override, proceeds with it, unaffected
+exactly at/before the boundary. Regression-proof performed on the
+highest-risk piece (the n≥50 boundary): temporarily changed `>=` to `>`
+against `MIN_SAMPLE_SIZE`, confirmed the boundary test failed exactly as
+predicted (`False is True`), restored immediately. Full suite after:
+**711 passed** (703 pre-existing + 8 new), same single pre-existing,
+unrelated failure as every other recent run
+(`test_forward_calendar_only_includes_future_dates_within_horizon`,
+broken by the real system clock advancing past its hardcoded
+`"2026-10-01"` "future" date — not caused by this or any other change
+this session).
+
+**Explicitly not closed by this phase**: the CRITICAL "no embargo"
+`doc/todo.md` item stays Open — a clean cohort now *exists*, but
+`holdout_cohort_confirmatory` is false (0 decisions in it yet, since
+`HOLDOUT_COHORT_START` is 2026-11-07, still in the future as of this
+write-up) and won't flip true for an estimated ~3 months (45-day embargo
++ time for n≥50 resolved-directional decisions), a wait the user
+explicitly accepted before implementation began. No production run or
+database mutation was performed — every constant came from a single
+read-only query.
 

@@ -256,6 +256,30 @@ class CalibrationSummary(BaseModel):
     # test") -- should trend toward 0% as real calendar time passes.
     embargo_gap_days: float | None = None
     pct_live_within_own_horizon_of_training_end: float | None = None
+    # EMBARGO_HOLDOUT_COHORT_PROMPT.md (2026-10-02): the one genuinely
+    # embargoed live cohort -- decisions at/after HOLDOUT_COHORT_START
+    # (TRAINING_WINDOW_END + 45-day embargo), computed at read time, no DB
+    # migration. holdout_cohort_decision_count is ALL clean-cohort live
+    # decisions (resolved + unresolved), matching the raw-audit-count
+    # convention of resolved_live_count/unresolved_live_count above; the
+    # directional_sample_size_/hit_rate_/brier_score_/sharpe_decision_level_/
+    # deflated_sharpe_ratio_holdout_cohort fields are the resolved-and-
+    # directional subset only (same B2 duplicate exclusion as every other
+    # directional figure above). holdout_cohort_confirmatory is true only
+    # once the cohort is uncontaminated AND directional_sample_size_
+    # holdout_cohort >= evidence_value.py's own MIN_SAMPLE_SIZE (50) --
+    # until then, every hit-rate/Sharpe figure in this summary (not just
+    # this cohort's own) remains directional evidence only, never
+    # confirmatory (see held_out_window_note).
+    holdout_cohort_start: datetime
+    holdout_cohort_decision_count: int
+    directional_sample_size_holdout_cohort: int
+    hit_rate_holdout_cohort: float | None
+    brier_score_holdout_cohort: float | None
+    sharpe_decision_level_holdout_cohort: float | None
+    deflated_sharpe_ratio_holdout_cohort: float | None
+    holdout_cohort_contaminated: bool
+    holdout_cohort_confirmatory: bool
 
 
 class CostTableBreakdown(BaseModel):

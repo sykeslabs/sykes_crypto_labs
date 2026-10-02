@@ -110,6 +110,11 @@ def _print_report(directional, hit_rate, brier_score, buckets, resolved_count) -
     print(f"Directional rows scored: {len(directional)}")
     print(f"Hit rate: {hit_rate}")
     print(f"Brier score: {brier_score}")
+    print(
+        "NOTE: not computed from the one genuinely embargoed holdout cohort "
+        "(EMBARGO_HOLDOUT_COHORT_PROMPT.md, see /calibration/summary's holdout_cohort_* "
+        "fields) -- treat as directional evidence only, not confirmatory."
+    )
     print("Reliability by confidence bucket:")
     for bucket in sorted(buckets):
         b = buckets[bucket]

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -29,7 +29,10 @@ from app.api.dependencies import (
     get_turnover_cap_event_repo,
 )
 from app.api.main import app
+from app.benchmarks.evidence_value import MIN_SAMPLE_SIZE
 from app.benchmarks.schemas import (
+    HOLDOUT_COHORT_START,
+    TRAINING_WINDOW_END,
     CalibrationRunRecord,
     DecisionOutcome,
     EvidenceValueReportRecord,
@@ -904,6 +907,156 @@ def test_calibration_duplicate_exclusion_applies_before_directional_type_filteri
     assert body["excluded_duplicate_group_decision_count"] == 2
     assert body["resolved_live_count"] == 1  # d2's real resolved row is still counted in the raw audit total
     assert body["unresolved_live_count"] == 1
+
+
+# --- EMBARGO_HOLDOUT_COHORT_PROMPT.md: clean holdout cohort -------------------
+
+def _cohort_outcome(decision_id, decision_timestamp, is_backfilled=False, asset_id="a1"):
+    return DecisionOutcome(
+        decision_id=decision_id, asset_id=asset_id, decision_timestamp=decision_timestamp, horizon_days=30,
+        target_return=0.1, stop_return=-0.1, realized_return=0.05, outcome_label="HIT_TARGET",
+        judge_confidence=0.6, is_backfilled=is_backfilled,
+    )
+
+
+def _many_cohort_decisions(n):
+    # Distinct asset_id per decision -- B2's (asset_id, UTC day) duplicate
+    # grouping can never trigger regardless of how timestamps land, so this
+    # helper is safe to reuse for pure sample-size tests.
+    outcomes = []
+    decisions = {}
+    for i in range(n):
+        decision_id = f"cohort-{i}"
+        asset_id = f"cohort-asset-{i}"
+        ts = HOLDOUT_COHORT_START + timedelta(days=1, hours=i)
+        outcomes.append(_cohort_outcome(decision_id, ts, asset_id=asset_id))
+        decisions[decision_id] = _judge_decision(decision_id, asset_id=asset_id, is_backfilled=False, created_at=ts)
+    return outcomes, decisions
+
+
+def test_holdout_cohort_membership_boundary(client):
+    # Exactly at HOLDOUT_COHORT_START -- in. One second before -- out. A
+    # backfilled row at the SAME instant -- never in, regardless of timestamp.
+    at_start = _cohort_outcome("d-at", HOLDOUT_COHORT_START, asset_id="a-at")
+    before_start = _cohort_outcome("d-before", HOLDOUT_COHORT_START - timedelta(seconds=1), asset_id="a-before")
+    backfilled_at_start = _cohort_outcome("d-bf", HOLDOUT_COHORT_START, is_backfilled=True, asset_id="a-bf")
+    decisions = {
+        "d-at": _judge_decision("d-at", asset_id="a-at", is_backfilled=False, created_at=HOLDOUT_COHORT_START),
+        "d-before": _judge_decision("d-before", asset_id="a-before", is_backfilled=False, created_at=HOLDOUT_COHORT_START),
+        "d-bf": _judge_decision("d-bf", asset_id="a-bf", is_backfilled=True, created_at=HOLDOUT_COHORT_START),
+    }
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [at_start, before_start, backfilled_at_start]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert body["holdout_cohort_decision_count"] == 1
+    assert body["directional_sample_size_holdout_cohort"] == 1
+    assert body["hit_rate_holdout_cohort"] == pytest.approx(1.0)
+
+
+def test_holdout_cohort_empty_reports_null_stats_not_a_crash(client):
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return []
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo({})
+    response = client.get("/calibration/summary")
+    assert response.status_code == 200
+    body = response.json()
+
+    assert body["holdout_cohort_decision_count"] == 0
+    assert body["directional_sample_size_holdout_cohort"] == 0
+    assert body["hit_rate_holdout_cohort"] is None
+    assert body["sharpe_decision_level_holdout_cohort"] is None
+    assert body["holdout_cohort_contaminated"] is False
+    assert body["holdout_cohort_confirmatory"] is False
+
+
+def test_holdout_cohort_contaminated_blocks_confirmatory_even_at_sufficient_sample(client):
+    outcomes, decisions = _many_cohort_decisions(MIN_SAMPLE_SIZE)
+    # Only reachable in real life via run_replay.py's own
+    # --allow-post-training-cutoff override (a backfilled row placed after
+    # the frozen TRAINING_WINDOW_END).
+    contaminator_ts = TRAINING_WINDOW_END + timedelta(days=1)
+    contaminating_outcome = _cohort_outcome("contaminator", contaminator_ts, is_backfilled=True, asset_id="contaminator-asset")
+    decisions["contaminator"] = _judge_decision(
+        "contaminator", asset_id="contaminator-asset", is_backfilled=True, created_at=contaminator_ts,
+    )
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return outcomes + [contaminating_outcome]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    assert body["directional_sample_size_holdout_cohort"] >= MIN_SAMPLE_SIZE
+    assert body["holdout_cohort_contaminated"] is True
+    assert body["holdout_cohort_confirmatory"] is False
+
+
+def test_holdout_cohort_confirmatory_flips_true_only_at_min_sample_size(client):
+    below_outcomes, below_decisions = _many_cohort_decisions(MIN_SAMPLE_SIZE - 1)
+
+    class FakeOutcomeRepoBelow:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return below_outcomes
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepoBelow()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(below_decisions)
+    body_below = client.get("/calibration/summary").json()
+    assert body_below["directional_sample_size_holdout_cohort"] == MIN_SAMPLE_SIZE - 1
+    assert body_below["holdout_cohort_contaminated"] is False
+    assert body_below["holdout_cohort_confirmatory"] is False
+
+    at_outcomes, at_decisions = _many_cohort_decisions(MIN_SAMPLE_SIZE)
+
+    class FakeOutcomeRepoAt:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return at_outcomes
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepoAt()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(at_decisions)
+    body_at = client.get("/calibration/summary").json()
+    assert body_at["directional_sample_size_holdout_cohort"] == MIN_SAMPLE_SIZE
+    assert body_at["holdout_cohort_contaminated"] is False
+    assert body_at["holdout_cohort_confirmatory"] is True
+
+
+def test_holdout_cohort_excludes_same_day_duplicate_group(client):
+    day = HOLDOUT_COHORT_START + timedelta(days=1)
+    resolved_a = _cohort_outcome("dup-1", day, asset_id="dup-asset")
+    resolved_b_same_day = _cohort_outcome("dup-2", day.replace(hour=5), asset_id="dup-asset")
+    decisions = {
+        "dup-1": _judge_decision("dup-1", asset_id="dup-asset", is_backfilled=False, created_at=day),
+        "dup-2": _judge_decision("dup-2", asset_id="dup-asset", is_backfilled=False, created_at=day.replace(hour=5)),
+    }
+
+    class FakeOutcomeRepo:
+        def get_recent(self, limit=2000, is_backfilled=None):
+            return [resolved_a, resolved_b_same_day]
+
+    app.dependency_overrides[get_decision_outcome_repo] = lambda: FakeOutcomeRepo()
+    app.dependency_overrides[get_judge_decision_repo] = lambda: _fake_judge_repo(decisions)
+    response = client.get("/calibration/summary")
+    body = response.json()
+
+    # Both belong to the same (asset, UTC day) duplicate group -- B2
+    # excludes both from the cohort's directional stats even though both
+    # are real, resolved, and inside the cohort window. The raw decision
+    # count (not duplicate-filtered, same convention as resolved_live_count)
+    # still reflects both real rows.
+    assert body["holdout_cohort_decision_count"] == 2
+    assert body["directional_sample_size_holdout_cohort"] == 0
 
 
 def test_get_recent_calibration_runs(client):

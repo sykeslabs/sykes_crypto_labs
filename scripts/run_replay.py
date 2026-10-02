@@ -36,6 +36,7 @@ from app.benchmarks.replay import (
     make_funding_rate_fetcher,
     make_historical_series_fetcher,
 )
+from app.benchmarks.schemas import TRAINING_WINDOW_END
 from app.config import get_settings
 from app.database.client import get_supabase_client
 from app.database.repository import (
@@ -69,6 +70,15 @@ def main() -> int:
         "--with-adversarial", action="store_true",
         help="Also run 3f's bull/bear/scenario research per replayed day (real added cost, ~$0.30/day observed live).",
     )
+    parser.add_argument(
+        "--allow-post-training-cutoff", action="store_true",
+        help=(
+            "Override the EMBARGO_HOLDOUT_COHORT_PROMPT.md guard that refuses a replay "
+            "end date after TRAINING_WINDOW_END. PERMANENTLY contaminates the clean "
+            "holdout cohort (/calibration/summary's holdout_cohort_contaminated) -- use "
+            "only with full understanding of that consequence."
+        ),
+    )
     args = parser.parse_args()
 
     settings = get_settings()
@@ -82,6 +92,21 @@ def main() -> int:
         if args.start else end_date - timedelta(days=args.days - 1)
     )
     num_days = (end_date.date() - start_date.date()).days + 1
+
+    # EMBARGO_HOLDOUT_COHORT_PROMPT.md: fail fast, before even estimating
+    # cost/prompting for confirmation, with a clear CLI-level message.
+    # HistoricalReplayService.run() enforces the same guard independently
+    # (so a direct, non-CLI caller is blocked too) -- this is a fast-fail
+    # convenience, not the only enforcement point.
+    if end_date > TRAINING_WINDOW_END and not args.allow_post_training_cutoff:
+        print(
+            f"Refusing: replay end_date {end_date.date()} is after TRAINING_WINDOW_END "
+            f"({TRAINING_WINDOW_END.date()}) -- this would contaminate the one genuinely "
+            "embargoed live holdout cohort (see EMBARGO_HOLDOUT_COHORT_PROMPT.md). Pass "
+            "--allow-post-training-cutoff to override; doing so permanently contaminates "
+            "that cohort."
+        )
+        return 1
 
     estimated_cost = estimate_replay_cost(num_days, include_adversarial=args.with_adversarial)
     print(f"Replay window: {start_date.date()} to {end_date.date()} ({num_days} days)")
@@ -147,7 +172,7 @@ def main() -> int:
         adversarial_repo=adversarial_repo,
     )
 
-    result = service.run(start_date, end_date)
+    result = service.run(start_date, end_date, allow_post_training_cutoff=args.allow_post_training_cutoff)
     print(result.summary)
     for day in result.days:
         print(

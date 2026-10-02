@@ -18,6 +18,7 @@ from app.benchmarks.replay_fakes import (
     InMemoryAllocationChangeRepo,
     InMemoryPortfolioPositionRepo,
 )
+from app.benchmarks.schemas import TRAINING_WINDOW_END
 from app.config.settings import Settings
 from app.database.models import Asset
 from app.judge.schemas import JudgeDecisionBatch
@@ -739,3 +740,40 @@ def test_replay_discloses_unavailable_sources_never_fabricates_them():
     assert captured_prompts
     for source in EVIDENCE_UNAVAILABLE_FOR_REPLAY:
         assert source in captured_prompts[0]
+
+
+# --- EMBARGO_HOLDOUT_COHORT_PROMPT.md: replay guard ---------------------------
+
+def test_replay_refuses_end_date_after_training_window_end_without_override():
+    assets = _assets()
+    end_date = TRAINING_WINDOW_END + timedelta(days=1)
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    service = _make_service(assets, series_by_symbol)
+
+    with pytest.raises(ValueError, match="TRAINING_WINDOW_END"):
+        service.run(end_date - timedelta(days=2), end_date)
+
+
+def test_replay_proceeds_past_training_window_end_with_explicit_override():
+    assets = _assets()
+    end_date = TRAINING_WINDOW_END + timedelta(days=1)
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    service = _make_service(assets, series_by_symbol)
+
+    result = service.run(end_date - timedelta(days=2), end_date, allow_post_training_cutoff=True)
+
+    assert isinstance(result, ReplayResult)
+    assert len(result.days) == 3  # the override let every requested day run
+
+
+def test_replay_unaffected_when_end_date_at_or_before_training_window_end():
+    assets = _assets()
+    end_date = TRAINING_WINDOW_END  # exactly at the boundary -- must still be allowed, not refused
+    series_by_symbol = {a.symbol: _synthetic_series(a.symbol, a.id, 90, end_date) for a in assets}
+    service = _make_service(assets, series_by_symbol)
+
+    result = service.run(end_date - timedelta(days=1), end_date)
+
+    assert isinstance(result, ReplayResult)
+    assert len(result.days) == 2
+    assert result.stopped_early_reason is None

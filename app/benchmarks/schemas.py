@@ -1,10 +1,22 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel
 
 OutcomeLabel = Literal["HIT_TARGET", "HIT_STOP", "TIMED_OUT", "UNRESOLVED"]
+
+# EMBARGO_HOLDOUT_COHORT_PROMPT.md (2026-10-02): a frozen, data-derived
+# boundary confirmed against real decision_outcomes, not a tunable setting
+# (see app/config/settings.py for actual runtime config) -- same convention
+# as IN_HOLDOUT_WINDOW (app/judge/service.py). TRAINING_WINDOW_END is
+# max(decision_timestamp) over is_backfilled=true decision_outcomes,
+# confirmed live 2026-10-02 (232 backfilled rows). Moving it forward
+# requires a deliberate decision, never an automatic bump as more
+# backfilled replay runs -- see the replay guard in app/benchmarks/replay.py.
+TRAINING_WINDOW_END = datetime(2026, 9, 23, 0, 0, 0, tzinfo=UTC)
+HOLDOUT_EMBARGO_DAYS = 45  # longest resolution horizon in use
+HOLDOUT_COHORT_START = TRAINING_WINDOW_END + timedelta(days=HOLDOUT_EMBARGO_DAYS)
 
 
 class DecisionOutcome(BaseModel):

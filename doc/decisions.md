@@ -586,6 +586,68 @@ outcomes, and are dated.
   forensic audit and the later application-wide audit — not a claim that
   no future code can ever introduce a new raw query.
 
+- **A genuine embargoed holdout cohort, frozen constants + no DB
+  migration, 45-day embargo, n≥50 confirmatory bar — adopted, 2026-10-02
+  (`EMBARGO_HOLDOUT_COHORT_PROMPT.md`).** Closes the "no genuine temporal
+  embargo" CRITICAL finding's option (a) (see `todo.md`'s entry, and the
+  original finding in this doc's own history). Real, pre-assessed and
+  user-confirmed design, not improvised at implementation time.
+
+  **Constants, fixed not tunable**: `TRAINING_WINDOW_END` (frozen at
+  2026-09-23T00:00:00Z — the live `max(decision_timestamp)` over
+  `is_backfilled=true` `decision_outcomes`, confirmed by a read-only query
+  immediately before implementation) and `HOLDOUT_EMBARGO_DAYS=45` (the
+  longest resolution horizon in use) together define
+  `HOLDOUT_COHORT_START = 2026-11-07T00:00:00Z`. Placed in
+  `app/benchmarks/schemas.py`, not `app/config/settings.py` — these are
+  frozen, data-derived constants, not env-var-tunable runtime settings
+  (same convention as `IN_HOLDOUT_WINDOW`, `app/judge/service.py`).
+
+  **No DB migration, no new column**: cohort membership
+  (`is_backfilled=false AND decision_timestamp >= HOLDOUT_COHORT_START`)
+  and contamination (`is_backfilled=true AND decision_timestamp >
+  TRAINING_WINDOW_END` on any row) are both computed at read time in
+  `/calibration/summary`, reusing the existing `_directional_stats`/
+  `pairs_for` machinery so the B2 same-day-duplicate exclusion applies to
+  the cohort exactly as it does to every other directional slice.
+
+  **Confirmatory bar**: `holdout_cohort_confirmatory` requires the cohort
+  uncontaminated AND its resolved-directional sample ≥
+  `evidence_value.py`'s own `MIN_SAMPLE_SIZE` (50) — reused directly
+  rather than a second hardcoded "50", so the two thresholds can't drift
+  apart silently.
+
+  **Replay guard**: `HistoricalReplayService.run()` refuses `end_date >
+  TRAINING_WINDOW_END` unless `allow_post_training_cutoff=True` is passed
+  (checked at the service level, so a direct caller is blocked, not just
+  the CLI); `scripts/run_replay.py` adds the same check up front (fail
+  fast, before the cost-estimate prompt) plus a new
+  `--allow-post-training-cutoff` flag. Using the override permanently
+  flags the cohort `contaminated` for every future read — there is no
+  "undo."
+
+  **User explicitly accepted the consequence**: this design means no
+  confirmatory result for roughly 3 months (45-day embargo + however long
+  n≥50 resolved-directional decisions takes to accumulate past that
+  point) — estimated no earlier than ~2026-11-13 at the live resolution
+  rate measured 2026-10-02 (optimistic: that estimate used all resolved
+  live decisions, not the stricter directional-only subset the real
+  criterion requires). User confirmed this wait is acceptable before
+  implementation began.
+
+  **Validation**: 8 new tests (5 cohort-logic cases in
+  `tests/test_api_endpoints.py` — boundary membership, empty cohort,
+  contamination, the n≥50 confirmatory flip, B2 duplicate exclusion
+  inside the cohort; 3 replay-guard cases in `tests/test_replay.py` —
+  refuses past the boundary, proceeds with the override, unaffected at/
+  before the boundary). Regression-proof performed on the confirmatory
+  boundary specifically: temporarily changed `>=` to `>` against
+  `MIN_SAMPLE_SIZE`, confirmed the boundary test failed exactly as
+  predicted, restored. Full suite: see `history.md`'s corresponding entry
+  for the exact pass count. No production run or database mutation was
+  performed — `TRAINING_WINDOW_END`'s value came from a single read-only
+  query.
+
 ---
 
 # Technology stack decisions (original evidence-source log)

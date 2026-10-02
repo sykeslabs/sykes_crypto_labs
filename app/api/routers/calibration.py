@@ -8,7 +8,14 @@ from app.api.dependencies import (
     get_judge_decision_repo,
     get_prompt_template_repo,
 )
-from app.benchmarks.schemas import CalibrationRunRecord, DecisionOutcome, EvidenceValueReportRecord
+from app.benchmarks.evidence_value import MIN_SAMPLE_SIZE
+from app.benchmarks.schemas import (
+    HOLDOUT_COHORT_START,
+    TRAINING_WINDOW_END,
+    CalibrationRunRecord,
+    DecisionOutcome,
+    EvidenceValueReportRecord,
+)
 from app.benchmarks.statistical_validation import (
     brier_decomposition,
     deflated_sharpe_ratio,
@@ -203,6 +210,29 @@ def get_calibration_summary(
     backfilled_stats = _directional_stats(pairs_for(resolved_backfilled))
     live_stats = _directional_stats(pairs_for(resolved_live))
 
+    # EMBARGO_HOLDOUT_COHORT_PROMPT.md (2026-10-02): the one genuinely
+    # embargoed live cohort -- decisions at/after a frozen training-window
+    # end plus a full 45-day embargo (the longest resolution horizon in
+    # use), so this slice cannot share the temporal-dependency channel the
+    # rest of this summary's live figures still can (see
+    # _compute_embargo_stats' docstring / embargo_gap_days above). Computed
+    # at read time only, no DB migration/column. `contaminated` uses ALL
+    # backfilled outcomes (not just resolved ones) since contamination is
+    # about when a backfilled decision was MADE, same convention as
+    # _compute_embargo_stats below.
+    holdout_cohort_decisions = [
+        o for o in all_outcomes if not o.is_backfilled and o.decision_timestamp >= HOLDOUT_COHORT_START
+    ]
+    resolved_holdout_cohort = [o for o in holdout_cohort_decisions if o.outcome_label != "UNRESOLVED"]
+    holdout_cohort_stats = _directional_stats(pairs_for(resolved_holdout_cohort))
+    holdout_cohort_contaminated = any(
+        o.is_backfilled and o.decision_timestamp > TRAINING_WINDOW_END for o in all_outcomes
+    )
+    holdout_cohort_confirmatory = (
+        not holdout_cohort_contaminated
+        and holdout_cohort_stats["directional_sample_size"] >= MIN_SAMPLE_SIZE
+    )
+
     templates_by_id = prompt_template_repo.get_all()
     outcomes_by_template_id: dict[str, list[DecisionOutcome]] = {}
     for o in resolved:
@@ -260,6 +290,14 @@ def get_calibration_summary(
             )
         )
     )
+    held_out_window_note += (
+        f" A genuinely embargoed clean holdout cohort (EMBARGO_HOLDOUT_COHORT_PROMPT.md) "
+        f"starts {HOLDOUT_COHORT_START.date()}; it has {len(holdout_cohort_decisions)} live "
+        f"decisions so far ({holdout_cohort_stats['directional_sample_size']} resolved-"
+        "directional). Until holdout_cohort_confirmatory is true, every hit-rate/Sharpe "
+        "figure in this summary -- including the combined/backfilled/live ones above -- "
+        "remains directional evidence only, not confirmatory."
+    )
 
     return CalibrationSummary(
         resolved_backfilled_count=len(resolved_backfilled),
@@ -292,4 +330,13 @@ def get_calibration_summary(
         held_out_window_note=held_out_window_note,
         embargo_gap_days=embargo_stats["embargo_gap_days"],
         pct_live_within_own_horizon_of_training_end=embargo_stats["pct_live_within_own_horizon_of_training_end"],
+        holdout_cohort_start=HOLDOUT_COHORT_START,
+        holdout_cohort_decision_count=len(holdout_cohort_decisions),
+        directional_sample_size_holdout_cohort=holdout_cohort_stats["directional_sample_size"],
+        hit_rate_holdout_cohort=holdout_cohort_stats["hit_rate"],
+        brier_score_holdout_cohort=holdout_cohort_stats["brier_score"],
+        sharpe_decision_level_holdout_cohort=holdout_cohort_stats["sharpe_decision_level"],
+        deflated_sharpe_ratio_holdout_cohort=holdout_cohort_stats["deflated_sharpe_ratio"],
+        holdout_cohort_contaminated=holdout_cohort_contaminated,
+        holdout_cohort_confirmatory=holdout_cohort_confirmatory,
     )

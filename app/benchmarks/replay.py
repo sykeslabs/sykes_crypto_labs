@@ -37,7 +37,7 @@ from app.benchmarks.replay_fakes import (
     StaticRegimeRepo,
     StaticSnapshotRepo,
 )
-from app.benchmarks.schemas import DecisionOutcome
+from app.benchmarks.schemas import TRAINING_WINDOW_END, DecisionOutcome
 from app.benchmarks.triple_barrier import compute_target_stop_thresholds, evaluate_triple_barrier
 from app.config import Settings
 from app.database.evidence_provenance import DECAY_HALF_LIFE_HOURS_BY_SOURCE_TYPE
@@ -252,7 +252,31 @@ class HistoricalReplayService:
         # activity (a live pipeline run, etc.) hitting the cap independently.
         return self._cost_guard.check()
 
-    def run(self, start_date: datetime, end_date: datetime) -> ReplayResult:
+    def run(
+        self, start_date: datetime, end_date: datetime, allow_post_training_cutoff: bool = False,
+    ) -> ReplayResult:
+        # EMBARGO_HOLDOUT_COHORT_PROMPT.md: refuse to produce backfilled
+        # decisions past the frozen TRAINING_WINDOW_END -- every replay over
+        # recent dates otherwise pushes the training boundary further into
+        # the live window, so no holdout cohort can ever stay clean. Checked
+        # here (service level), not just in scripts/run_replay.py's CLI, so
+        # a direct HistoricalReplayService.run() call is blocked too.
+        if end_date > TRAINING_WINDOW_END:
+            if not allow_post_training_cutoff:
+                raise ValueError(
+                    f"Replay end_date {end_date.date()} is after TRAINING_WINDOW_END "
+                    f"({TRAINING_WINDOW_END.date()}) -- this would contaminate the one "
+                    "genuinely embargoed live holdout cohort (see "
+                    "EMBARGO_HOLDOUT_COHORT_PROMPT.md and /calibration/summary's "
+                    "holdout_cohort_* fields). Pass allow_post_training_cutoff=True to "
+                    "override; doing so permanently marks that cohort as contaminated."
+                )
+            logger.warning(
+                "Replay end_date %s is after TRAINING_WINDOW_END (%s) -- "
+                "allow_post_training_cutoff=True was passed, so proceeding, but this "
+                "PERMANENTLY contaminates the clean holdout cohort for every future read.",
+                end_date.date(), TRAINING_WINDOW_END.date(),
+            )
         result = ReplayResult()
         self._local_daily_budget, self._local_monthly_budget = self._cost_guard.remaining_budget()
         self._local_spent = Decimal("0")

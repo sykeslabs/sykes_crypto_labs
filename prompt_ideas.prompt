@@ -6,3 +6,253 @@ NEXT: run prompt_assessment.prompt
 - at the moment we are screening the top 50 crypto tokens sorted by it market cap, correct? i want to have but also tokens in scope, that have had in the past 24 hours, 7 days and 30 days a signifcant price increase, see https://docs.coingecko.com/reference/coins-markets.
 - see prompt_modelintegration.prompt
 ----------------------------------------------------------------------------------------
+
+
+
+
+Implement FAISS-based historical similarity retrieval as a new experimental component in the crypto prediction project.
+
+## Goal
+
+Add a **local, free historical-similarity retrieval layer** that can retrieve past crypto news/events that are semantically similar to a new event.
+
+The purpose is **empirical evaluation**, not architectural complexity. We need to determine whether historical similarity information improves prediction quality.
+
+## Important constraints
+
+* FAISS must run locally; do not introduce a paid vector database.
+* Prefer `faiss-cpu` initially. Do not add GPU-specific FAISS unless there is a demonstrated performance need.
+* Reuse existing project abstractions, data structures, configuration and storage wherever possible.
+* Do not replace the existing web/news retrieval or OpenRouter pipeline.
+* Do not change prediction logic yet.
+* Do not silently change existing behavior.
+* Do not delete existing functionality.
+* Keep the implementation modular so it can easily be disabled or removed.
+* Avoid adding a second database solely for vector storage.
+* Store FAISS index files locally and keep the source metadata in the existing database/storage.
+* Make all assumptions explicit.
+
+## First: inspect the existing project
+
+Before implementing anything:
+
+1. Inspect the repository structure.
+2. Identify:
+
+   * current news/article ingestion
+   * article/event data model
+   * prediction pipeline
+   * existing embeddings, if any
+   * existing database/storage
+   * configuration management
+   * evaluation/backtesting code
+   * existing TODO documentation
+3. Determine the best existing location for:
+
+   * embedding generation
+   * FAISS index management
+   * historical retrieval
+4. Check whether an embedding model is already available.
+
+Do not modify files during this inspection phase.
+
+Then provide a short implementation plan and identify exactly which files you intend to change.
+
+## Initial implementation
+
+Implement the smallest useful version:
+
+### 1. Embeddings
+
+Create embeddings for historical news/events.
+
+Prefer an existing embedding implementation if the project already has one.
+
+If no embedding model exists, use a small, locally runnable sentence-transformer model rather than introducing another paid API.
+
+The embedding process should be deterministic and reproducible.
+
+### 2. FAISS index
+
+Create a small abstraction around FAISS, for example:
+
+* build/create index
+* add documents
+* save index
+* load index
+* similarity search
+
+The FAISS index should contain vectors only.
+
+Maintain a separate mapping:
+
+`FAISS vector ID → existing article/event ID`
+
+Do not duplicate complete articles inside the FAISS index.
+
+### 3. Historical retrieval
+
+Given a new article/event:
+
+1. Generate its embedding.
+2. Search FAISS for the top-k similar historical events.
+3. Retrieve their metadata/content from the existing storage.
+4. Return the historical events together with similarity scores.
+
+Make `k` configurable.
+
+Example conceptual result:
+
+```text
+query_event
+  ↓
+embedding
+  ↓
+FAISS
+  ↓
+top-k historical event IDs
+  ↓
+existing database
+  ↓
+historical events + similarity scores
+```
+
+### 4. Avoid data leakage
+
+This is critical.
+
+Historical retrieval must respect the timestamp of the prediction.
+
+When evaluating a prediction at time T:
+
+* only documents/events available before T may be retrieved
+* never retrieve future news
+* never use future market outcomes as input features
+* ensure evaluation data cannot leak into the retrieval context
+
+If the current FAISS implementation cannot guarantee this, do not connect it to the live prediction pipeline yet. Implement the retrieval layer and evaluation mechanism first.
+
+## Evaluation
+
+Add an experiment comparing:
+
+### Baseline
+
+Current prediction pipeline.
+
+### Experimental
+
+Current pipeline + top-k historically similar events.
+
+Do not assume that historical similarity improves predictions.
+
+Measure the effect using the project's existing evaluation metrics, especially:
+
+* Brier score
+* calibration
+* directional accuracy / hit rate where already used
+* Sharpe or return metrics where already used
+* sample size
+* statistical/out-of-sample comparison where feasible
+
+Use a proper temporal split rather than random train/test splitting.
+
+The experiment should make it possible to answer:
+
+> Does historical similarity retrieval provide measurable predictive value beyond the existing system?
+
+## Retrieval analysis
+
+Also expose basic diagnostics:
+
+* number of indexed documents
+* embedding dimension
+* top-k retrieved documents
+* similarity scores
+* timestamps
+* asset
+* event/article IDs
+
+This should make it possible to manually inspect whether the retrieved historical events are actually relevant.
+
+## Configuration
+
+Make the following configurable rather than hard-coded:
+
+```text
+FAISS_ENABLED
+FAISS_INDEX_PATH
+FAISS_TOP_K
+EMBEDDING_MODEL
+```
+
+Use the project's existing configuration mechanism if one exists.
+
+Default behavior should preserve the current system.
+
+## Testing
+
+Add focused tests for:
+
+1. embedding generation
+2. FAISS index creation
+3. save/load round trip
+4. similarity search
+5. vector-ID → source-record mapping
+6. empty index
+7. insufficient number of documents
+8. temporal filtering / leakage prevention
+9. deterministic/reproducible indexing where applicable
+
+Do not build an elaborate test framework.
+
+## Documentation
+
+Update the project's TODO/history/documentation only where appropriate.
+
+Document:
+
+* why FAISS was introduced
+* what problem it addresses
+* how the index is generated
+* how historical retrieval works
+* how leakage is prevented
+* how to run the experiment
+* how the baseline is compared with the FAISS-enhanced version
+
+## Important methodological principle
+
+This is an **experiment**, not a reason to make the architecture more sophisticated.
+
+The success criterion is NOT:
+
+> "FAISS works."
+
+The success criterion is:
+
+> "Historical similarity retrieval produces measurable out-of-sample predictive value."
+
+If the experiment shows no improvement, document that result rather than adding additional complexity to force an improvement.
+
+## Execution behavior
+
+Before making changes:
+
+1. Inspect the repository.
+2. Report the relevant existing architecture.
+3. List the files you plan to modify.
+4. Explain any assumptions.
+5. Then implement.
+
+After implementation, report:
+
+* files changed
+* dependencies added
+* how to build/rebuild the FAISS index
+* how to run the retrieval experiment
+* tests executed and results
+* remaining TODOs
+* any methodological limitations
+* whether the existing prediction pipeline was changed
+
+Do not modify or delete unrelated functionality.

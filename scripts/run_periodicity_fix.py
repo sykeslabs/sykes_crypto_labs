@@ -166,6 +166,11 @@ def main() -> int:
     print(f"  sharpe_decision_level = {old_decision_level_sharpe}")
     print(f"\n=== NEW (fixed) metric: pooled daily Sharpe over {len(pooled_daily_returns)} real daily returns ===")
     print(f"  sharpe_pooled_daily = {new_pooled_daily_sharpe}")
+    print(
+        "  NOTE: this system-level Sharpe is not computed from the one genuinely embargoed "
+        "holdout cohort (EMBARGO_HOLDOUT_COHORT_PROMPT.md, see /calibration/summary's "
+        "holdout_cohort_* fields) -- treat as directional evidence only, not confirmatory."
+    )
     if btc_stats:
         print(f"\n=== Reference: BTC buy-and-hold daily Sharpe over the same real window ({window_start.date()} to {window_end.date()}) ===")
         print(f"  sharpe_daily = {btc_stats.sharpe_daily}  (n_days={btc_stats.n_days})")
