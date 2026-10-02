@@ -648,6 +648,49 @@ outcomes, and are dated.
   performed — `TRAINING_WINDOW_END`'s value came from a single read-only
   query.
 
+- **Investment validity review findings adopted as 4 new TODO items/
+  prompts (19-22) and 8 revised prompts, 2026-10-02 — see
+  `doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md` for the full
+  32-section audit this distills.** Key rationale decisions made as a
+  direct result, recorded here rather than only in the review file
+  (which is a point-in-time snapshot, not living documentation):
+  - **Fix the `/calibration/summary` Sharpe/DSR periodicity bug before
+    treating `holdout_cohort_confirmatory` as meaningful** (prompt `19`).
+    The embargo-cohort mechanism (Phase 5w) was built correctly, but this
+    review found the number it will eventually gate on would repeat the
+    exact periodicity-mismatch bug `run_periodicity_fix.py` already
+    caught once (old Sharpe ≈1.846 vs. corrected ≈0.295). Decision:
+    treat this as equally CRITICAL to the embargo item itself, not a
+    lesser follow-up — a correctly-embargoed cohort reporting an
+    incorrectly-computed Sharpe is not an improvement.
+  - **Centralize the experiment-row-tagging solution in prompt `07`,
+    reused by `05`/`11`/`17`/`18`, rather than letting each replay prompt
+    re-solve it independently.** Four+ prompts were independently
+    re-raising the identical open question; solving it once in the first
+    prompt that actually needs it (dependency-order-wise) avoids
+    inconsistent solutions.
+  - **Reprioritize `17`'s phase 2 (FAISS predictive-value evaluation)
+    explicitly below `02`/`03`**, not merely implicitly ordered after
+    `07`. Rationale: building a new retrieval layer is only justified by
+    data-sufficiency ("can we embed this"), never by evidence that the
+    existing news/LLM layer is a binding constraint — that evidence can
+    only come from `02`/`03` running first. This is the same gate `18`
+    already had; `17` phase 2 gets the identical treatment now.
+  - **The `change_reason` capacity-block misclassification (prompt `21`)
+    is a bug fix, not a research question** — scoped and prioritized
+    accordingly (HIGH, Section B, not gated on anything), separate from
+    `22`'s attribution work, which depends on `21` landing first since
+    attribution computed against known-mislabeled data would itself be
+    wrong.
+  - **`11`'s admitted-leakage detector rule is fixed in the prompt text
+    now, not left as a Step-0 proposal** — the exact keyword-match rule
+    is specified directly, closing a real researcher-degrees-of-freedom
+    gap this review found (the detector's design was previously left open
+    even though the pass/fail threshold itself was already fixed).
+  No code was changed as part of adopting these findings — only
+  `doc/todo.md`, `doc/prompts/` (4 new + 8 revised files, `00_INDEX.md`),
+  and this entry.
+
 ---
 
 # Technology stack decisions (original evidence-source log)

@@ -38,6 +38,15 @@ survivorship bias) are in [`prompts/00_INDEX.md`](prompts/00_INDEX.md).
 build prompts, plus any of the above once actually implemented (so far,
 `EMBARGO_HOLDOUT_COHORT_PROMPT.md` — see the CRITICAL embargo item below).
 
+**Investment validity review (2026-10-02)**: a full 32-section read-only
+audit (`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`) re-verified
+every open prompt's claims against live code/data, found one active
+production bug and one methodological gap in the project's own
+confirmatory-evidence pipeline, and added 4 new items/prompts (19-22)
+below. Several existing items (03/04/07/08/10/11/12/17) had their prompts
+revised as a result — each revision is dated and cited in the prompt file
+itself, not duplicated here.
+
 ---
 
 ## Methodological principle (read this before the list below)
@@ -160,6 +169,56 @@ that actually bear on investment validity.
   behind a live, bounded probe + explicit confirmation, rather than
   assuming either way).
 
+- **[CRITICAL][Backtest/Quant] `/calibration/summary`'s Sharpe/DSR
+  repeats the already-debunked periodicity bug — including the field
+  that will eventually gate `holdout_cohort_confirmatory`.** **Found
+  2026-10-02, investment validity review**
+  (`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`, finding F.1):
+  `_directional_stats` (`app/api/routers/calibration.py:69-98`) feeds
+  each resolved decision's own **total** `realized_return` over its
+  multi-week-to-multi-month window straight into `sample_sharpe_stats`/
+  `deflated_sharpe_ratio` as if it were one period's return — exactly the
+  decision-level methodology `scripts/run_periodicity_fix.py` already
+  proved inflates Sharpe (old ≈1.846 vs. corrected, periodicity-matched
+  pooled-daily ≈0.295, nearly identical to BTC's ≈0.313). This
+  computation is reused identically for **every** slice
+  `/calibration/summary` reports, including `sharpe_decision_level_
+  holdout_cohort`/`deflated_sharpe_ratio_holdout_cohort` — the exact
+  figures the embargo item above is building toward treating as
+  confirmatory once `holdout_cohort_confirmatory` goes true.
+  **Decision criterion**: until this is fixed, no Sharpe/DSR figure from
+  `/calibration/summary` — combined, backfilled, live, or holdout-cohort
+  — should be read as evidence of real risk-adjusted performance, only as
+  a decision-level approximation known to historically run high.
+  **Fix**: apply the same periodicity-matched pooling `run_periodicity_
+  fix.py` already validated to this endpoint (exact design question —
+  batch-and-read vs. live-fetch vs. holdout-cohort-only scope — is a real
+  open decision, not assumed).
+  **Implementation prompt**: [`prompts/19_CALIBRATION_SHARPE_PERIODICITY_FIX.md`](prompts/19_CALIBRATION_SHARPE_PERIODICITY_FIX.md)
+  — added 2026-10-02, ready to run (Step 0 routes the batch-vs-live design
+  choice to an explicit decision, doesn't assume one).
+
+- **[HIGH][Backtest] Verify `HOLDOUT_EMBARGO_DAYS=45` against the real
+  max `investment_horizon_days` in use — its own justifying comment may
+  be wrong.** **Found 2026-10-02, investment validity review** (finding
+  F.4): `HOLDOUT_EMBARGO_DAYS = 45  # longest resolution horizon in use`
+  (`app/benchmarks/schemas.py:18`) is an assertion, not a value derived
+  from a query. `investment_horizon_days` is **unconstrained** — no
+  `Field(ge=.., le=..)` bound anywhere on `JudgeDecisionItem`
+  (`app/judge/schemas.py:35`), no clamp when persisted
+  (`app/judge/service.py:258`, `app/benchmarks/replay.py:518`) — and this
+  project's own `scripts/calibration_baseline.py:21,341` states real
+  decision horizons span **"14-90+ days."** If true, a 45-day embargo
+  does not actually satisfy "embargo ≥ longest resolution horizon," the
+  embargo item's own stated requirement above.
+  **Decision criterion**: resolve with a live, read-only
+  `max(horizon_days)` query before trusting `HOLDOUT_COHORT_START`'s
+  current value for anything confirmatory.
+  **Implementation prompt**: [`prompts/20_EMBARGO_LENGTH_VERIFICATION.md`](prompts/20_EMBARGO_LENGTH_VERIFICATION.md)
+  — added 2026-10-02, ready to run (a cheap read-only check; Step 0 routes
+  every possible outcome — no change needed, widen the embargo, or cap
+  horizons going forward — to an explicit decision).
+
 ### HIGH — the central empirical question and its components
 
 - **[HIGH][Quant/Backtest] Simple-baseline / incremental-value ladder —
@@ -231,6 +290,12 @@ that actually bear on investment validity.
   **Implementation prompt**: [`prompts/03_LLM_ABLATION.md`](prompts/03_LLM_ABLATION.md)
   — reviewed 2026-10-02, ready to run (gates on `prompts/02_BASELINE_
   LADDER.md`'s artifacts existing first — stops and says so if they don't).
+  **Revised 2026-10-02** (investment validity review): adds variants D
+  (simplified single-call LLM) and E (news-only LLM), requires a
+  pre-specified success criterion, and adds a check for whether
+  `composite_factor_score` alone already explains most of what
+  `model_agreement`/`source_agreement` correlate with (a confirmed
+  momentum double-counting channel).
 
 - **[HIGH][Quant] Composite factor weights — empirical validation still
   unresolved.** `COMPOSITE_FACTOR_WEIGHTS` (`app/market_data/factors.py`)
@@ -249,7 +314,9 @@ that actually bear on investment validity.
   weighting scheme add value over simpler alternatives), not a separate
   track.
   **Implementation prompt**: [`prompts/04_COMPOSITE_WEIGHTS_VALIDATION.md`](prompts/04_COMPOSITE_WEIGHTS_VALIDATION.md)
-  — reviewed 2026-10-02, ready to run.
+  — reviewed 2026-10-02, ready to run. **Revised 2026-10-02** (investment
+  validity review): now requires a pre-specified pass/fail margin fixed
+  before Step 0 sees any results.
 
 - **[HIGH][Quant] Evidence-value logistic-regression ranking.**
   `MIN_SAMPLE_SIZE=50` has never been cleared — **re-checked live
@@ -309,7 +376,11 @@ that actually bear on investment validity.
   cost (~$0.30/day extra) and new `is_backfilled=true` rows — the prompt's
   own Step 0 requires explicit cost approval and a decision on how to
   keep experiment-replay rows from silently contaminating the main
-  backfilled population before anything runs.
+  backfilled population before anything runs. **Revised 2026-10-02**
+  (investment validity review): now requires a pre-specified success
+  criterion, and is designated the prompt that designs the *general*
+  experiment-row-tagging convention other replay prompts (05, 11, 17
+  phase 2, 18 phase 2) reuse, rather than each re-solving it.
 
 - **[HIGH][AI/Quant] Historical-similarity retrieval (FAISS) — does
   retrieving semantically similar past news/events add incremental
@@ -347,7 +418,12 @@ that actually bear on investment validity.
   reversible); phase 2 (the actual predictive-value evaluation) gates on
   the same Step-0 cost/contamination-approval pattern as prompt 07, and
   explicitly treats a null result as a valid, documented close rather
-  than a reason to keep adding complexity.
+  than a reason to keep adding complexity. **Revised 2026-10-02**
+  (investment validity review): phase 2 is now explicitly reprioritized
+  below `02`/`03` — don't start its Step 0 until the baseline ladder and
+  LLM ablation have run and shown the existing news/LLM layer carries
+  signal worth improving, a stronger gate than the contamination-mechanics
+  prerequisite alone.
 
 ### MEDIUM — robustness (keep concise; do not over-specify ahead of evidence)
 
@@ -359,7 +435,12 @@ that actually bear on investment validity.
   **Implementation prompt**: [`prompts/08_REGIME_ROBUSTNESS.md`](prompts/08_REGIME_ROBUSTNESS.md)
   — reviewed 2026-10-02, ready to run *later*: it correctly gates itself
   on prompt 02's artifacts existing first and will stop immediately if
-  they don't (verified 2026-10-02: they don't exist yet).
+  they don't (verified 2026-10-02: they don't exist yet). **Revised
+  2026-10-02** (investment validity review): `regime_at_decision` is
+  confirmed to hold a `market_regime_snapshots.id` UUID, not a regime
+  label — a join is required before any grouping, now stated explicitly;
+  also flags that only 43 regime snapshots exist total (3 RISK_OFF) —
+  too thin to test regime robustness regardless of the ladder's result.
 - **[MEDIUM] Parameter sensitivity** — `MAX_CONCURRENT_POSITIONS` (8) and
   `MIN_REPLACEMENT_ALPHA_ADVANTAGE` (0.03) are documented as a chosen
   convention (same status as `COMPOSITE_FACTOR_WEIGHTS`), not fit or
@@ -377,6 +458,25 @@ that actually bear on investment validity.
   dependency on the baseline ladder existing first.
   **Implementation prompt**: [`prompts/10_CROSS_ASSET_GENERALIZATION.md`](prompts/10_CROSS_ASSET_GENERALIZATION.md)
   — reviewed 2026-10-02, ready to run *later*, same gate on prompt 02.
+  **Revised 2026-10-02** (investment validity review): adds a completely-
+  unseen-asset test alongside the existing leave-one-out design.
+
+- **[MEDIUM][Quant] Portfolio-performance attribution — alpha vs. beta
+  vs. risk-control vs. timing.** **Found 2026-10-02, investment validity
+  review** (`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`,
+  §13/F.6): no code anywhere decomposes realized performance into these
+  buckets. `change_reason` (`"strategy"` vs. `"risk_control"`,
+  `app/portfolio/construction.py:121-126`) is the one real building block
+  that exists, but it is currently consumed only by the turnover-budget
+  filter (`app/database/repository.py:1147-1163`), never by any
+  performance report — and it has a confirmed misclassification bug (see
+  Section B's new item below) that must be fixed first.
+  **Decision criterion**: a bucket with too few resolved decisions to say
+  anything should report "insufficient data," not a number.
+  **Implementation prompt**: [`prompts/22_PERFORMANCE_ATTRIBUTION.md`](prompts/22_PERFORMANCE_ATTRIBUTION.md)
+  — added 2026-10-02, depends on the Section B `change_reason` fix
+  landing first; reuses `scripts/run_periodicity_fix.py`'s pooled-daily
+  return construction rather than inventing a new one.
 
 ### Confirmed finding, not fully closed
 
@@ -406,6 +506,13 @@ that actually bear on investment validity.
   — reviewed 2026-10-02, ready to run. Proposes genuinely new test events
   (not re-running the Aug 2024/2022 FTX windows already done). Real LLM
   cost; its own Step 0 requires explicit cost/event approval first.
+  **Revised 2026-10-02** (investment validity review, the cleanest prompt
+  in the set per that review): the admitted-leakage detector rule is now
+  fixed in the prompt itself rather than left to be proposed, and every
+  future pass/fail result must explicitly state the unadmitted-leakage
+  blind spot (a flag-based detector only catches leakage the model
+  admits) — "0 events failed" must never be reported as "leakage risk
+  resolved."
 
 ---
 
@@ -413,6 +520,30 @@ that actually bear on investment validity.
 
 Real, but not investment-validity blockers — do not let these compete
 for priority with section A.
+
+- **[HIGH][Portfolio/Risk] Capacity-blocked BUYs are misclassified as
+  strategy turnover, not risk-control — an active bug, not just an
+  attribution gap.** **Found 2026-10-02, investment validity review**
+  (`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`, finding F.3):
+  `_apply_replacement_capacity_limit` (`app/portfolio/construction.py:
+  149-207`) zeroes a new candidate's `final_allocation` when
+  `MAX_CONCURRENT_POSITIONS` is full and no existing holding clears
+  `MIN_REPLACEMENT_ALPHA_ADVANTAGE` (line 201) — but never changes
+  `d.decision` (still e.g. `"BUY"`), so the later `change_reason`
+  classification (lines 121-126, checks `d.decision in ("WATCH",
+  "NO_TRADE")` or `is_cap_compliance_correction(...)`) falls through to
+  `"strategy"`. Since `change_reason="strategy"` is the one field
+  `get_turnover_since` (`app/database/repository.py:1147-1163`) sums for
+  the real, live-enforced `MAX_WEEKLY_TURNOVER` budget, **a
+  capacity-blocked decision is currently, live, counted against the
+  strategy turnover budget it should be exempt from** — the same class of
+  bug A1/A2 already fixed for WATCH/NO_TRADE and cap-compliance
+  corrections, a third case those fixes didn't cover. A pre-existing,
+  never-wired field (`PortfolioAction.blocked_no_capacity`,
+  `construction.py:45`) already anticipates part of this fix.
+  **Implementation prompt**: [`prompts/21_CHANGE_REASON_CAPACITY_BLOCK_FIX.md`](prompts/21_CHANGE_REASON_CAPACITY_BLOCK_FIX.md)
+  — added 2026-10-02, ready to run. A real correctness fix to
+  already-shipped code, not a research experiment.
 
 - **[HIGH][Trust/Audit] Decision-level forensic explainability — surface
   already-stored raw LLM responses, rather than only internal fields.**
@@ -454,6 +585,10 @@ for priority with section A.
   **Implementation prompt**: [`prompts/12_FORENSIC_EXPLAINABILITY.md`](prompts/12_FORENSIC_EXPLAINABILITY.md)
   — reviewed 2026-10-02, ready to run. Correctly scopes itself to (1)
   only; explicitly excludes (2), matching this item's own framing above.
+  **Revised 2026-10-02** (investment validity review): confirms
+  `judge_decisions` has no `raw_response` column (only captured on parse
+  failure, never on success) and routes whether to add one through this
+  prompt's own Step 0.
 
 - **[HIGH][Risk] `run_stress_test.py` reads the system's own TARGET
   allocation, not real holdings** — queries `PortfolioPositionRepository.

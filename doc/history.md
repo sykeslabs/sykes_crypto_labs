@@ -4112,3 +4112,107 @@ existed in code but had never been added to this doc.
 No production code was touched. Full suite re-run after: 711 passed, same
 single pre-existing, unrelated failure as every other run this session.
 
+## Phase 6b — Full investment validity review (2026-10-02)
+
+Run from a user-supplied, project-agnostic 32-section review prompt
+(`prompt_INVESTMENT_VALIDITY_REVIEW_PROMPT.md`), asking a different
+question than every prior phase in this document: not "is the software
+reliable" (already substantially answered, see every phase above) but
+"does the system have credible evidence of a real investment edge."
+Full report: `doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`.
+Read-only: no prompt in `doc/prompts/` was executed, no replay was run,
+no LLM call was made to produce the review itself.
+
+**Method**: one specialized statistical/backtest-methodology/non-
+determinism audit plus five parallel general-coverage investigations,
+together covering all 32 sections and auditing every one of the 18
+previously-open implementation prompts (01-18) against current code and
+live data.
+
+**Headline conclusion**: no genuine investment edge is currently
+demonstrated. The one number that looked like evidence (decision-level
+Sharpe ≈1.846) was already shown by this project's own prior work
+(Phase 5-era periodicity fix) to be substantially a measurement artifact
+(corrected ≈0.295, ≈ BTC buy-and-hold's own 0.313). Nothing has actually
+been run since (`02_BASELINE_LADDER.md` and everything gated on it remain
+unexecuted plans). The holdout cohort built in Phase 5w has 0 rows today
+(starts 2026-11-07).
+
+**Two new findings materially beyond "nothing has been tested yet"**:
+
+1. **A real bug in the production confirmatory-evidence pipeline**:
+   `/calibration/summary`'s `_directional_stats`
+   (`app/api/routers/calibration.py:69-98`) computes Sharpe/DSR from each
+   decision's total multi-week return as if it were one period's return —
+   exactly the already-debunked decision-level methodology. This feeds
+   `sharpe_decision_level_holdout_cohort`/`deflated_sharpe_ratio_
+   holdout_cohort` — the exact fields `holdout_cohort_confirmatory` is
+   meant to gate. Unless fixed, the eventual "confirmatory" number would
+   repeat a bug this project already caught once elsewhere.
+2. **A real, active bug in already-shipped portfolio-construction code**:
+   `_apply_replacement_capacity_limit`
+   (`app/portfolio/construction.py:149-207`) zeroes a capacity-blocked new
+   candidate's allocation without updating its `decision` field, so the
+   later `change_reason` classification falls through to `"strategy"`
+   instead of a risk-control reason — meaning capacity-blocked decisions
+   are currently, live, counted against the `MAX_WEEKLY_TURNOVER` strategy
+   budget they should be exempt from. The same class of bug A1/A2
+   (Phase 5g/5l) already fixed for two other cases; this is a third,
+   previously-undiscovered case.
+
+**Other real findings**: the 45-day embargo's own justifying comment
+("longest resolution horizon in use") is contradicted elsewhere in the
+same codebase (`investment_horizon_days` is uncapped; `calibration_
+baseline.py` documents real horizons of "14-90+ days") — unconfirmed
+whether this matters until a live max-horizon check is run. A confirmed
+momentum double-counting channel (price momentum reaches the Judge via
+both the deterministic composite score and independent LLM interpretation
+of the same OHLCV). `regime_at_decision` stores a `market_regime_
+snapshots.id` UUID, not a regime label — `08_REGIME_ROBUSTNESS.md` didn't
+account for the required join; also only 43 regime snapshots exist total
+(3 RISK_OFF) — too thin regardless. No dependence/autocorrelation
+adjustment exists anywhere in `statistical_validation.py`. No portfolio-
+performance attribution (alpha/beta/risk-control/timing) exists anywhere.
+A structural, third reason (beyond no-embargo and universe survivorship)
+that all backfilled results are at best directional: replaying pre-cutoff
+historical windows with current-generation LLMs whose training data
+includes those windows' real outcomes tests whether leakage can be
+blocked from becoming directional, not whether the model can predict the
+future from period-available evidence.
+
+**Action taken**: 4 new TODO items added to `doc/todo.md` (1 CRITICAL —
+the calibration Sharpe fix; 2 HIGH — the embargo-length check and the
+`change_reason` bug fix; 1 MEDIUM — performance attribution), each with a
+new implementation prompt (`19`, `20`, `21`, `22`). 8 existing prompts
+revised with dated, cited additions: `03` (added LLM-ablation variants D/
+E, a pre-specified success criterion, a double-counting check), `04`
+(pre-specified pass/fail margin), `07` (pre-specified criterion, now owns
+the general experiment-row-tagging solution other replay prompts reuse),
+`08` (UUID-join requirement, thin-regime-data caveat), `10` (unseen-asset
+test added), `11` (admitted-leakage detector rule fixed in the prompt
+text, unadmitted-leakage blind spot required in every future report), `12`
+(confirms/routes the Judge raw-response gap through its existing Step 0),
+`17` (phase 2 explicitly reprioritized below `02`/`03`). `doc/prompts/
+00_INDEX.md` updated: new rows for `19`-`22` in the exact position
+`doc/todo.md`'s own document order puts them, a dated revision-log entry,
+and its stale "embargo work is uncommitted, commit it first" note
+corrected (re-verified via `git log`: it was already committed as
+`4397b02`, this session fixed the note rather than re-committing already-
+committed work). Verified: every one of 22 open prompts is linked from
+exactly one `doc/todo.md` item, every link resolves, the index's table
+order matches `doc/todo.md`'s document order exactly. No production code
+was changed — every write was to `doc/`. Full suite re-run after: 712
+passed (the one pre-existing clock-rollover failure in `tests/
+test_macro.py` was also fixed this session, as a side effect of a Stop-
+hook gate — see its own note below), 0 failures.
+
+**Side fix, same session, unrelated to the review itself**:
+`tests/test_macro.py::test_forward_calendar_only_includes_future_dates_
+within_horizon` hardcoded `"2026-10-01"` as a "future" date; the real
+system clock passing that date made the test fail (flagged as a known,
+pre-existing, non-review issue repeatedly earlier in this session).
+Fixed properly: the test now computes its three fixture dates relative to
+`datetime.now(UTC)` (past/within-horizon/beyond-horizon offsets from
+`FORWARD_CALENDAR_HORIZON_DAYS=120`, `app/market_data/macro_service.py:
+39`) instead of hardcoded strings, so it cannot rot the same way again.
+

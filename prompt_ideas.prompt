@@ -7,6 +7,8 @@ micture of experts (MoEs)!!!
 - according to the doc, certain scripts should be run periodically, but not daily, and are currently not integrated in run_daily. 
 - we have created many new classes etc. is there anything we can show additionally in the ui?
 ----------------------------------------------------------------------------------------
+integrate https://microsoft.github.io/apm/
+----------------------------------------------------------------------------------------
 - at the moment we are screening the top 50 crypto tokens sorted by it market cap, correct? i want to have but also tokens in scope, that have had in the past 24 hours, 7 days and 30 days a signifcant price increase, see https://docs.coingecko.com/reference/coins-markets.
 - see prompt_modelintegration.prompt
 ----------------------------------------------------------------------------------------

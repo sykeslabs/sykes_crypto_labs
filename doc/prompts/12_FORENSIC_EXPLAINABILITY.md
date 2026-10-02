@@ -30,6 +30,17 @@ Verified 2026-10-02:
    ambiguous link must be labeled as such in the response, never presented as certain.
 3. Is the Judge's own raw response stored anywhere? If not, say so (adding it is a
    separate decision).
+   **Pre-answered 2026-10-02** (`doc/reviews/2026-10-02_INVESTMENT_
+   VALIDITY_REVIEW.md`, §15.3), re-verify rather than re-derive from
+   scratch: **no** — `judge_decisions` has no `raw_response` column.
+   `JudgeProviderResult.raw_response` (`app/judge/provider.py:28-34`) is
+   held in memory and only reaches a durable store via `logger.error` on
+   a **parse failure** (`provider.py:178-179`) — never on a successful
+   call, which is the normal case. Decide in Step 0 whether adding a
+   `raw_response` column to capture the success path too is in scope for
+   this prompt (cheap, additive, matches the assessment layer's existing
+   convention) or a separate follow-on — don't silently expand scope
+   either way, state the decision.
 4. Propose the response shape. **Wait for my OK.**
 
 ## Implementation

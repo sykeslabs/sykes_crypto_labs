@@ -24,6 +24,15 @@ does any edge generalize across the universe or come from a few assets (e.g. BTC
 - n per asset; "insufficient data" below a minimum you propose.
 - Note universe-selection bias for backfilled (item 01): assets in the list are the ones
   that survived, which inflates generalization.
+- **Added 2026-10-02 per `doc/reviews/2026-10-02_INVESTMENT_VALIDITY_
+  REVIEW.md`: also add a completely-unseen-asset test**, not just
+  leave-one-out — an asset added to the tracked universe only *after*
+  weights/thresholds were last tuned (check `doc/decisions.md`/
+  `doc/history.md` for the most recent tuning date, then find assets
+  onboarded after it). Report whether the effect holds on assets the
+  system genuinely never saw during development, which leave-one-out
+  alone cannot establish (leave-one-out still uses an asset the system
+  was tuned in the presence of, just not tuned *on*).
 
 ## Tests
 

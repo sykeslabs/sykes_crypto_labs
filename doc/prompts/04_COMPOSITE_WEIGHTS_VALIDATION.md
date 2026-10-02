@@ -41,6 +41,14 @@ than equal-weight and momentum-only, by forward return.
    - Schemes: current, equal-weight, momentum-only (exactly as the existing script
      defines them).
 3. Estimate the number of OHLCV fetches. **Wait for my OK.**
+4. **Pre-specify the pass/fail threshold now, before seeing results**
+   (added 2026-10-02 per `doc/reviews/2026-10-02_INVESTMENT_VALIDITY_
+   REVIEW.md` — this prompt had no fixed criterion before). Propose, e.g.:
+   current weights "win" only if their mean IC's overlap-adjusted CI
+   excludes zero **and** exceeds both equal-weight's and momentum-only's
+   mean IC by a stated minimum margin — don't just report "higher," commit
+   to a margin now. State it plainly so it can't be adjusted after the
+   data is seen.
 
 ## Implementation
 

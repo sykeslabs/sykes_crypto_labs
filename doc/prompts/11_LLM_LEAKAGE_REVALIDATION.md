@@ -33,14 +33,35 @@ A repeatable, mostly automated leakage check across ~4–6 historical events.
    backfilled calibration stats, the evidence-value pool and the reasoning-audit pool.
    Ask whether the FTX/XMR test rows are already in those pools, and propose how to tag
    and exclude leakage-test runs (ask before any migration).
-4. **Detector design** (propose, don't build yet): for each replayed decision, check
-   (a) assessment `raw_response`s for claims flagged as unverified priors, and (b)
-   whether a directional (BUY/SELL) Judge decision cites such a claim in `key_evidence`
-   or `thesis`. Options: keyword/flag-based (zero cost) vs. one structured LLM check per
-   decision, like `app/benchmarks/reasoning_audit.py` (cost per decision). Recommend one.
-   Note that a flag-based detector only finds leakage the model admits; say how you'd
-   catch unadmitted priors (e.g. event-specific terms that only appear after the date).
-5. **Wait for my approval of events, cost, tagging and detector.**
+4. **Detector design — fix the admitted-leakage rule now, in this prompt,
+   not as a Step-0 proposal** (tightened 2026-10-02 per `doc/reviews/
+   2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`: leaving the exact rule to be
+   "proposed then approved" still leaves real researcher degrees of
+   freedom in what counts as "flagged"). The rule: for each replayed
+   decision, a directional (BUY/SELL) Judge decision **fails** if its
+   `key_evidence` or `thesis` cites a claim that the same decision's own
+   assessment `raw_response`s flagged as an unverified/unsupported prior
+   (exact keyword match against the phrasing this project's own prompts
+   already instruct models to use for this — e.g. "unverified prior,"
+   "not traceable to," "no evidence was found to substantiate" — confirm
+   the exact current phrasing in `app/llm/assessment_context.py`/
+   `app/judge/context.py` before finalizing the match list, don't guess
+   from memory). Zero LLM cost, keyword-based — still propose an
+   LLM-based alternative in Step 0 only if the keyword approach proves too
+   brittle on real fixture data, not as a default.
+   **Explicitly, permanently out of scope for this detector**: unadmitted
+   leakage (an event-specific term/narrative the model states as
+   established fact, with no hedging language at all). Report the
+   detector's result ONLY as "no admitted-leakage-driven directional call
+   found in these N events," never as "leakage risk is resolved" — state
+   this distinction in the prompt's own final-report template (see Docs
+   below), not left to the implementer's judgment at write-up time. If
+   events still reveal event-specific terms the model states as fact with
+   no hedging, flag those separately as "possible unadmitted leakage, not
+   caught by this detector" — do not silently pass them.
+5. **Wait for my approval of events, cost, and tagging** (the detector
+   rule itself no longer needs separate approval, per point 4 above —
+   only the event list, cost, and row-tagging approach remain open).
 
 ## Implementation (after approval)
 
@@ -58,7 +79,10 @@ logic per event.
 
 ## Docs (show diff first)
 
-`doc/todo.md` (close only if every event passes and you state the limits), `doc/history.md`.
+`doc/todo.md` (close only if every event passes and you state the limits —
+and the limits **must** include the unadmitted-leakage blind spot from
+point 4 explicitly, every time, not only when something was caught),
+`doc/history.md`.
 
 ## Ground rules
 

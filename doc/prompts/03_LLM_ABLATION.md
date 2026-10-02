@@ -67,6 +67,43 @@ drop inputs from the Judge context, and paired replays. Each replay day ≈ $0.5
 - Smallest possible change: a replay option that omits named inputs from the Judge
   context. Default behaviour unchanged. Run only after I approve the exact cost.
 
+## Revision (2026-10-02, investment validity review — see
+`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`)
+
+Three additions, required before this prompt runs, not optional polish:
+
+1. **Variants D and E are missing — add them to Step 0/Level 1-2, don't
+   build a separate prompt (reuses this harness/join keys exactly).**
+   - **D (simplified single-call LLM)**: a new deterministic rule built
+     from a *single* existing field already persisted per model — e.g.
+     each model's own assessment direction alone, bypassing the
+     multi-model-agreement/adversarial layering. Nearly free to add
+     (data already exists: `ModelMarketAssessmentRecord`, `run_id`/
+     `asset_id`/`raw_response` confirmed at `app/llm/assessment_schemas.py:
+     92,97,128`). Add as **Level 1.5**.
+   - **E (news-only LLM)**: no existing signal isolates "news effect" from
+     "full assessment effect." Doing this properly needs a genuinely new,
+     minimal LLM call fed only news (not market data/factors) — this is
+     Level-2 cost (real replay, real LLM calls), add as an explicit
+     **Level 3**, gated the same way Level 2 already is (cost approval,
+     contamination tagging, replay ≤ `TRAINING_WINDOW_END`).
+2. **Pre-specify the success criterion in this file, not only in Step
+   0's negotiation.** State now: what counts as "layer N adds
+   information" (e.g. a specific CI-excludes-zero or likelihood-ratio
+   threshold on the paired difference) — fix this *before* Step 0 sees
+   any real data, per this project's own multiple-testing discipline.
+   `11_LLM_LEAKAGE_REVALIDATION.md`'s "must be 0 to pass" framing is the
+   template to follow.
+3. **Add a double-counting check.** Before crediting signal 2 (assessment
+   layer) with adding information, test whether `composite_factor_score`
+   alone already explains most of what `model_agreement`/
+   `source_agreement` correlate with — price momentum reaches the Judge
+   both via the deterministic composite score and independently via LLM
+   interpretation of the same OHLCV (a real, confirmed channel, not
+   hypothetical). A layer that merely re-expresses momentum shouldn't be
+   credited as new information. Report this explicitly as its own line in
+   the nested-model output, not folded silently into the overall verdict.
+
 ## Tests
 
 Signal rules on synthetic assessments/scenarios; join correctness; nested-model

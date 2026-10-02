@@ -36,7 +36,25 @@ Measure whether 3f changes and improves Judge decisions, using **paired** observ
 4. Note that with non-zero temperature (Judge 0.2, assessments 0.3, no seed), two runs
    differ even without the 3f change. Propose a noise baseline: e.g. a few days run
    twice *without* 3f to measure run-to-run disagreement.
-5. **Wait for my decision and cost approval.**
+5. **Pre-specify the success criterion now** (added 2026-10-02 per
+   `doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`): state what
+   decision-change rate, measured against the no-3f noise baseline from
+   point 4, would count as "3f adds value" — fix this before any replay
+   runs, not after. `11_LLM_LEAKAGE_REVALIDATION.md`'s "must be 0 to pass"
+   framing is the template.
+6. **Design the general experiment-row-tagging solution here, not just for
+   3f.** This project has no tag distinguishing "experiment replay" rows
+   from the main backfilled population anywhere (`is_backfilled` is
+   binary only) — prompts `05`, `11`, `17` (phase 2), `18` (phase 2) all
+   independently re-raise this identical open question rather than
+   duplicating a fix. Since this is the first HIGH-tier prompt in
+   dependency order that actually needs to run a new replay, **design the
+   general tagging convention here** (e.g. a `replay_batch_id`/`experiment_
+   tag` column, or whatever you propose) so later prompts can point back
+   to this one's solution instead of re-deciding it. Flag this explicitly
+   to the other prompts' implementers via a one-line note in each (see
+   Docs below).
+7. **Wait for my decision and cost approval.**
 
 ## Implementation (after approval)
 

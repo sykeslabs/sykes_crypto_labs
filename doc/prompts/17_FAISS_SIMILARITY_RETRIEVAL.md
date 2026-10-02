@@ -115,6 +115,20 @@ Verified 2026-10-02, read-only:
 
 ## Step 0 — phase 2, required before any replay, then stop
 
+**Reprioritized below 02/03/07, explicitly (2026-10-02, per
+`doc/reviews/2026-10-02_INVESTMENT_VALIDITY_REVIEW.md`)**: phase 2 is a
+textbook case of adding sophistication before an edge is shown — building
+a new retrieval layer is justified in this file only by "does the news
+table have enough content to embed," never by evidence that the
+*existing* news/LLM pipeline is a binding constraint on performance. **Do
+not start phase 2's Step 0 until `02_BASELINE_LADDER.md` and
+`03_LLM_ABLATION.md` (revised) have run and shown the existing news/LLM
+layer carries signal worth improving.** This is a stronger gate than "07's
+contamination solution exists" (the index's prior framing) — it's a
+priority gate, not just a mechanics prerequisite. Phase 1 (local, free,
+`FAISS_ENABLED=False` by default) is unaffected and remains buildable any
+time.
+
 Same shape as `doc/prompts/07_ADVERSARIAL_INCREMENTAL_VALUE.md`'s Step 0 —
 reuse that reasoning, don't re-derive it from scratch:
 
