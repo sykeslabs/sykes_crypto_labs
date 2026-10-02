@@ -53,7 +53,8 @@ one redundant variable) gives expected verdicts; below-threshold returns "insuff
 
 ## Docs (show diff first)
 
-`doc/todo.md`, `doc/history.md`, `doc/scripts.md`.
+`doc/todo.md`, `doc/history.md`, `doc/scripts.md`, `doc/decisions.md` (record the
+exact nested-model spec agreed in Step 0 and the verdict per variable).
 
 ## Ground rules
 

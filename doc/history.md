@@ -103,7 +103,7 @@ change to any Phase 1/2 code path):
   by the full pre-existing Phase 2 test suite passing unmodified.
 
 **Known limitations / decisions** (locked before implementation — see
-`prompts/PHASE3_LOCKED_DECISIONS.md` for the full reasoning):
+`prompts/done/PHASE3_LOCKED_DECISIONS.md` for the full reasoning):
 - **History table over a status column** — chosen so status transitions
   stay auditable once 3b's candidate discovery starts moving assets between
   states; cheap to add now, expensive to retrofit once 3b–3g are writing
@@ -121,7 +121,7 @@ change to any Phase 1/2 code path):
 - **Smart-contract/scam-safety screening** (honeypot/rug-pull checks on
   newly-discovered 3b candidates) was identified as a real gap against
   professional screening practice, flagged for an explicit decision once 3b
-  started. Resolved: **out of scope for 3b** — `doc/prompts/PHASE3B_PROMPT.md`'s actual
+  started. Resolved: **out of scope for 3b** — `doc/prompts/done/PHASE3B_PROMPT.md`'s actual
   task list doesn't call for it, and it wasn't invented back in as scope
   creep. Still a real gap; a natural fit for 3c (already adding new
   providers) or a dedicated future check, not built here.
@@ -281,7 +281,7 @@ futures curve, IV, put/call ratio, VRP, and COT positioning are all
 positioning/pricing facts, not directional signals; no BUY/SELL inference
 happens at the collector level anywhere in this sub-phase (that's the
 Judge's job in 3e, per every per-source interpretation constraint in
-`doc/prompts/PHASE3C_PROMPT.md`).
+`doc/prompts/done/PHASE3C_PROMPT.md`).
 
 **Signal sources confirmed genuinely inaccessible this round** (investigated
 live, not guessed): **Spot ETF flows** — Farside has no real API, just a
@@ -315,7 +315,7 @@ leaving it unexamined.
   public exchange addresses, not a comprehensive reserve-balance product,
   and has no entity-clustering behind it (conflates genuine whale activity
   with routine exchange-internal/protocol traffic — the same caveat
-  `doc/prompts/PHASE3C_PROMPT.md` itself calls out). Recorded in the observation's own
+  `doc/prompts/done/PHASE3C_PROMPT.md` itself calls out). Recorded in the observation's own
   payload, not just this doc.
 - **Stablecoin supply *velocity*** (transaction volume relative to
   circulating supply) **was not built** — DefiLlama's stablecoins endpoint
@@ -398,7 +398,7 @@ stage costs ~$0.41/run regardless of candidate count changes within reason
 built yet (each `python -m app.main` invocation is a manual/on-demand run).
 
 **Known limitations / decisions:**
-- **Grok (xAI) deferred, not built.** `doc/prompts/PHASE3D_PROMPT.md` offered it as an
+- **Grok (xAI) deferred, not built.** `doc/prompts/done/PHASE3D_PROMPT.md` offered it as an
   optional fourth model; the explicit choice here was to keep this
   sub-phase's change isolated to the richer context (regime + 3c evidence +
   sanity check) rather than also changing the model set, so any behavior
@@ -1842,7 +1842,7 @@ parsing for both exchanges, mocked), `tests/test_baseline_comparison.py`
 ## Phase 5 — Read/query API, scheduling & dashboard
 
 A read/query and orchestration layer over already-existing state (see
-`doc/prompts/PHASE5_PROMPT.md`) — no new evidence sources, no Judge/Risk Engine/
+`doc/prompts/done/PHASE5_PROMPT.md`) — no new evidence sources, no Judge/Risk Engine/
 Portfolio Construction changes, no order placement (that's Phase 6).
 
 ### Deployment scope — decided before any endpoint code was written
@@ -3915,4 +3915,200 @@ write-up) and won't flip true for an estimated ~3 months (45-day embargo
 explicitly accepted before implementation began. No production run or
 database mutation was performed — every constant came from a single
 read-only query.
+
+## Phase 5x — Batch review of 16 todo-item implementation prompts (2026-10-02)
+
+The user had generated one standalone implementation prompt per open `doc/todo.md`
+item (sections A and B, excluding the already-implemented embargo item) and placed
+them in `Claude outputs/`, with an index (`00_INDEX.md`) covering suggested order
+and cross-cutting risks. Asked to revise/assess each for implementation-readiness,
+move the ready ones into `doc/prompts/`, and update the documentation.
+
+**Method**: 7 parallel read-only review passes, each independently re-verifying
+every factual/code claim in its assigned file(s) against the actual current code
+(file:line, not assumed) and, where feasible, against real live Supabase data via
+short read-only scripts — the same rigor already applied to
+`EMBARGO_HOLDOUT_COHORT_PROMPT.md` before it was implemented. A prompt was judged
+**ready** if every claim checked out and any genuinely open design question was
+correctly routed to an explicit Step-0 "ask the user, then wait" gate rather than
+silently assumed — not that it has zero open questions at all; that's the same
+passing pattern the embargo prompt itself used.
+
+**Result: all 16 files READY**, no factual errors, no stale references, no
+silently-assumed uncertain decisions found in any of them. Two non-blocking
+findings surfaced along the way:
+- `05_EVIDENCE_VALUE_RANKING.md`/`06_LLM_SELF_REPORTED_CALIBRATION.md`'s Docs
+  sections didn't list `doc/decisions.md`, unlike the embargo prompt's own
+  convention — fixed in place before moving.
+- `15_EVIDENCE_OBSERVATIONS_ENDPOINT.md`'s review re-checked `evidence_observations`'s
+  row count live: 4303 (`doc/todo.md` still said 3714, from 2026-09-27) — refreshed
+  in `doc/todo.md`'s own Cosmetic-fixes bullet as a result.
+
+Two files carry an explicit caveat beyond "ready," kept visible rather than
+smoothed over:
+- `07_ADVERSARIAL_INCREMENTAL_VALUE.md`/`11_LLM_LEAKAGE_REVALIDATION.md` both
+  involve real LLM cost (paired replays) and new `is_backfilled=true` rows with no
+  existing tag separating "experiment replay" from the main backfill population —
+  both correctly gate this as a required Step-0 decision, not a silent risk.
+- `14_HOLDINGS_CORRECTION.md` covers a todo item the user has explicitly deferred
+  ("address this at a later point in time"). It is factually ready and
+  self-gating (its own Step 0 re-asks "do you want to implement this now?" and
+  stops without a clear yes) — moved for availability, not as a signal the
+  deferral has lifted.
+
+**Action taken**: all 17 files (16 prompts + the index) moved from
+`Claude outputs/` to `doc/prompts/`, alongside the existing `PHASE*_PROMPT.md`
+historical build prompts. `doc/todo.md` updated: every section A/B item now links
+its own ready prompt inline (same `[`prompts/NN_....md`](prompts/NN_....md)`
+convention already used for `PHASE6_PROMPT.md`), plus a short pointer near the top
+of the file to `prompts/00_INDEX.md` for suggested order and cross-cutting risks.
+`doc/prompts/00_INDEX.md` itself got a short "Batch review" addendum recording
+this pass. No production code was touched; no replay, LLM call, or DB write was
+performed. Full suite after: 711 passed, same single pre-existing, unrelated
+failure as every other recent run in this session
+(`test_forward_calendar_only_includes_future_dates_within_horizon`).
+
+## Phase 5y — New candidate: FAISS historical-similarity retrieval (2026-10-02)
+
+The user supplied a generic, project-agnostic implementation prompt proposing a
+new experimental component: local FAISS-based retrieval of historical news/
+events semantically similar to a new one, to test whether that improves
+prediction quality. Unlike the prior 16-prompt batch (Phase 5x), this wasn't an
+existing `doc/todo.md` item — it needed to be both grounded in the real
+codebase and newly added to the backlog.
+
+**Grounding investigation (read-only) found one real, binding constraint the
+generic prompt didn't know about**: this project's `news` table
+(`migrations/0002_llm_and_news.sql`) stores only `title` + a *nullable*
+`summary` per article — there is no full article body anywhere in the system.
+What exactly to embed (title-only vs. title+summary, how to handle null-summary
+rows) is therefore a real open question, routed to a Step 0 gate rather than
+assumed. No embedding/vector infrastructure exists anywhere in the repo today
+(confirmed via a repo-wide grep). The existing no-lookahead mechanism
+(`NewsRepository.get_recent_relevant_news`'s `until` bound, threaded through
+replay via `as_of` in `app/llm/assessment_context.py`) is the one leakage-
+prevention mechanism the new retrieval layer must reuse, not reinvent.
+
+**Written as two deliberately separated phases**, matching this project's own
+cost-discipline convention: phase 1 (the retrieval infrastructure itself — local
+`faiss-cpu` + a small local sentence-transformer, zero marginal cost, fully
+modular/disableable, `FAISS_ENABLED=False` by default) is low-risk and ready to
+run any time. Phase 2 (whether wiring retrieved context into the assessment/
+Judge prompts actually improves decisions) requires a real paired backfill
+replay — genuine LLM cost, and the identical new-`is_backfilled=true`-row
+contamination risk already solved for the adversarial-incremental-value item
+(`doc/prompts/07_ADVERSARIAL_INCREMENTAL_VALUE.md`) — so phase 2 explicitly
+reuses that prompt's Step-0 reasoning (pairing design, noise baseline,
+contamination tagging, cost approval) rather than re-deriving it, and gates
+behind the same explicit-approval requirement.
+
+**Action taken**: added as a new `[HIGH][AI/Quant]` item in `doc/todo.md`'s
+Section A (same "ablation-shaped, central-question-adjacent" placement as the
+LLM-ablation and evidence-value items — not Section B), immediately following
+the adversarial-value item it shares a risk profile with. New prompt file
+`doc/prompts/17_FAISS_SIMILARITY_RETRIEVAL.md` written from scratch in this
+project's established house style (Context with file:line citations, Design-
+decided section, two Step-0 gates, Implementation, Tests, Docs, Ground rules) —
+not a reformatted copy of the user's generic pasted prompt. `doc/prompts/
+00_INDEX.md`'s suggested-order table and cross-cutting-risks section both
+updated to include it, slotted right after 07. No code was written; no
+dependency was installed; no replay or LLM call was made.
+
+## Phase 5z — Implementation prompt for an existing deferred item: retrieval-layer evaluation (2026-10-02)
+
+Same pattern as Phase 5y, but for an item that already existed in `doc/
+todo.md`'s Deferred/gated section: "Dedicated web/financial retrieval layer
+(You.com/Tavily/Exa) — evaluate vs. the current RSS+keyword news pipeline."
+The user supplied a detailed, already well-structured template prompt as
+inspiration; the work here was regrounding every one of its claims against
+this actual repo before writing `doc/prompts/18_RETRIEVAL_LAYER_EVALUATION.md`.
+
+**What the grounding investigation confirmed vs. corrected**: every specific
+code claim in the user's template turned out accurate — `NewsArticle`'s real
+fields, `build_judge_context`'s exact `news_lookback_hours`/`max_news_
+articles_per_asset`/`news_summaries` handling, the `until`-bound no-lookahead
+mechanism in `NewsRepository.get_recent_relevant_news`, and all four guessed
+file locations for the `NOT_IMPLEMENTED` categories (`SPOT_ETF_FLOWS`/
+`PREDICTION_MARKETS`/`TOKEN_UNLOCK_SCHEDULE` in `app/market_data/
+derivatives_service.py`, `CUSTODY_OTC_FLOW` in `app/market_data/
+asset_intelligence_service.py`) — nothing invented, nothing stale. Live
+numbers were added where the template had left blanks: 429 real news rows
+today (2025-12-29 to 2026-09-30; CoinDesk 173/CoinTelegraph 132/Decrypt 124).
+One real gap found and flagged for the implementer rather than silently
+fixed: `.env` already has `YOU_API_KEY` set (added earlier this session), but
+`app/config/settings.py` has no corresponding `you_api_key` field yet.
+
+**The gate check that matters most**: this todo item's own revisit condition
+— evidence quality must be shown as a binding constraint on predictive value
+— is checked live in the new prompt's own Context section, not left as an
+abstract instruction. Current state: evidence-value ranking is still n=46
+against the required 50, and the baseline-ladder item has no completed run
+yet. So running this prompt today is expected to produce a "defer"
+recommendation via its own §1 gate check, not vendor integration work — this
+is stated plainly in both the prompt and `doc/todo.md`'s pointer to it, so
+running it isn't mistaken for a green light.
+
+**Action taken**: new prompt file written in this project's house style
+(Context with citations, the gate check preserved as the template's own §1,
+inspection/design/evaluation-phases/implementation-constraints/deliverables/
+questions sections condensed from the template but substantively intact).
+`doc/todo.md`'s existing retrieval-layer item updated with a pointer and the
+gate-status note. `doc/prompts/00_INDEX.md`'s order table and cross-cutting-
+risks section updated (slotted as item 18, gated on 02/03/05 collectively
+rather than a single prerequisite, since it depends on the Section A
+research question being answered as a whole). No code was written; no
+dependency was installed; no vendor API, LLM grading, or replay call was made.
+
+## Phase 6a — Documentation consistency pass: `doc/prompts/done/`, cross-references (2026-10-02)
+
+The user had reorganized `doc/prompts/` independently (outside any tool call
+in this session): the original `PHASE*_PROMPT.md` build prompts and the now-
+implemented `EMBARGO_HOLDOUT_COHORT_PROMPT.md` moved into a new `doc/prompts/
+done/` subfolder, leaving the top level as purely active, ready-to-run
+prompts (01–18). Asked to align `doc/prompts/00_INDEX.md` and `doc/todo.md`
+with each other and bring every doc/md file up to date and consistent.
+
+**Stale cross-references found and fixed** (a real link-rot pass, not
+speculative): every markdown link pointing at a now-moved `PHASE*_PROMPT.md`
+or `EMBARGO_HOLDOUT_COHORT_PROMPT.md` file, across `doc/todo.md` (the Phase 6
+pointer), `doc/history.md` (5 separate references, Phase 3b/3c×2/3d/5
+entries), `doc/methodology.md` (2 references, including one I'd added for
+the embargo refinement note minutes earlier in this same pass), and
+`doc/prompts/done/PHASE3_LOCKED_DECISIONS.md`'s own internal cross-reference
+to its sibling files — all updated to the `prompts/done/` path. Verified via
+a script that resolves every `[...](....md)` link across the key docs
+against the real filesystem; one apparent hit in `doc/history.md` was a
+false positive (illustrative placeholder text `prompts/NN_....md`
+describing a convention generically, not a real link).
+
+**`doc/prompts/00_INDEX.md` rewritten**: title corrected (was still "sections
+A + B, excluding the embargo item" — stale on two counts, since item 18 is a
+Deferred/gated item and the embargo item is now done, not excluded-pending).
+The three sprawling inline "Addendum" paragraphs consolidated into one
+dated "Revision log" section. The order table gained a `doc/todo.md section`
+column (A—CRITICAL/HIGH/MEDIUM/Confirmed, B, Deferred/gated) so the two
+files' ordering is visibly, not just coincidentally, identical — confirmed
+by direct comparison that the table's row order already matched `doc/
+todo.md`'s document order exactly before this pass, so no reordering was
+actually needed, only the labeling that makes that visible. Added an
+explicit note that `done/` holds completed work and isn't tracked in the
+table.
+
+**`README.md`'s `doc/prompts/` bullet** was also stale (described it as only
+the historical phase prompts) — rewritten to describe both halves: the
+active ready-to-run prompts at the top level, and `done/` for completed work.
+
+**`doc/methodology.md`'s held-out-window bullet** (written long before the
+embargo-cohort work existed) got a short "Refined 2026-10-02" follow-up
+note pointing to the actual embargo finding/fix, rather than leaving the
+original text looking like the held-out window was already a genuine
+embargo.
+
+**`doc/scripts.md`'s `run_replay.py` entry** was also stale from the
+embargo implementation itself (Phase 5w) — updated to mention the
+`TRAINING_WINDOW_END` guard and `--allow-post-training-cutoff`, which
+existed in code but had never been added to this doc.
+
+No production code was touched. Full suite re-run after: 711 passed, same
+single pre-existing, unrelated failure as every other run this session.
 

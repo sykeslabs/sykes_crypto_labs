@@ -32,7 +32,7 @@ carry across every sub-phase:
   cap LLM spend, not general data-vendor spend.
 - **Two schema/convention decisions were locked before 3a started**, since
   schema is cheap to decide up front and expensive to retrofit once 3b–3g
-  are writing against it (see `prompts/PHASE3_LOCKED_DECISIONS.md` for the full
+  are writing against it (see `prompts/done/PHASE3_LOCKED_DECISIONS.md` for the full
   writeup):
   - The full Judge decision record (thesis, key/contradictory evidence,
     invalidation conditions) lives in a dedicated `judge_decisions` table,
@@ -65,6 +65,17 @@ carry across every sub-phase:
   is tracked as a separate, equally-required metric, and a held-out decision
   window is reserved from 3e onward specifically so at least one result
   hasn't been iterated against.
+  **Refined 2026-10-02**: the held-out window alone turned out not to be a
+  genuine embargo (its start never had a temporal buffer past the longest
+  resolution horizon from the backfilled training window — see `doc/todo.md`'s
+  CRITICAL "no genuine temporal embargo" item). `TRAINING_WINDOW_END` +
+  a frozen 45-day embargo now defines one genuinely clean holdout cohort
+  within it (`app/benchmarks/schemas.py`'s `HOLDOUT_COHORT_START`,
+  `/calibration/summary`'s `holdout_cohort_*` fields); every result outside
+  that cohort remains directional evidence only, not confirmatory, exactly
+  per the "trial count" discipline above. See
+  `doc/prompts/done/EMBARGO_HOLDOUT_COHORT_PROMPT.md` and `doc/decisions.md`'s
+  corresponding entry for the full design.
 - **New tooling earns its place by matching a real need, not by being
   available.** FastAPI, xAI, LangChain/LangGraph, and Langfuse are each
   adopted for a specific, scoped reason (see "Technology stack decisions"

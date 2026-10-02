@@ -19,6 +19,25 @@ live-derived — treat this file as the current one, not the dashboard.
 data check: 2026-10-02** (figures below re-verified this pass; see each
 item for exact numbers).
 
+**Implementation prompts**: most open items below (sections A, B, and one
+in Deferred/gated) now link their own ready-to-run implementation prompt
+in [`prompts/`](prompts/) — each independently reviewed read-only against
+this repo on 2026-10-02 (every factual/code claim verified, not assumed;
+see each prompt's own Context section for citations). One exception: the
+FAISS historical-similarity-retrieval item (Section A, HIGH) didn't exist
+here until its own prompt (`17`) was written first and introduced it — the
+usual direction (todo item → prompt) reversed for that one entry only. A prompt being
+"ready" means its claims check out and any genuinely open design question
+is correctly routed to an explicit Step-0 "ask the user" gate, not that
+it's unconditionally safe to run unattended — several involve real LLM
+cost or a real deferred/gated status (see each item's own note). Suggested
+dependency order and cross-cutting risks (new replay rows contaminating
+the main backfilled population, the holdout cohort, item 01's
+survivorship bias) are in [`prompts/00_INDEX.md`](prompts/00_INDEX.md).
+**`prompts/done/`** holds completed work: the original phase-by-phase
+build prompts, plus any of the above once actually implemented (so far,
+`EMBARGO_HOLDOUT_COHORT_PROMPT.md` — see the CRITICAL embargo item below).
+
 ---
 
 ## Methodological principle (read this before the list below)
@@ -135,6 +154,11 @@ that actually bear on investment validity.
   technically feasible — explicitly label every backfilled Sharpe/hit-
   rate figure as subject to universe-selection bias, not clean
   out-of-sample evidence.
+  **Implementation prompt**: [`prompts/01_PIT_CANDIDATE_UNIVERSE.md`](prompts/01_PIT_CANDIDATE_UNIVERSE.md)
+  — reviewed 2026-10-02, ready to run (its own Step 0 gates the real
+  open decision — whether a point-in-time source is actually reachable —
+  behind a live, bounded probe + explicit confirmation, rather than
+  assuming either way).
 
 ### HIGH — the central empirical question and its components
 
@@ -188,6 +212,8 @@ that actually bear on investment validity.
   mismatch artifact, not evidence of skill. This is exactly the kind of
   result this ladder is built to catch systematically instead of by
   accident.
+  **Implementation prompt**: [`prompts/02_BASELINE_LADDER.md`](prompts/02_BASELINE_LADDER.md)
+  — reviewed 2026-10-02, ready to run.
 
 - **[HIGH][AI/Quant] LLM incremental-value / ablation test.** A narrower,
   AI-specific instance of the item above: does the LLM research layer
@@ -202,6 +228,9 @@ that actually bear on investment validity.
   is sophisticated or because individual narratives read as plausible**
   — that is exactly the failure mode the LLM-leakage finding below
   already demonstrates models are capable of.
+  **Implementation prompt**: [`prompts/03_LLM_ABLATION.md`](prompts/03_LLM_ABLATION.md)
+  — reviewed 2026-10-02, ready to run (gates on `prompts/02_BASELINE_
+  LADDER.md`'s artifacts existing first — stops and says so if they don't).
 
 - **[HIGH][Quant] Composite factor weights — empirical validation still
   unresolved.** `COMPOSITE_FACTOR_WEIGHTS` (`app/market_data/factors.py`)
@@ -219,6 +248,8 @@ that actually bear on investment validity.
   the same underlying question (does this specific deterministic
   weighting scheme add value over simpler alternatives), not a separate
   track.
+  **Implementation prompt**: [`prompts/04_COMPOSITE_WEIGHTS_VALIDATION.md`](prompts/04_COMPOSITE_WEIGHTS_VALIDATION.md)
+  — reviewed 2026-10-02, ready to run.
 
 - **[HIGH][Quant] Evidence-value logistic-regression ranking.**
   `MIN_SAMPLE_SIZE=50` has never been cleared — **re-checked live
@@ -239,6 +270,9 @@ that actually bear on investment validity.
   current evidence category (`model_agreement`, `source_agreement`,
   `confidence`, `risk_score`, `uncertainty`, `investment_horizon_days`)
   as unproven until that full check passes, not merely until n≥50.
+  **Implementation prompt**: [`prompts/05_EVIDENCE_VALUE_RANKING.md`](prompts/05_EVIDENCE_VALUE_RANKING.md)
+  — reviewed 2026-10-02, ready to run (Step 0 requires picking how to
+  reach n≥50 before any replay/population change).
 
 - **[HIGH][AI] LLM self-reported confidence/uncertainty/source agreement
   — calibration AND incremental information.** `source_agreement`,
@@ -253,6 +287,9 @@ that actually bear on investment validity.
   Judge inputs already available — or are they redundant with
   information already captured elsewhere? Passing (1) alone is not
   sufficient; a well-calibrated but redundant signal adds no real value.
+  **Implementation prompt**: [`prompts/06_LLM_SELF_REPORTED_CALIBRATION.md`](prompts/06_LLM_SELF_REPORTED_CALIBRATION.md)
+  — reviewed 2026-10-02, ready to run (reuses prompt 05's robustness
+  checks rather than duplicating them, once they exist).
 
 - **[HIGH][AI] Adversarial (3f) chain — incremental value, not
   infrastructure.** The chain is confirmed sequential (bear receives the
@@ -267,6 +304,50 @@ that actually bear on investment validity.
   evidence that it improved the decision — Judge theses can genuinely
   incorporate content without that content having changed the directional
   outcome. Treat as unanswered until tested directly.
+  **Implementation prompt**: [`prompts/07_ADVERSARIAL_INCREMENTAL_VALUE.md`](prompts/07_ADVERSARIAL_INCREMENTAL_VALUE.md)
+  — reviewed 2026-10-02, ready to run. Involves real paired-replay LLM
+  cost (~$0.30/day extra) and new `is_backfilled=true` rows — the prompt's
+  own Step 0 requires explicit cost approval and a decision on how to
+  keep experiment-replay rows from silently contaminating the main
+  backfilled population before anything runs.
+
+- **[HIGH][AI/Quant] Historical-similarity retrieval (FAISS) — does
+  retrieving semantically similar past news/events add incremental
+  predictive value?** A genuinely new candidate evidence source, not yet
+  built. **Real data constraint, verified 2026-10-02**: the `news` table
+  (`migrations/0002_llm_and_news.sql`) stores only `title` + a *nullable*
+  `summary` per article — no full article body anywhere in this system —
+  so what exactly gets embedded (title-only vs. title+summary, and how
+  to handle rows with no summary) is a real open question, not something
+  to assume away. No embedding/vector infra exists anywhere in this repo
+  today (confirmed via repo-wide grep). `NewsRepository.get_recent_
+  relevant_news`'s `until` bound (`app/database/repository.py:240-265`,
+  threaded through replay via `as_of` in `app/llm/assessment_context.py:
+  42`) already enforces no-lookahead for backfill — any FAISS retrieval
+  must reuse this exact mechanism, not invent new leakage-prevention
+  logic.
+  **Two phases, deliberately different risk**: (1) the retrieval
+  infrastructure itself — local `faiss-cpu` + a small local
+  sentence-transformer, zero marginal cost, fully modular/disableable via
+  a new `FAISS_ENABLED` setting (default off, preserving current
+  behavior exactly). Low-risk, reversible. (2) **whether wiring retrieved
+  historical context into the assessment/Judge prompts actually changes
+  and improves decisions** — this is NOT free: it requires a paired
+  backfill replay (same day/asset, with vs. without retrieved context),
+  real LLM cost, and the same new-`is_backfilled=true`-row contamination
+  risk already solved once for the adversarial-value item above. Do not
+  conflate "the retrieval layer works" with "the retrieval layer helps" —
+  only phase 2, measured via a genuine temporal out-of-sample split (not
+  a random split), answers the real question. **Not a duplicate of** the
+  Deferred "Dedicated web/financial retrieval layer (You.com/Tavily/Exa)"
+  item below — that fetches *new* external content; this is local
+  semantic search over the project's *own already-ingested* news archive.
+  **Implementation prompt**: [`prompts/17_FAISS_SIMILARITY_RETRIEVAL.md`](prompts/17_FAISS_SIMILARITY_RETRIEVAL.md)
+  — reviewed 2026-10-02, ready to run for phase 1 (local, free, fully
+  reversible); phase 2 (the actual predictive-value evaluation) gates on
+  the same Step-0 cost/contamination-approval pattern as prompt 07, and
+  explicitly treats a null result as a valid, documented close rather
+  than a reason to keep adding complexity.
 
 ### MEDIUM — robustness (keep concise; do not over-specify ahead of evidence)
 
@@ -275,6 +356,10 @@ that actually bear on investment validity.
   RISK_ON/RISK_OFF/NEUTRAL regimes, or is concentrated in one. Not yet
   scoped in detail — needs the baseline-ladder item resolved first to
   have a real effect size worth slicing by regime at all.
+  **Implementation prompt**: [`prompts/08_REGIME_ROBUSTNESS.md`](prompts/08_REGIME_ROBUSTNESS.md)
+  — reviewed 2026-10-02, ready to run *later*: it correctly gates itself
+  on prompt 02's artifacts existing first and will stop immediately if
+  they don't (verified 2026-10-02: they don't exist yet).
 - **[MEDIUM] Parameter sensitivity** — `MAX_CONCURRENT_POSITIONS` (8) and
   `MIN_REPLACEMENT_ALPHA_ADVANTAGE` (0.03) are documented as a chosen
   convention (same status as `COMPOSITE_FACTOR_WEIGHTS`), not fit or
@@ -282,10 +367,16 @@ that actually bear on investment validity.
   *replacement events* specifically (narrower than the general
   resolved-decision count) — not yet available; genuinely low priority
   until the central question above has a real answer.
+  **Implementation prompt**: [`prompts/09_PARAMETER_SENSITIVITY.md`](prompts/09_PARAMETER_SENSITIVITY.md)
+  — reviewed 2026-10-02, ready to run *later*, same gate on prompt 02 as
+  above. Explicitly forbids tuning on the holdout cohort and forbids
+  changing the live defaults itself.
 - **[MEDIUM] Cross-asset / generalization analysis** — whether any
   demonstrated edge generalizes across the tracked universe or is
   concentrated in a handful of assets (e.g. BTC). Not yet scoped — same
   dependency on the baseline ladder existing first.
+  **Implementation prompt**: [`prompts/10_CROSS_ASSET_GENERALIZATION.md`](prompts/10_CROSS_ASSET_GENERALIZATION.md)
+  — reviewed 2026-10-02, ready to run *later*, same gate on prompt 02.
 
 ### Confirmed finding, not fully closed
 
@@ -311,6 +402,10 @@ that actually bear on investment validity.
   distinctive events from different regimes and verify unsupported
   historical priors are consistently detected and blocked from becoming
   directional signals every time, not just in the one tested window.
+  **Implementation prompt**: [`prompts/11_LLM_LEAKAGE_REVALIDATION.md`](prompts/11_LLM_LEAKAGE_REVALIDATION.md)
+  — reviewed 2026-10-02, ready to run. Proposes genuinely new test events
+  (not re-running the Aug 2024/2022 FTX windows already done). Real LLM
+  cost; its own Step 0 requires explicit cost/event approval first.
 
 ---
 
@@ -356,6 +451,9 @@ for priority with section A.
   this is a retrieval/UI gap, not a data-collection gap, and it closes
   the real trust question directly. Treat (2) as a lower-priority,
   only-partially-achievable goal, not a blocking requirement.
+  **Implementation prompt**: [`prompts/12_FORENSIC_EXPLAINABILITY.md`](prompts/12_FORENSIC_EXPLAINABILITY.md)
+  — reviewed 2026-10-02, ready to run. Correctly scopes itself to (1)
+  only; explicitly excludes (2), matching this item's own framing above.
 
 - **[HIGH][Risk] `run_stress_test.py` reads the system's own TARGET
   allocation, not real holdings** — queries `PortfolioPositionRepository.
@@ -368,6 +466,8 @@ for priority with section A.
   correctness issue affecting one diagnostic tool's output, not a
   research-validity question — fix by reading real holdings the same way
   the Risk Engine and Judge context now do.
+  **Implementation prompt**: [`prompts/13_STRESS_TEST_REAL_HOLDINGS.md`](prompts/13_STRESS_TEST_REAL_HOLDINGS.md)
+  — reviewed 2026-10-02, ready to run.
 - **A way to correct/remove a mistaken holdings entry** — no delete
   exists (the ledger is append-only, by design). Two options discussed:
   a real hard delete (breaks the append-only guarantee, corrupts
@@ -376,6 +476,11 @@ for priority with section A.
   Operational integrity improvement, important eventually, not central
   to establishing predictive edge. Explicitly deferred by the user
   ("address this at a later point in time").
+  **Implementation prompt**: [`prompts/14_HOLDINGS_CORRECTION.md`](prompts/14_HOLDINGS_CORRECTION.md)
+  — reviewed 2026-10-02, factually ready, but **this item is still
+  deferred** — the prompt's own Step 0 re-asks "do you want to implement
+  this now?" and stops unless the answer is a clear yes. Moved here for
+  availability, not as a signal to start.
 - **`evidence_observations` has no API endpoint at all** — the single
   largest block of invisible data in the system (funding rates, open
   interest, options IV, on-chain flows, DeFi TVL, stablecoin supply,
@@ -383,6 +488,9 @@ for priority with section A.
   capability, but not a current investment-validity blocker. Needs a
   real backend design decision first (which sources, what endpoint
   shape) before any UI work.
+  **Implementation prompt**: [`prompts/15_EVIDENCE_OBSERVATIONS_ENDPOINT.md`](prompts/15_EVIDENCE_OBSERVATIONS_ENDPOINT.md)
+  — reviewed 2026-10-02, ready to run (Step 0 correctly leaves the
+  endpoint design as an open decision for the user, not pre-picked).
 - **Cosmetic / low-severity, real but minor**:
   - `POST /holdings` echoes `id: null` instead of the database-assigned
     id (handler returns the locally-constructed record instead of
@@ -396,11 +504,15 @@ for priority with section A.
     than the row count). Still usable at this scale; worth
     re-prioritizing a proper join/batch method sooner rather than later.
   - `market_snapshots` and `evidence_observations` are already past
-    Supabase's real ~1000-row-per-request cap (1725/3714 rows,
-    re-checked 2026-09-27) — not fixed, since neither has a reachable
+    Supabase's real ~1000-row-per-request cap (1725/4303 rows,
+    re-checked 2026-10-02) — not fixed, since neither has a reachable
     "fetch everything" API endpoint today (every real consumer is
     per-asset/date-scoped). Apply the existing `_fetch_all_paginated`
     fix if a genuine "get everything" consumer is ever added for either.
+  **Implementation prompt**: [`prompts/16_COSMETIC_FIXES.md`](prompts/16_COSMETIC_FIXES.md)
+  — reviewed 2026-10-02, ready to run (all three sub-items verified
+  accurate against current code; part (c) is verify-only, changes
+  nothing if no over-cap consumer exists).
 
 ---
 
@@ -420,7 +532,7 @@ for priority with section A.
   become economically material.
 - **Phase 6 — exchange execution agent.** On hold by deliberate choice,
   no timeline. Full scope in
-  [`prompts/PHASE6_PROMPT.md`](prompts/PHASE6_PROMPT.md).
+  [`prompts/done/PHASE6_PROMPT.md`](prompts/done/PHASE6_PROMPT.md).
 - **Scheduling** (running the pipeline on a timer instead of manually).
   Explicitly decided against — the real bottleneck is elapsed calendar
   time for decisions to resolve, not run frequency. Revisit once the
@@ -474,6 +586,11 @@ for priority with section A.
   actually a binding constraint on predictive value, rather than model/
   weighting/architecture choices — otherwise this is new recurring
   vendor cost without a demonstrated need.
+  **Implementation prompt**: [`prompts/18_RETRIEVAL_LAYER_EVALUATION.md`](prompts/18_RETRIEVAL_LAYER_EVALUATION.md)
+  — reviewed 2026-10-02, ready to run, but its own gate check will very
+  likely conclude the revisit condition above still isn't met (evidence-
+  value n=46 vs. required 50, baseline-ladder not yet run) — expect a
+  "defer" recommendation, not a green light to start vendor work.
 - **Paid-tier deferrals** (real recurring-cost decisions, not technical
   failures): **Glassnode/CryptoQuant** — client built, not subscribed.
   **CoinGlass** — real documented API, no usable free tier.

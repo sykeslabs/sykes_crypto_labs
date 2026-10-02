@@ -150,7 +150,16 @@ This README stays a concise overview. Everything else lives in `doc/`:
 - **[`doc/methodology.md`](doc/methodology.md)** — the development
   methodology and cross-phase principles this project holds itself to,
   including the standing documentation-maintenance policy.
-- **[`doc/prompts/`](doc/prompts/)** — the phase-by-phase prompts
-  (`PHASE1-2_PROMPT.md` through `PHASE6_PROMPT.md`) that drove this
-  project's build, one per (sub-)phase — historical input specs, not living
+- **[`doc/prompts/`](doc/prompts/)** — two things, kept separate:
+  ready-to-run implementation prompts for `doc/todo.md`'s still-open items
+  (`01_...md` through `18_...md`, each independently verified against the
+  live codebase before being written — `01`-`16` and `18` each implement an
+  item that already existed in `doc/todo.md`; `17` is the one exception,
+  introducing a genuinely new item of its own; see
+  [`00_INDEX.md`](doc/prompts/00_INDEX.md) for suggested order and
+  cross-cutting risks), and, in **`doc/prompts/done/`**, the historical
+  phase-by-phase prompts (`PHASE1-2_PROMPT.md` through `PHASE6_PROMPT.md`)
+  that drove this project's original build, plus any numbered prompt above
+  whose work is now actually complete (e.g.
+  `EMBARGO_HOLDOUT_COHORT_PROMPT.md`) — historical input specs, not living
   documentation; not kept in sync with later renames elsewhere in `doc/`.

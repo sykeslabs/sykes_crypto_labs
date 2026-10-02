@@ -58,7 +58,8 @@ expected verdicts.
 
 ## Docs (show diff first)
 
-`doc/todo.md` (keep open until the full check passes), `doc/history.md`, `doc/scripts.md`.
+`doc/todo.md` (keep open until the full check passes), `doc/history.md`, `doc/scripts.md`,
+`doc/decisions.md` (record the n≥50 path chosen in Step 0 and why).
 
 ## Ground rules
 

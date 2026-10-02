@@ -5,7 +5,7 @@ implementation started. Both are schema/convention decisions, and 3a is the
 cheapest point in the whole roadmap to fix them — once 3b–3g start writing
 against these tables, changing either becomes a migration with backfill
 risk instead of a text edit. Both are now locked and reflected directly in
-`doc/prompts/PHASE3A_PROMPT.md` / `doc/prompts/PHASE3E_PROMPT.md`.
+`doc/prompts/done/PHASE3A_PROMPT.md` / `doc/prompts/done/PHASE3E_PROMPT.md`.
 
 ## Decision 1 — Judge decision table
 
